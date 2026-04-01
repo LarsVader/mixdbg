@@ -4,6 +4,8 @@ namespace MixDbg.Engine.DbgEng;
 
 /// <summary>
 /// Receives debug events from dbgeng. Called on the engine thread.
+/// Callback return values are DEBUG_STATUS constants that control
+/// whether WaitForEvent returns (BREAK) or continues (GO/NO_CHANGE).
 /// </summary>
 public sealed class EventCallbacks : IDebugEventCallbacks
 {
@@ -13,11 +15,9 @@ public sealed class EventCallbacks : IDebugEventCallbacks
     public event Action<string?>? OnCreateProcess;
     public event Action<uint>? OnExceptionEvent;
 
-    // Return DEBUG_STATUS values to control execution after events.
-    // DEBUG_STATUS_NO_CHANGE (0xF) = let the engine decide.
-    private const int NoChange = 0x0000000F;
-    // DEBUG_STATUS_GO_NOT_HANDLED = 0x08
-    private const int GoNotHandled = 8;
+    private const int StatusGo = 1;        // DEBUG_STATUS_GO
+    private const int StatusGoHandled = 2;  // DEBUG_STATUS_GO_HANDLED
+    private const int StatusBreak = 6;      // DEBUG_STATUS_BREAK
 
     public int GetInterestMask(out uint Mask)
     {
@@ -38,20 +38,22 @@ public sealed class EventCallbacks : IDebugEventCallbacks
     public int Breakpoint(IDebugBreakpoint Bp)
     {
         OnBreakpoint?.Invoke(Bp);
-        return 0x00000001; // DEBUG_STATUS_BREAK
+        return StatusBreak;
     }
 
     public int Exception(IntPtr Exception, uint FirstChance)
     {
         OnExceptionEvent?.Invoke(FirstChance);
-        return GoNotHandled;
+        // Break on all exceptions so WaitForEvent returns.
+        // The engine loop decides whether to auto-continue.
+        return StatusBreak;
     }
 
     public int CreateThread(ulong Handle, ulong DataOffset, ulong StartOffset)
-        => NoChange;
+        => StatusGo;
 
     public int ExitThread(uint ExitCode)
-        => NoChange;
+        => StatusGo;
 
     public int CreateProcess(ulong ImageFileHandle, ulong Handle,
         ulong BaseOffset, uint ModuleSize, string? ModuleName,
@@ -59,13 +61,14 @@ public sealed class EventCallbacks : IDebugEventCallbacks
         ulong InitialThreadHandle, ulong ThreadDataOffset, ulong StartOffset)
     {
         OnCreateProcess?.Invoke(ImageName);
-        return NoChange;
+        // Break so WaitForEvent returns after process creation.
+        return StatusBreak;
     }
 
     public int ExitProcess(uint ExitCode)
     {
         OnExitProcess?.Invoke(ExitCode);
-        return 0x00000001; // DEBUG_STATUS_BREAK
+        return StatusBreak;
     }
 
     public int LoadModule(ulong ImageFileHandle, ulong BaseOffset,
@@ -73,17 +76,17 @@ public sealed class EventCallbacks : IDebugEventCallbacks
         uint CheckSum, uint TimeDateStamp)
     {
         OnLoadModule?.Invoke(ModuleName, ImageName);
-        return NoChange;
+        return StatusGo;
     }
 
     public int UnloadModule(string? ImageBaseName, ulong BaseOffset)
-        => NoChange;
+        => StatusGo;
 
     public int SystemError(uint Error, uint Level)
-        => NoChange;
+        => StatusBreak;
 
     public int SessionStatus(uint Status)
-        => 0; // S_OK
+        => 0;
 
     public int ChangeDebuggeeState(uint Flags, ulong Argument)
         => 0;

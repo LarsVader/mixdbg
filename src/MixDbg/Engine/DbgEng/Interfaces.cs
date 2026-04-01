@@ -83,8 +83,7 @@ public interface IDebugControl
         ulong FrameOffset,
         ulong StackOffset,
         ulong InstructionOffset,
-        [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 4)]
-        DEBUG_STACK_FRAME[] Frames,
+        IntPtr Frames,
         uint FramesSize,
         out uint FramesFilled);
 
@@ -159,7 +158,7 @@ public interface IDebugControl
         IntPtr ExtraInformation,
         uint ExtraInformationSize,
         out uint ExtraInformationUsed,
-        StringBuilder Description,
+        IntPtr Description,
         uint DescriptionSize,
         out uint DescriptionUsed);
 }
@@ -182,7 +181,7 @@ public interface IDebugSymbols
     [PreserveSig]
     int GetNameByOffset(
         ulong Offset,
-        StringBuilder NameBuffer,
+        IntPtr NameBuffer,
         uint NameBufferSize,
         out uint NameSize,
         out ulong Displacement);
@@ -198,7 +197,7 @@ public interface IDebugSymbols
     int GetLineByOffset(
         ulong Offset,
         out uint Line,
-        StringBuilder FileBuffer,
+        IntPtr FileBuffer,
         uint FileBufferSize,
         out uint FileSize,
         out ulong Displacement);

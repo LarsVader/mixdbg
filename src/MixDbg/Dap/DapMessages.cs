@@ -388,6 +388,15 @@ public record OutputEventBody
     public string Output { get; set; } = "";
 }
 
+public record BreakpointEventBody
+{
+    [JsonPropertyName("reason")]
+    public string Reason { get; set; } = "changed";
+
+    [JsonPropertyName("breakpoint")]
+    public Breakpoint Breakpoint { get; set; } = new();
+}
+
 public record TerminatedEventBody;
 
 public record InitializedEventBody;

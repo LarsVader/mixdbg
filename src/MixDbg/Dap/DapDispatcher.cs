@@ -56,24 +56,32 @@ public sealed class DapDispatcher
 
             try
             {
+                var argsStr = request.Arguments.HasValue
+                    ? request.Arguments.Value.ToString() : "null";
+                MixDbg.Engine.Log.Write($"DAP request: seq={request.Seq} cmd={request.Command} args={argsStr}");
+
                 if (_handlers.TryGetValue(request.Command, out var handler))
                 {
                     var body = handler(request);
                     _server.SendResponse(request, body);
+                    MixDbg.Engine.Log.Write($"DAP response: cmd={request.Command} success=true");
                 }
                 else
                 {
                     _server.SendErrorResponse(request, $"Unknown command: {request.Command}");
+                    MixDbg.Engine.Log.Write($"DAP response: cmd={request.Command} UNKNOWN");
                 }
             }
             catch (DisconnectException)
             {
                 _server.SendResponse(request);
+                MixDbg.Engine.Log.Write($"DAP disconnect");
                 break;
             }
             catch (Exception ex)
             {
                 _server.SendErrorResponse(request, ex.Message);
+                MixDbg.Engine.Log.Write($"DAP error: cmd={request.Command} err={ex.Message}");
             }
         }
     }

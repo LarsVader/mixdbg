@@ -21,6 +21,9 @@ public sealed class DebugSession : IDisposable
     private readonly DapServer _server;
     private NativeDebugger? _engine;
 
+    // Breakpoints received before launch — applied in ConfigurationDone.
+    private readonly List<SetBreakpointsArguments> _pendingBreakpoints = new();
+
     public DebugSession(DapServer server)
     {
         _server = server;
@@ -46,11 +49,26 @@ public sealed class DebugSession : IDisposable
     {
         State = SessionState.Configured;
 
-        // If we have an engine (launch/attach already called),
-        // the engine is already running WaitForEvent.
-        // The target starts running after ConfigurationDone.
         if (_engine != null)
         {
+            // Apply breakpoints that arrived before launch.
+            foreach (var pending in _pendingBreakpoints)
+            {
+                var bps = _engine.SetBreakpoints(
+                    pending.Source.Path!, pending.Breakpoints);
+                // Notify client that breakpoints are now verified.
+                foreach (var bp in bps)
+                {
+                    Log.Write($"Sending breakpoint changed: id={bp.Id} verified={bp.Verified}");
+                    _server.SendEvent("breakpoint", new BreakpointEventBody
+                    {
+                        Reason = "changed",
+                        Breakpoint = bp,
+                    });
+                }
+            }
+            _pendingBreakpoints.Clear();
+
             _engine.Continue();
             State = SessionState.Running;
         }
@@ -62,13 +80,21 @@ public sealed class DebugSession : IDisposable
             ? string.Join(";", args.SymbolPath)
             : null;
 
-        // Add the program's directory to symbol path
         var progDir = Path.GetDirectoryName(args.Program);
         if (progDir != null)
         {
-            symbolPath = symbolPath != null
-                ? $"{progDir};{symbolPath}"
-                : progDir;
+            // Walk up to find the solution root so PDBs in
+            // sibling output dirs (e.g. x64/Debug) are found.
+            var root = progDir;
+            for (int up = 0; up < 5; up++)
+            {
+                var parent = Path.GetDirectoryName(root);
+                if (parent == null) break;
+                root = parent;
+            }
+            symbolPath = string.Join(";",
+                new[] { progDir, root, symbolPath }
+                    .Where(s => s != null));
         }
 
         _engine = new NativeDebugger(_server);
@@ -99,14 +125,22 @@ public sealed class DebugSession : IDisposable
     {
         if (_engine == null || args.Source.Path == null)
         {
+            // Engine not ready yet — store for later.
+            if (args.Source.Path != null)
+                _pendingBreakpoints.Add(args);
+
+            var ext = Path.GetExtension(args.Source.Path ?? "").ToLowerInvariant();
+            bool isNative = ext is ".cpp" or ".c" or ".cc" or ".cxx" or ".h" or ".hpp";
+
             return new SetBreakpointsResponseBody
             {
                 Breakpoints = args.Breakpoints.Select((bp, i) => new Breakpoint
                 {
-                    Id = i + 1,
-                    Verified = false,
+                    Id = i,
+                    Verified = isNative,
                     Line = bp.Line,
-                    Message = "No debug session active",
+                    Source = args.Source,
+                    Message = isNative ? null : "Managed breakpoints not yet supported",
                 }).ToArray(),
             };
         }
