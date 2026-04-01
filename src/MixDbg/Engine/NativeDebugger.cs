@@ -538,11 +538,50 @@ public sealed class NativeDebugger : IDisposable
         });
     }
 
+    private static bool IsNativeFile(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is not ".cpp" and not ".c" and not ".cc" and not ".cxx"
+            and not ".h" and not ".hpp")
+            return false;
+
+        // Check if the file's directory has a vcxproj with CLRSupport
+        // (C++/CLI) — those compile to IL, not debuggable via dbgeng.
+        var dir = Path.GetDirectoryName(path);
+        if (dir != null)
+        {
+            try
+            {
+                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                {
+                    var text = File.ReadAllText(vcx);
+                    if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+            }
+            catch { /* ignore IO errors */ }
+        }
+        return true;
+    }
+
     private Breakpoint[] SetBreakpointsOnEngine(string filePath, SourceBreakpoint[] requested)
     {
         Log.Write($"SetBreakpointsOnEngine: file={filePath} count={requested.Length}");
         foreach (var r in requested)
             Log.Write($"  requested: line={r.Line}");
+
+        // Managed files can't be debugged via dbgeng yet (M4).
+        if (!IsNativeFile(filePath))
+        {
+            Log.Write($"  Skipping non-native file: {filePath}");
+            return requested.Select((bp, i) => new Breakpoint
+            {
+                Id = i,
+                Verified = false,
+                Line = bp.Line,
+                Message = "Managed breakpoints not yet supported",
+            }).ToArray();
+        }
 
         // Remove old breakpoints for this file
         var keysToRemove = _breakpointIds.Keys
