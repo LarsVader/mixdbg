@@ -3,6 +3,13 @@ using MixDbg.Engine.DbgEng;
 
 namespace MixDbg.Models;
 
+/// <summary>
+/// Mutable state for the native debug engine. Holds dbgeng COM interface
+/// references (thread-affine to the engine thread), volatile flags for
+/// cross-thread signaling, a command queue for marshaling DAP handler
+/// calls to the engine thread, and breakpoint tracking state.
+/// Dispose tears down the engine thread and releases all resources.
+/// </summary>
 public sealed class NativeDebuggerModel : IDisposable
 {
     // COM interfaces — set during engine initialization on the engine thread.

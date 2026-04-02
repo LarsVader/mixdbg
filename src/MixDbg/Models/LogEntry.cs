@@ -1,5 +1,8 @@
 namespace MixDbg.Models;
 
+/// <summary>
+/// Severity level for a log entry.
+/// </summary>
 public enum LogLevel
 {
     Info,
@@ -7,6 +10,10 @@ public enum LogLevel
     Error,
 }
 
+/// <summary>
+/// Immutable log entry with timestamp, severity, auto-detected caller
+/// file name, and message text.
+/// </summary>
 public sealed record LogEntry(
     DateTime Timestamp,
     LogLevel Level,

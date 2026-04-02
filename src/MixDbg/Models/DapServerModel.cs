@@ -1,5 +1,10 @@
 namespace MixDbg.Models;
 
+/// <summary>
+/// Mutable state for the DAP transport. Holds the stdin/stdout streams,
+/// a write lock for thread-safe output, and an atomic sequence counter
+/// for DAP message numbering.
+/// </summary>
 public sealed class DapServerModel
 {
     internal Stream Input { get; }
