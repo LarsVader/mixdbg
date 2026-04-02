@@ -68,22 +68,24 @@ The core loop is:
 ```
                     Main Thread                    Engine Thread
                     ──────────                    ─────────────
-nvim-dap ──stdio──> DapServer
+nvim-dap ──stdio──> IDapServer
                       │
-                    DapDispatcher
+                    IDapDispatcher
                       │ (routes requests)
                       v
-                    DebugSession ──command queue──> NativeDebugger
+                    IDebugSession ──command queue──> INativeDebugger
                       │                              │
                       │                            dbgeng COM calls
                       │                            WaitForEvent loop
                       │                              │
                       │  <───── DAP events ────────  │
                       v                              v
-                    DapServer                      dbgeng.dll
+                    IDapServer                     dbgeng.dll
                       │                              │
 nvim-dap <──stdio────                            [target.exe]
 ```
+
+All services are stateless singletons; mutable state lives in model objects (`DapServerModel`, `DapDispatcherModel`, `DebugSessionModel`, `NativeDebuggerModel`). Services receive their models via DI and pass them as the first parameter to every method.
 
 **Two threads, one queue:**
 
@@ -91,18 +93,18 @@ nvim-dap <──stdio────                            [target.exe]
 
 2. **Engine thread** creates the dbgeng client, launches the process, and runs the `WaitForEvent` loop. When the target stops, it processes queued commands (breakpoints, stack trace requests, etc.) and sends DAP events back via the server.
 
-The `BlockingCollection<Action>` is the bridge. When a handler needs engine data:
+The `BlockingCollection<Action>` in `NativeDebuggerModel` is the bridge. When a handler needs engine data:
 
 ```csharp
 // Main thread (inside stackTrace handler):
 var tcs = new TaskCompletionSource<StackFrame[]>();
-_commands.Add(() => {                    // Queue work for engine thread
-    tcs.SetResult(GetStackTraceOnEngine());
+model.Commands.Add(() => {               // Queue work for engine thread
+    tcs.SetResult(GetStackTraceOnEngine(model));
 });
 return tcs.Task.Result;                  // Block until engine processes it
 
 // Engine thread (in command processing loop):
-var cmd = _commands.Take();              // Dequeue
+var cmd = model.Commands.Take();         // Dequeue
 cmd();                                   // Execute — sets the TaskCompletionSource result
 ```
 
@@ -187,7 +189,7 @@ We implement `IDebugEventCallbacks` to receive events during `WaitForEvent`:
 public int Breakpoint(IDebugBreakpoint Bp)
 {
     Bp.GetId(out var id);
-    _hitUserBreakpoint = _userBreakpointIds.Contains(id);
+    model.HitUserBreakpoint = model.UserBreakpointIds.Contains(id);
     return StatusBreak;  // Tell dbgeng to stop (WaitForEvent returns)
 }
 ```
@@ -233,7 +235,7 @@ The adapter checks file extensions AND scans the vcxproj for `<CLRSupport>` to c
 
 ## Diagnostic Logging
 
-All debug sessions write to `~/mixdbg.log` with timestamped entries:
+All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in `LogStore`). Each entry is timestamped and tagged with the calling file name (via `[CallerFilePath]`):
 - DAP requests/responses
 - dbgeng events (type, thread, description)
 - Breakpoint resolution (GetOffsetByLine results, deferred breakpoint creation)

@@ -74,7 +74,7 @@ src/MixDbg/
 Two threads, one command queue:
 
 - **Main thread**: reads DAP requests from stdin, dispatches to handlers. Handlers that need engine data queue a command + `TaskCompletionSource` and block.
-- **Engine thread**: all dbgeng COM calls happen here (thread affinity required). Runs `WaitForEvent` loop. When target stops, processes queued commands, sends DAP events via `DapServer`.
+- **Engine thread**: all dbgeng COM calls happen here (thread affinity required). Runs `WaitForEvent` loop. When target stops, processes queued commands, sends DAP events via `IDapServer`.
 
 ## Critical Implementation Details
 
@@ -102,7 +102,7 @@ Current settings: `Breakpoint` → BREAK, `CreateProcess` → BREAK, `ExitProces
 
 ### Thread Affinity
 
-ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace`, etc.) MUST happen on the engine thread. The `Launch`/`Attach` methods save parameters and signal the engine thread, which does the actual COM work. Main thread blocks on `_engineReady` until init completes.
+ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace`, etc.) MUST happen on the engine thread. The `Launch`/`Attach` service methods save parameters in `NativeDebuggerModel` and signal the engine thread, which does the actual COM work. Main thread blocks on `model.EngineReady` until init completes.
 
 ### Process Startup Sequence
 
@@ -113,11 +113,11 @@ ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace
 
 ### Breakpoints
 
-- Before engine exists: stored as pending in `DebugSession._pendingBreakpoints`, applied in `ConfigurationDone`.
+- Before engine exists: stored as pending in `DebugSessionModel.PendingBreakpoints`, applied in `ConfigurationDone`.
 - At initial stop, `GetOffsetByLine` usually fails (module not loaded). Fallback: `bu` command (deferred breakpoint) — dbgeng resolves when module loads.
 - Breakpoint IDs: dbgeng assigns 0-based IDs. Pending responses use IDs starting at 1000 to avoid collision.
-- `_userBreakpointIds` HashSet tracks which dbgeng breakpoint IDs are ours (vs system breakpoints).
-- `IsNativeFile` check: rejects `.cs` files AND `.cpp` files in C++/CLI projects (scans vcxproj for `<CLRSupport>`).
+- `NativeDebuggerModel.UserBreakpointIds` HashSet tracks which dbgeng breakpoint IDs are ours (vs system breakpoints).
+- `ISourceFileService.IsNativeFile` check: rejects `.cs` files AND `.cpp` files in C++/CLI projects (scans vcxproj for `<CLRSupport>`).
 
 ### Diagnostic Logging
 
