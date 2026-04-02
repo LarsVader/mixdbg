@@ -1,17 +1,18 @@
 using System.Text.Json;
+using MixDbg.Dap;
 using MixDbg.Models;
-using MixDbg.Services;
 
-namespace MixDbg.Dap;
+namespace MixDbg.Services;
 
 /// <summary>
-/// Routes DAP requests to handler methods and manages the request/response lifecycle.
+/// Stateless DAP dispatcher service. All mutable state lives in
+/// <see cref="DapDispatcherModel"/>.
 /// </summary>
-public sealed class DapDispatcher(
+internal sealed class DapDispatcherService(
     IDapServer server,
     DapServerModel transport,
     ILoggingService log,
-    LogStore logStore)
+    LogStore logStore) : IDapDispatcher
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -22,34 +23,25 @@ public sealed class DapDispatcher(
     private readonly DapServerModel _transport = transport;
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
-    private readonly Dictionary<string, Func<RequestMessage, object?>> _handlers = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Registers a handler for a DAP command. The handler returns
-    /// a response body (or null for commands with no body).
-    /// </summary>
-    public void Register(string command, Func<RequestMessage, object?> handler)
+    public DapDispatcherModel CreateModel()
+        => new();
+
+    public void Register(DapDispatcherModel model, string command, Func<RequestMessage, object?> handler)
     {
-        _handlers[command] = handler;
+        model.Handlers[command] = handler;
     }
 
-    /// <summary>
-    /// Convenience overload for handlers that deserialize arguments.
-    /// </summary>
-    public void Register<TArgs>(string command, Func<TArgs, object?> handler)
+    public void Register<TArgs>(DapDispatcherModel model, string command, Func<TArgs, object?> handler)
     {
-        _handlers[command] = req =>
+        model.Handlers[command] = req =>
         {
             var args = DeserializeArgs<TArgs>(req);
             return handler(args);
         };
     }
 
-    /// <summary>
-    /// Reads and dispatches requests until the stream closes or
-    /// disconnect is received.
-    /// </summary>
-    public void Run()
+    public void Run(DapDispatcherModel model)
     {
         while (true)
         {
@@ -62,7 +54,7 @@ public sealed class DapDispatcher(
                     ? request.Arguments.Value.ToString() : "null";
                 _log.LogInfo(_logStore, $"DAP request: seq={request.Seq} cmd={request.Command} args={argsStr}");
 
-                if (_handlers.TryGetValue(request.Command, out var handler))
+                if (model.Handlers.TryGetValue(request.Command, out var handler))
                 {
                     var body = handler(request);
                     _server.SendResponse(_transport, request, body);
@@ -88,7 +80,7 @@ public sealed class DapDispatcher(
         }
     }
 
-    public static TArgs DeserializeArgs<TArgs>(RequestMessage request)
+    internal static TArgs DeserializeArgs<TArgs>(RequestMessage request)
     {
         if (request.Arguments is null)
             return Activator.CreateInstance<TArgs>();
@@ -97,8 +89,3 @@ public sealed class DapDispatcher(
             ?? Activator.CreateInstance<TArgs>();
     }
 }
-
-/// <summary>
-/// Thrown by the disconnect handler to cleanly exit the dispatch loop.
-/// </summary>
-public sealed class DisconnectException : Exception;

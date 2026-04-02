@@ -1,173 +1,111 @@
-using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
-using System.Text;
 using MixDbg.Dap;
 using MixDbg.Engine.DbgEng;
 using MixDbg.Models;
-using MixDbg.Services;
 
-namespace MixDbg.Engine;
+namespace MixDbg.Services;
 
 /// <summary>
-/// Wraps dbgeng for native debugging. Runs WaitForEvent on a
-/// dedicated engine thread. DAP handlers queue commands that
-/// execute when the target is stopped.
+/// Stateless dbgeng wrapper service. All mutable state lives in
+/// <see cref="NativeDebuggerModel"/>.
 /// </summary>
-public sealed class NativeDebugger(
+internal sealed class NativeDebuggerService(
     IDapServer server,
     DapServerModel transport,
     ILoggingService log,
     LogStore logStore,
-    ISourceFileService sourceFiles) : IDisposable
+    ISourceFileService sourceFiles) : INativeDebugger
 {
-    private IDebugClient _client = null!;
-    private IDebugControl _control = null!;
-    private IDebugSymbols _symbols = null!;
-    private IDebugSystemObjects _sysObjects = null!;
-    private EventCallbacks _callbacks = null!;
-    private Thread? _engineThread;
-    private volatile bool _terminated;
-    private volatile bool _targetExited;
-    private volatile bool _configDone;
-    private volatile bool _stepping;
-    private volatile bool _pauseRequested;
-
-    // Set of dbgeng breakpoint IDs we created (user breakpoints).
-    private readonly HashSet<uint> _userBreakpointIds = new();
-
-    // The breakpoint ID that was just hit (set by callback).
-    private uint _lastHitBpId;
-    private volatile bool _hitUserBreakpoint;
-
-    // Command queue: main thread queues, engine thread executes.
-    private readonly BlockingCollection<Action> _commands = new();
-
-    // Signaled when the target is stopped and ready for commands.
-    private readonly ManualResetEventSlim _stopped = new(false);
-
-    // DAP server for sending events.
     private readonly IDapServer _server = server;
     private readonly DapServerModel _transport = transport;
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
     private readonly ISourceFileService _sourceFiles = sourceFiles;
 
-    // Track breakpoints: DAP source:line -> dbgeng breakpoint id
-    private readonly Dictionary<string, uint> _breakpointIds = new();
-    private int _nextBpId;
-
-    public bool IsTargetStopped => _stopped.IsSet;
-
-    // SignalConfigDone removed — _configDone is set on the
-    // engine thread when the first Continue is processed.
-
-    // Saved launch/attach parameters — actual work happens on engine thread.
-    private string? _launchProgram;
-    private string? _launchCwd;
-    private uint _attachPid;
-    private string? _symbolPath;
-    private bool _isAttach;
-    private readonly ManualResetEventSlim _engineReady = new(false);
-    private Exception? _engineInitError;
-
-    /// <summary>
-    /// Creates the dbgeng client and attaches to a process.
-    /// Blocks until the engine thread has initialized.
-    /// </summary>
-    public void Attach(uint pid, string? symbolPath)
+    public NativeDebuggerModel CreateModel()
     {
-        _isAttach = true;
-        _attachPid = pid;
-        _symbolPath = symbolPath;
-        StartEngineThread();
-        _engineReady.Wait();
-        if (_engineInitError != null)
-            throw _engineInitError;
+        var model = new NativeDebuggerModel();
+        model.DisposeAction = () =>
+        {
+            model.Terminated = true;
+            model.Commands.CompleteAdding();
+            model.EngineThread?.Join(3000);
+            model.Commands.Dispose();
+            model.Stopped.Dispose();
+            model.EngineReady.Dispose();
+        };
+        return model;
     }
 
-    /// <summary>
-    /// Creates the dbgeng client and launches a process.
-    /// Blocks until the engine thread has initialized.
-    /// </summary>
-    public void Launch(string program, string? cwd, string? symbolPath)
+    public void Attach(NativeDebuggerModel model, uint pid, string? symbolPath)
     {
-        _isAttach = false;
-        _launchProgram = program;
-        _launchCwd = cwd;
-        _symbolPath = symbolPath;
-        StartEngineThread();
-        _engineReady.Wait();
-        if (_engineInitError != null)
-            throw _engineInitError;
+        model.IsAttach = true;
+        model.AttachPid = pid;
+        model.SymbolPath = symbolPath;
+        StartEngineThread(model);
+        model.EngineReady.Wait();
+        if (model.EngineInitError != null)
+            throw model.EngineInitError;
     }
 
-    /// <summary>
-    /// Continues execution (all threads).
-    /// </summary>
-    public void Continue()
+    public void Launch(NativeDebuggerModel model, string program, string? cwd, string? symbolPath)
+    {
+        model.IsAttach = false;
+        model.LaunchProgram = program;
+        model.LaunchCwd = cwd;
+        model.SymbolPath = symbolPath;
+        StartEngineThread(model);
+        model.EngineReady.Wait();
+        if (model.EngineInitError != null)
+            throw model.EngineInitError;
+    }
+
+    public void Continue(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "Continue queued");
-        _commands.Add(() =>
+        model.Commands.Add(() =>
         {
             _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
-            _configDone = true;
-            Check(_control.SetExecutionStatus(DebugStatus.Go));
+            model.ConfigDone = true;
+            Check(model.Control.SetExecutionStatus(DebugStatus.Go));
         });
     }
 
-    /// <summary>
-    /// Requests the target to break (pause).
-    /// Thread-safe — can be called while target is running.
-    /// </summary>
-    public void Break()
+    public void Break(NativeDebuggerModel model)
     {
-        _pauseRequested = true;
-        _control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
+        model.PauseRequested = true;
+        model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
     }
 
-    /// <summary>
-    /// Step over one source line.
-    /// </summary>
-    public void StepOver()
+    public void StepOver(NativeDebuggerModel model)
     {
-        QueueStep(DebugStatus.StepOver);
+        QueueStep(model, DebugStatus.StepOver);
     }
 
-    /// <summary>
-    /// Step into the next call.
-    /// </summary>
-    public void StepInto()
+    public void StepInto(NativeDebuggerModel model)
     {
-        QueueStep(DebugStatus.StepInto);
+        QueueStep(model, DebugStatus.StepInto);
     }
 
-    /// <summary>
-    /// Step out of the current function.
-    /// </summary>
-    public void StepOut()
+    public void StepOut(NativeDebuggerModel model)
     {
         // dbgeng doesn't have a direct step-out status.
         // Use the "gu" (go up) command instead.
-        _commands.Add(() =>
+        model.Commands.Add(() =>
         {
-            _control.Execute(DebugOutCtl.Ignore, "gu", DebugExecute.NotLogged);
+            model.Control.Execute(DebugOutCtl.Ignore, "gu", DebugExecute.NotLogged);
         });
     }
 
-    /// <summary>
-    /// Sets breakpoints for a source file. Returns the breakpoint results.
-    /// </summary>
-    public Breakpoint[] SetBreakpoints(string filePath, SourceBreakpoint[] requested)
+    public Breakpoint[] SetBreakpoints(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
     {
-        // This needs to run on the engine thread for symbol resolution.
-        // If target is stopped, execute directly. Otherwise, queue.
         var tcs = new TaskCompletionSource<Breakpoint[]>();
 
-        _commands.Add(() =>
+        model.Commands.Add(() =>
         {
             try
             {
-                tcs.SetResult(SetBreakpointsOnEngine(filePath, requested));
+                tcs.SetResult(SetBreakpointsOnEngine(model, filePath, requested));
             }
             catch (Exception ex)
             {
@@ -175,22 +113,18 @@ public sealed class NativeDebugger(
             }
         });
 
-        // Wait for engine thread to process
         return tcs.Task.Result;
     }
 
-    /// <summary>
-    /// Gets the current call stack.
-    /// </summary>
-    public StackFrame[] GetStackTrace(int maxFrames)
+    public StackFrame[] GetStackTrace(NativeDebuggerModel model, int maxFrames)
     {
         var tcs = new TaskCompletionSource<StackFrame[]>();
 
-        _commands.Add(() =>
+        model.Commands.Add(() =>
         {
             try
             {
-                tcs.SetResult(GetStackTraceOnEngine(maxFrames));
+                tcs.SetResult(GetStackTraceOnEngine(model, maxFrames));
             }
             catch (Exception ex)
             {
@@ -201,18 +135,15 @@ public sealed class NativeDebugger(
         return tcs.Task.Result;
     }
 
-    /// <summary>
-    /// Gets all debugger threads.
-    /// </summary>
-    public DapThread[] GetThreads()
+    public DapThread[] GetThreads(NativeDebuggerModel model)
     {
         var tcs = new TaskCompletionSource<DapThread[]>();
 
-        _commands.Add(() =>
+        model.Commands.Add(() =>
         {
             try
             {
-                tcs.SetResult(GetThreadsOnEngine());
+                tcs.SetResult(GetThreadsOnEngine(model));
             }
             catch (Exception ex)
             {
@@ -223,17 +154,14 @@ public sealed class NativeDebugger(
         return tcs.Task.Result;
     }
 
-    /// <summary>
-    /// Gets the engine thread ID that hit the last event.
-    /// </summary>
-    public int GetStoppedThreadId()
+    public int GetStoppedThreadId(NativeDebuggerModel model)
     {
         var tcs = new TaskCompletionSource<int>();
-        _commands.Add(() =>
+        model.Commands.Add(() =>
         {
             try
             {
-                _sysObjects.GetEventThread(out var id);
+                model.SysObjects.GetEventThread(out var id);
                 tcs.SetResult((int)id);
             }
             catch (Exception ex)
@@ -244,50 +172,40 @@ public sealed class NativeDebugger(
         return tcs.Task.Result;
     }
 
-    public void Terminate()
+    public void Terminate(NativeDebuggerModel model)
     {
-        _terminated = true;
-        if (!_targetExited)
+        model.Terminated = true;
+        if (!model.TargetExited)
         {
-            try { _client.TerminateProcesses(); } catch { }
+            try { model.Client.TerminateProcesses(); } catch { }
         }
-        try { _client.EndSession(DebugEnd.ActiveTerminate); } catch { }
-        _commands.Add(() => { }); // Wake the engine thread
+        try { model.Client.EndSession(DebugEnd.ActiveTerminate); } catch { }
+        model.Commands.Add(() => { }); // Wake the engine thread
     }
 
-    public void Detach()
+    public void Detach(NativeDebuggerModel model)
     {
-        _terminated = true;
-        try { _client.DetachProcesses(); } catch { }
-        try { _client.EndSession(DebugEnd.ActiveDetach); } catch { }
-        _commands.Add(() => { }); // Wake the engine thread
-    }
-
-    public void Dispose()
-    {
-        _terminated = true;
-        _commands.CompleteAdding();
-        _engineThread?.Join(3000);
-        _commands.Dispose();
-        _stopped.Dispose();
-        _engineReady.Dispose();
+        model.Terminated = true;
+        try { model.Client.DetachProcesses(); } catch { }
+        try { model.Client.EndSession(DebugEnd.ActiveDetach); } catch { }
+        model.Commands.Add(() => { }); // Wake the engine thread
     }
 
     // ── Private ─────────────────────────────────────────
 
-    private void CreateEngine(string? symbolPath)
+    private void CreateEngine(NativeDebuggerModel model)
     {
         var iid = typeof(IDebugClient).GUID;
         Check(DbgEngNative.DebugCreate(ref iid, out var obj));
-        _client = (IDebugClient)obj;
-        _control = (IDebugControl)obj;
-        _symbols = (IDebugSymbols)obj;
-        _sysObjects = (IDebugSystemObjects)obj;
+        model.Client = (IDebugClient)obj;
+        model.Control = (IDebugControl)obj;
+        model.Symbols = (IDebugSymbols)obj;
+        model.SysObjects = (IDebugSystemObjects)obj;
 
-        _callbacks = new EventCallbacks();
-        _callbacks.OnBreakpoint += OnBreakpoint;
-        _callbacks.OnExitProcess += OnExitProcess;
-        _callbacks.OnCreateProcess += name =>
+        model.Callbacks = new EventCallbacks();
+        model.Callbacks.OnBreakpoint += bp => OnBreakpoint(model, bp);
+        model.Callbacks.OnExitProcess += code => OnExitProcess(model, code);
+        model.Callbacks.OnCreateProcess += name =>
         {
             _server.SendEvent(_transport, "output", new OutputEventBody
             {
@@ -295,74 +213,74 @@ public sealed class NativeDebugger(
                 Output = $"[mixdbg] Process created: {name}\n",
             });
         };
-        _callbacks.OnLoadModule += (mod, img) =>
+        model.Callbacks.OnLoadModule += (mod, img) =>
         {
             // Silent — could log if needed
         };
 
-        Check(_client.SetEventCallbacks(_callbacks));
+        Check(model.Client.SetEventCallbacks(model.Callbacks));
 
         // Enable source-line loading
-        _symbols.SetSymbolOptions(SymOpt.LoadLines | SymOpt.DeferredLoads | SymOpt.UndName);
+        model.Symbols.SetSymbolOptions(SymOpt.LoadLines | SymOpt.DeferredLoads | SymOpt.UndName);
 
-        if (symbolPath != null)
-            _symbols.SetSymbolPath(symbolPath);
+        if (model.SymbolPath != null)
+            model.Symbols.SetSymbolPath(model.SymbolPath);
     }
 
-    private void StartEngineThread()
+    private void StartEngineThread(NativeDebuggerModel model)
     {
-        _engineThread = new Thread(EngineLoop)
+        model.EngineThread = new Thread(() => EngineLoop(model))
         {
             Name = "dbgeng-engine",
             IsBackground = true,
         };
-        _engineThread.Start();
+        model.EngineThread.Start();
     }
 
-    private void EngineLoop()
+    private void EngineLoop(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "EngineLoop started — initializing dbgeng on engine thread");
         try
         {
             // All dbgeng COM calls must happen on this thread.
-            CreateEngine(_symbolPath);
+            CreateEngine(model);
 
-            if (_isAttach)
+            if (model.IsAttach)
             {
-                _log.LogInfo(_logStore, $"Attach: pid={_attachPid}");
-                Check(_client.AttachProcess(0, _attachPid, DebugAttach.Default));
+                _log.LogInfo(_logStore, $"Attach: pid={model.AttachPid}");
+                Check(model.Client.AttachProcess(0, model.AttachPid, DebugAttach.Default));
             }
             else
             {
-                if (_launchCwd != null)
-                    _symbols.SetSourcePath(_launchCwd);
+                if (model.LaunchCwd != null)
+                    model.Symbols.SetSourcePath(model.LaunchCwd);
 
-                _log.LogInfo(_logStore, $"Launch: CreateProcess({_launchProgram})");
-                Check(_client.CreateProcess(
+                _log.LogInfo(_logStore, $"Launch: CreateProcess({model.LaunchProgram})");
+                Check(model.Client.CreateProcess(
                     0,
-                    _launchProgram!,
+                    model.LaunchProgram!,
                     CreateProcessFlags.DebugOnlyThisProcess | CreateProcessFlags.CreateNewConsole));
                 _log.LogInfo(_logStore, "Launch: CreateProcess succeeded");
             }
 
             // Signal the main thread that init is done.
-            _engineReady.Set();
+            model.EngineReady.Set();
 
-            while (!_terminated)
+            while (!model.Terminated)
             {
                 _log.LogInfo(_logStore, "WaitForEvent...");
-                int hr = _control.WaitForEvent(0, 0xFFFFFFFF); // INFINITE
+                int hr = model.Control.WaitForEvent(0, 0xFFFFFFFF); // INFINITE
                 _log.LogInfo(_logStore, $"WaitForEvent returned hr=0x{hr:X8}");
                 if (hr < 0)
                 {
-                    _log.LogInfo(_logStore, $"WaitForEvent failed, terminated={_terminated} exited={_targetExited}");
+                    _log.LogInfo(_logStore, $"WaitForEvent failed, terminated={model.Terminated} exited={model.TargetExited}");
                     break;
                 }
 
                 // Target is now stopped.
-                _stopped.Set();
+                model.Stopped.Set();
 
-                if (_targetExited)
+                if (model.TargetExited)
                 {
                     _log.LogInfo(_logStore, "Target exited, sending terminated event");
                     _server.SendEvent(_transport, "terminated", new TerminatedEventBody());
@@ -371,44 +289,44 @@ public sealed class NativeDebugger(
 
                 // Get last event info for logging
                 IntPtr descBuf = Marshal.AllocHGlobal(256);
-                _control.GetLastEventInformation(
+                model.Control.GetLastEventInformation(
                     out var evtType, out var evtPid, out var evtTid,
                     IntPtr.Zero, 0, out _,
                     descBuf, 256, out _);
                 var desc = Marshal.PtrToStringAnsi(descBuf) ?? "";
                 Marshal.FreeHGlobal(descBuf);
                 _log.LogInfo(_logStore, $"Event: type=0x{evtType:X} pid={evtPid} tid={evtTid} desc=\"{desc}\"");
-                _log.LogInfo(_logStore, $"State: configDone={_configDone} hitUserBp={_hitUserBreakpoint} stepping={_stepping} pause={_pauseRequested}");
+                _log.LogInfo(_logStore, $"State: configDone={model.ConfigDone} hitUserBp={model.HitUserBreakpoint} stepping={model.Stepping} pause={model.PauseRequested}");
 
-                if (!_configDone)
+                if (!model.ConfigDone)
                 {
                     _log.LogInfo(_logStore, "Pre-configDone: processing commands until resume");
-                    ProcessCommandsUntilResume();
+                    ProcessCommandsUntilResume(model);
                     continue;
                 }
 
                 // After configurationDone: determine stop reason.
                 string? reason = null;
 
-                if (_hitUserBreakpoint)
+                if (model.HitUserBreakpoint)
                 {
-                    _hitUserBreakpoint = false;
+                    model.HitUserBreakpoint = false;
                     reason = "breakpoint";
                 }
-                else if (_stepping)
+                else if (model.Stepping)
                 {
-                    _stepping = false;
+                    model.Stepping = false;
                     reason = "step";
                 }
-                else if (_pauseRequested)
+                else if (model.PauseRequested)
                 {
-                    _pauseRequested = false;
+                    model.PauseRequested = false;
                     reason = "pause";
                 }
 
                 if (reason != null)
                 {
-                    _sysObjects.GetEventThread(out var threadId);
+                    model.SysObjects.GetEventThread(out var threadId);
                     _log.LogInfo(_logStore, $"User stop: reason={reason} threadId={threadId}");
                     _server.SendEvent(_transport, "stopped", new StoppedEventBody
                     {
@@ -416,13 +334,13 @@ public sealed class NativeDebugger(
                         ThreadId = (int)threadId,
                         AllThreadsStopped = true,
                     });
-                    ProcessCommandsUntilResume();
+                    ProcessCommandsUntilResume(model);
                 }
                 else
                 {
                     _log.LogInfo(_logStore, "System stop — auto-continuing");
-                    _stopped.Reset();
-                    _control.SetExecutionStatus(DebugStatus.Go);
+                    model.Stopped.Reset();
+                    model.Control.SetExecutionStatus(DebugStatus.Go);
                 }
             }
         }
@@ -430,8 +348,8 @@ public sealed class NativeDebugger(
         {
             _log.LogError(_logStore, $"EngineLoop EXCEPTION: {ex}");
             // If init failed, unblock the main thread.
-            _engineInitError = ex;
-            _engineReady.Set();
+            model.EngineInitError = ex;
+            model.EngineReady.Set();
             _server.SendEvent(_transport, "output", new OutputEventBody
             {
                 Category = "stderr",
@@ -441,15 +359,15 @@ public sealed class NativeDebugger(
         }
     }
 
-    private void ProcessCommandsUntilResume()
+    private void ProcessCommandsUntilResume(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "ProcessCommandsUntilResume: waiting for commands");
-        while (!_terminated)
+        while (!model.Terminated)
         {
             Action cmd;
             try
             {
-                cmd = _commands.Take();
+                cmd = model.Commands.Take();
             }
             catch (InvalidOperationException)
             {
@@ -460,39 +378,39 @@ public sealed class NativeDebugger(
             _log.LogInfo(_logStore, "ProcessCommandsUntilResume: executing command");
             cmd();
 
-            _control.GetExecutionStatus(out var status);
+            model.Control.GetExecutionStatus(out var status);
             _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: execStatus={status}");
             if (status != DebugStatus.Break
                 && status != DebugStatus.NoDebuggee)
             {
                 _log.LogInfo(_logStore, "ProcessCommandsUntilResume: resuming");
-                _stopped.Reset();
+                model.Stopped.Reset();
                 break;
             }
         }
     }
 
-    private void QueueStep(uint stepKind)
+    private static void QueueStep(NativeDebuggerModel model, uint stepKind)
     {
-        _stepping = true;
-        _commands.Add(() =>
+        model.Stepping = true;
+        model.Commands.Add(() =>
         {
-            Check(_control.SetExecutionStatus(stepKind));
+            Check(model.Control.SetExecutionStatus(stepKind));
         });
     }
 
-    private void OnBreakpoint(IDebugBreakpoint bp)
+    private void OnBreakpoint(NativeDebuggerModel model, IDebugBreakpoint bp)
     {
         bp.GetId(out var id);
-        _lastHitBpId = id;
-        _hitUserBreakpoint = _userBreakpointIds.Contains(id);
-        _log.LogInfo(_logStore, $"OnBreakpoint: id={id} isUser={_hitUserBreakpoint} (tracked: [{string.Join(",", _userBreakpointIds)}])");
+        model.LastHitBpId = id;
+        model.HitUserBreakpoint = model.UserBreakpointIds.Contains(id);
+        _log.LogInfo(_logStore, $"OnBreakpoint: id={id} isUser={model.HitUserBreakpoint} (tracked: [{string.Join(",", model.UserBreakpointIds)}])");
 
         // Send verified update so nvim-dap clears the "rejected" marker.
-        if (_hitUserBreakpoint)
+        if (model.HitUserBreakpoint)
         {
             // Find the source:line for this breakpoint ID
-            var entry = _breakpointIds.FirstOrDefault(kv => kv.Value == id);
+            var entry = model.BreakpointIds.FirstOrDefault(kv => kv.Value == id);
             if (entry.Key != null)
             {
                 var parts = entry.Key.Split(':', 2);
@@ -517,9 +435,9 @@ public sealed class NativeDebugger(
         }
     }
 
-    private void OnExitProcess(uint exitCode)
+    private void OnExitProcess(NativeDebuggerModel model, uint exitCode)
     {
-        _targetExited = true;
+        model.TargetExited = true;
         _server.SendEvent(_transport, "output", new OutputEventBody
         {
             Category = "console",
@@ -527,7 +445,7 @@ public sealed class NativeDebugger(
         });
     }
 
-    private Breakpoint[] SetBreakpointsOnEngine(string filePath, SourceBreakpoint[] requested)
+    private Breakpoint[] SetBreakpointsOnEngine(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
     {
         _log.LogInfo(_logStore, $"SetBreakpointsOnEngine: file={filePath} count={requested.Length}");
         foreach (var r in requested)
@@ -547,18 +465,18 @@ public sealed class NativeDebugger(
         }
 
         // Remove old breakpoints for this file
-        var keysToRemove = _breakpointIds.Keys
+        var keysToRemove = model.BreakpointIds.Keys
             .Where(k => k.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase))
             .ToList();
         foreach (var key in keysToRemove)
         {
-            if (_breakpointIds.TryGetValue(key, out var oldId))
+            if (model.BreakpointIds.TryGetValue(key, out var oldId))
             {
-                int hr = _control.GetBreakpointById(oldId, out var oldBp);
+                int hr = model.Control.GetBreakpointById(oldId, out var oldBp);
                 if (hr >= 0)
-                    _control.RemoveBreakpoint(oldBp);
-                _userBreakpointIds.Remove(oldId);
-                _breakpointIds.Remove(key);
+                    model.Control.RemoveBreakpoint(oldBp);
+                model.UserBreakpointIds.Remove(oldId);
+                model.BreakpointIds.Remove(key);
             }
         }
 
@@ -568,32 +486,30 @@ public sealed class NativeDebugger(
             var req = requested[i];
             var key = $"{filePath}:{req.Line}";
 
-            int hr = _symbols.GetOffsetByLine((uint)req.Line, filePath, out var offset);
+            int hr = model.Symbols.GetOffsetByLine((uint)req.Line, filePath, out var offset);
             _log.LogInfo(_logStore, $"  GetOffsetByLine({req.Line}, {filePath}) -> hr=0x{hr:X8} offset=0x{offset:X}");
             if (hr < 0)
             {
                 // GetOffsetByLine failed — module probably not loaded yet.
                 // Use deferred breakpoint via bu command instead.
-                var fileName = Path.GetFileName(filePath);
-                var moduleName = Path.GetFileNameWithoutExtension(filePath);
                 var buCmd = $"bu `{filePath}:{req.Line}`";
                 _log.LogInfo(_logStore, $"  Trying deferred breakpoint: {buCmd}");
-                int buHr = _control.Execute(DebugOutCtl.Ignore, buCmd, DebugExecute.Default);
+                int buHr = model.Control.Execute(DebugOutCtl.Ignore, buCmd, DebugExecute.Default);
                 _log.LogInfo(_logStore, $"  bu result: hr=0x{buHr:X8}");
 
                 if (buHr >= 0)
                 {
                     // Get the ID of the breakpoint we just created
-                    _control.GetNumberBreakpoints(out var bpCount);
+                    model.Control.GetNumberBreakpoints(out var bpCount);
                     uint deferredId = 0;
                     if (bpCount > 0)
                     {
-                        _control.GetBreakpointByIndex(bpCount - 1, out var deferredBp);
+                        model.Control.GetBreakpointByIndex(bpCount - 1, out var deferredBp);
                         if (deferredBp != null)
                         {
                             deferredBp.GetId(out deferredId);
-                            _breakpointIds[key] = deferredId;
-                            _userBreakpointIds.Add(deferredId);
+                            model.BreakpointIds[key] = deferredId;
+                            model.UserBreakpointIds.Add(deferredId);
                         }
                     }
                     _log.LogInfo(_logStore, $"  Deferred bp registered: id={deferredId}");
@@ -613,7 +529,7 @@ public sealed class NativeDebugger(
                 {
                     results[i] = new Breakpoint
                     {
-                        Id = ++_nextBpId,
+                        Id = ++model.NextBpId,
                         Verified = false,
                         Line = req.Line,
                         Message = "Could not resolve source line",
@@ -622,7 +538,7 @@ public sealed class NativeDebugger(
                 continue;
             }
 
-            hr = _control.AddBreakpoint(
+            hr = model.Control.AddBreakpoint(
                 DebugBreakpointType.Code,
                 0xFFFFFFFF, // DEBUG_ANY_ID
                 out var bp);
@@ -630,7 +546,7 @@ public sealed class NativeDebugger(
             {
                 results[i] = new Breakpoint
                 {
-                    Id = ++_nextBpId,
+                    Id = ++model.NextBpId,
                     Verified = false,
                     Line = req.Line,
                     Message = "Failed to create breakpoint",
@@ -642,13 +558,13 @@ public sealed class NativeDebugger(
             bp.AddFlags(DebugBreakpointFlag.Enabled);
             bp.GetId(out var bpId);
 
-            _breakpointIds[key] = bpId;
-            _userBreakpointIds.Add(bpId);
+            model.BreakpointIds[key] = bpId;
+            model.UserBreakpointIds.Add(bpId);
 
             // Resolve back to verify the actual line
             int actualLine = req.Line;
             IntPtr fileOut = Marshal.AllocHGlobal(512);
-            if (_symbols.GetLineByOffset(offset, out var resolvedLine,
+            if (model.Symbols.GetLineByOffset(offset, out var resolvedLine,
                 fileOut, 512, out _, out _) >= 0)
             {
                 actualLine = (int)resolvedLine;
@@ -670,7 +586,7 @@ public sealed class NativeDebugger(
         return results;
     }
 
-    private StackFrame[] GetStackTraceOnEngine(int maxFrames)
+    private StackFrame[] GetStackTraceOnEngine(NativeDebuggerModel model, int maxFrames)
     {
         if (maxFrames <= 0) maxFrames = 50;
         int frameSize = Marshal.SizeOf<DEBUG_STACK_FRAME>();
@@ -678,7 +594,7 @@ public sealed class NativeDebugger(
         IntPtr buf = Marshal.AllocHGlobal(frameSize * maxFrames);
         try
         {
-        int hr = _control.GetStackTrace(0, 0, 0, buf, (uint)maxFrames, out var filled);
+        int hr = model.Control.GetStackTrace(0, 0, 0, buf, (uint)maxFrames, out var filled);
         _log.LogInfo(_logStore, $"GetStackTrace: hr=0x{hr:X8} filled={filled}");
         if (hr < 0) return [];
 
@@ -698,7 +614,7 @@ public sealed class NativeDebugger(
             int line = 0;
 
             // Try to resolve function name
-            int nameHr = _symbols.GetNameByOffset(f.InstructionOffset, nameBuf, 512,
+            int nameHr = model.Symbols.GetNameByOffset(f.InstructionOffset, nameBuf, 512,
                 out _, out var displacement);
             if (nameHr >= 0)
             {
@@ -709,7 +625,7 @@ public sealed class NativeDebugger(
             }
 
             // Try to resolve source location
-            int lineHr = _symbols.GetLineByOffset(f.InstructionOffset, out var srcLine,
+            int lineHr = model.Symbols.GetLineByOffset(f.InstructionOffset, out var srcLine,
                 fileBuf, 512, out _, out _);
             if (lineHr >= 0)
             {
@@ -743,15 +659,15 @@ public sealed class NativeDebugger(
         }
     }
 
-    private DapThread[] GetThreadsOnEngine()
+    private static DapThread[] GetThreadsOnEngine(NativeDebuggerModel model)
     {
-        int hr = _sysObjects.GetNumberThreads(out var count);
+        int hr = model.SysObjects.GetNumberThreads(out var count);
         if (hr < 0 || count == 0)
             return [new DapThread { Id = 1, Name = "Main Thread" }];
 
         var ids = new uint[count];
         var sysIds = new uint[count];
-        _sysObjects.GetThreadIdsByIndex(0, count, ids, sysIds);
+        model.SysObjects.GetThreadIdsByIndex(0, count, ids, sysIds);
 
         var threads = new DapThread[count];
         for (int i = 0; i < count; i++)

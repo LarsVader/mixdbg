@@ -1,15 +1,18 @@
 using MixDbg.Dap;
-using MixDbg.Engine;
+using MixDbg.Models;
+using MixDbg.Services;
 
 namespace MixDbg.Handlers;
 
 public static class InitializeHandler
 {
-    public static void Register(DapDispatcher dispatcher, DebugSession session)
+    public static void Register(
+        IDapDispatcher dispatcher, DapDispatcherModel dispatcherModel,
+        IDebugSession session, DebugSessionModel sessionModel)
     {
-        dispatcher.Register<InitializeRequestArguments>("initialize", args =>
+        dispatcher.Register<InitializeRequestArguments>(dispatcherModel, "initialize", args =>
         {
-            return session.Initialize(args);
+            return session.Initialize(sessionModel, args);
         });
     }
 }

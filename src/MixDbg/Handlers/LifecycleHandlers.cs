@@ -1,45 +1,48 @@
 using MixDbg.Dap;
-using MixDbg.Engine;
+using MixDbg.Models;
+using MixDbg.Services;
 
 namespace MixDbg.Handlers;
 
 public static class LifecycleHandlers
 {
-    public static void Register(DapDispatcher dispatcher, DebugSession session)
+    public static void Register(
+        IDapDispatcher dispatcher, DapDispatcherModel dispatcherModel,
+        IDebugSession session, DebugSessionModel sessionModel)
     {
-        dispatcher.Register<LaunchRequestArguments>("launch", args =>
+        dispatcher.Register<LaunchRequestArguments>(dispatcherModel, "launch", args =>
         {
-            session.Launch(args);
+            session.Launch(sessionModel, args);
             return null;
         });
 
-        dispatcher.Register<AttachRequestArguments>("attach", args =>
+        dispatcher.Register<AttachRequestArguments>(dispatcherModel, "attach", args =>
         {
-            session.Attach(args);
+            session.Attach(sessionModel, args);
             return null;
         });
 
-        dispatcher.Register("configurationDone", _ =>
+        dispatcher.Register(dispatcherModel, "configurationDone", _ =>
         {
-            session.ConfigurationDone();
+            session.ConfigurationDone(sessionModel);
             return null;
         });
 
-        dispatcher.Register<DisconnectArguments>("disconnect", args =>
+        dispatcher.Register<DisconnectArguments>(dispatcherModel, "disconnect", args =>
         {
-            session.Disconnect(args);
+            session.Disconnect(sessionModel, args);
             throw new DisconnectException();
         });
 
-        dispatcher.Register("terminate", _ =>
+        dispatcher.Register(dispatcherModel, "terminate", _ =>
         {
-            session.Disconnect(new DisconnectArguments { TerminateDebuggee = true });
+            session.Disconnect(sessionModel, new DisconnectArguments { TerminateDebuggee = true });
             throw new DisconnectException();
         });
 
-        dispatcher.Register("threads", _ =>
+        dispatcher.Register(dispatcherModel, "threads", _ =>
         {
-            return session.GetThreads();
+            return session.GetThreads(sessionModel);
         });
     }
 }

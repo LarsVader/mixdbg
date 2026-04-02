@@ -1,5 +1,6 @@
 using MixDbg.Dap;
-using MixDbg.Engine;
+using MixDbg.Models;
+using MixDbg.Services;
 
 namespace MixDbg.Handlers;
 
@@ -8,59 +9,61 @@ namespace MixDbg.Handlers;
 /// </summary>
 public static class StubHandlers
 {
-    public static void Register(DapDispatcher dispatcher, DebugSession session)
+    public static void Register(
+        IDapDispatcher dispatcher, DapDispatcherModel dispatcherModel,
+        IDebugSession session, DebugSessionModel sessionModel)
     {
-        dispatcher.Register<SetBreakpointsArguments>("setBreakpoints", args =>
+        dispatcher.Register<SetBreakpointsArguments>(dispatcherModel, "setBreakpoints", args =>
         {
-            return session.SetBreakpoints(args);
+            return session.SetBreakpoints(sessionModel, args);
         });
 
-        dispatcher.Register<ContinueArguments>("continue", _ =>
+        dispatcher.Register<ContinueArguments>(dispatcherModel, "continue", _ =>
         {
-            session.Continue();
+            session.Continue(sessionModel);
             return new ContinueResponseBody { AllThreadsContinued = true };
         });
 
-        dispatcher.Register<StepArguments>("next", _ =>
+        dispatcher.Register<StepArguments>(dispatcherModel, "next", _ =>
         {
-            session.StepOver();
+            session.StepOver(sessionModel);
             return null;
         });
 
-        dispatcher.Register<StepArguments>("stepIn", _ =>
+        dispatcher.Register<StepArguments>(dispatcherModel, "stepIn", _ =>
         {
-            session.StepInto();
+            session.StepInto(sessionModel);
             return null;
         });
 
-        dispatcher.Register<StepArguments>("stepOut", _ =>
+        dispatcher.Register<StepArguments>(dispatcherModel, "stepOut", _ =>
         {
-            session.StepOut();
+            session.StepOut(sessionModel);
             return null;
         });
 
-        dispatcher.Register("pause", _ =>
+        dispatcher.Register(dispatcherModel, "pause", _ =>
         {
-            session.Pause();
+            session.Pause(sessionModel);
             return null;
         });
 
-        dispatcher.Register<StackTraceArguments>("stackTrace", args =>
+        dispatcher.Register<StackTraceArguments>(dispatcherModel, "stackTrace", args =>
         {
-            return session.GetStackTrace(args);
+            return session.GetStackTrace(sessionModel, args);
         });
 
-        dispatcher.Register<ScopesArguments>("scopes", _ =>
+        dispatcher.Register<ScopesArguments>(dispatcherModel, "scopes", _ =>
         {
             return new ScopesResponseBody { Scopes = [] };
         });
 
-        dispatcher.Register<VariablesArguments>("variables", _ =>
+        dispatcher.Register<VariablesArguments>(dispatcherModel, "variables", _ =>
         {
             return new VariablesResponseBody { Variables = [] };
         });
 
-        dispatcher.Register<EvaluateArguments>("evaluate", args =>
+        dispatcher.Register<EvaluateArguments>(dispatcherModel, "evaluate", args =>
         {
             return new EvaluateResponseBody
             {
@@ -70,9 +73,9 @@ public static class StubHandlers
         });
 
         // Silently accept these without error
-        dispatcher.Register("setFunctionBreakpoints", _ => null);
-        dispatcher.Register("setExceptionBreakpoints", _ => null);
-        dispatcher.Register("source", _ => null);
-        dispatcher.Register("loadedSources", _ => null);
+        dispatcher.Register(dispatcherModel, "setFunctionBreakpoints", _ => null);
+        dispatcher.Register(dispatcherModel, "setExceptionBreakpoints", _ => null);
+        dispatcher.Register(dispatcherModel, "source", _ => null);
+        dispatcher.Register(dispatcherModel, "loadedSources", _ => null);
     }
 }

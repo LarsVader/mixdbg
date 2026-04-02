@@ -400,3 +400,8 @@ public record BreakpointEventBody
 public record TerminatedEventBody;
 
 public record InitializedEventBody;
+
+/// <summary>
+/// Thrown by the disconnect handler to cleanly exit the dispatch loop.
+/// </summary>
+public sealed class DisconnectException : Exception;

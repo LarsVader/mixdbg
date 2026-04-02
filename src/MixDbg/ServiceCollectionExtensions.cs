@@ -1,6 +1,4 @@
 using Microsoft.Extensions.DependencyInjection;
-using MixDbg.Dap;
-using MixDbg.Engine;
 using MixDbg.Models;
 using MixDbg.Services;
 
@@ -15,25 +13,19 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ILoggingService, LoggingService>();
         services.AddSingleton<ISourceFileService, SourceFileService>();
         services.AddSingleton<IDapServer, DapServerService>();
+        services.AddSingleton<IDapDispatcher, DapDispatcherService>();
+        services.AddSingleton<IDebugSession, DebugSessionService>();
+        services.AddSingleton<INativeDebugger, NativeDebuggerService>();
 
-        // State models (singletons for the session lifetime)
+        // State models (singletons created by services)
         services.AddSingleton(sp =>
             sp.GetRequiredService<ILoggingService>().CreateStore());
         services.AddSingleton(sp =>
             sp.GetRequiredService<IDapServer>().CreateModel(input, output));
-
-        // State containers
-        services.AddSingleton<DapDispatcher>();
-        services.AddSingleton<DebugSession>();
-
-        // Factory for lazy NativeDebugger creation
-        services.AddSingleton<Func<NativeDebugger>>(sp => () =>
-            new NativeDebugger(
-                sp.GetRequiredService<IDapServer>(),
-                sp.GetRequiredService<DapServerModel>(),
-                sp.GetRequiredService<ILoggingService>(),
-                sp.GetRequiredService<LogStore>(),
-                sp.GetRequiredService<ISourceFileService>()));
+        services.AddSingleton(sp =>
+            sp.GetRequiredService<IDapDispatcher>().CreateModel());
+        services.AddSingleton(sp =>
+            sp.GetRequiredService<IDebugSession>().CreateModel());
 
         return services;
     }

@@ -1,0 +1,50 @@
+using System.Collections.Concurrent;
+using MixDbg.Engine.DbgEng;
+
+namespace MixDbg.Models;
+
+public sealed class NativeDebuggerModel : IDisposable
+{
+    // COM interfaces — set during engine initialization on the engine thread.
+    internal IDebugClient Client { get; set; } = null!;
+    internal IDebugControl Control { get; set; } = null!;
+    internal IDebugSymbols Symbols { get; set; } = null!;
+    internal IDebugSystemObjects SysObjects { get; set; } = null!;
+    internal EventCallbacks Callbacks { get; set; } = null!;
+
+    // Engine thread lifecycle.
+    internal Thread? EngineThread { get; set; }
+    internal volatile bool Terminated;
+    internal volatile bool TargetExited;
+    internal volatile bool ConfigDone;
+    internal volatile bool Stepping;
+    internal volatile bool PauseRequested;
+
+    // Breakpoint tracking.
+    internal HashSet<uint> UserBreakpointIds { get; } = new();
+    internal uint LastHitBpId;
+    internal volatile bool HitUserBreakpoint;
+    internal Dictionary<string, uint> BreakpointIds { get; } = new();
+    internal int NextBpId;
+
+    // Command queue: main thread queues, engine thread executes.
+    internal BlockingCollection<Action> Commands { get; } = new();
+
+    // Signaled when the target is stopped and ready for commands.
+    internal ManualResetEventSlim Stopped { get; } = new(false);
+
+    // Saved launch/attach parameters — actual work happens on engine thread.
+    internal string? LaunchProgram;
+    internal string? LaunchCwd;
+    internal uint AttachPid;
+    internal string? SymbolPath;
+    internal bool IsAttach;
+    internal ManualResetEventSlim EngineReady { get; } = new(false);
+    internal Exception? EngineInitError;
+
+    internal Action? DisposeAction { get; set; }
+
+    public bool IsTargetStopped => Stopped.IsSet;
+
+    public void Dispose() => DisposeAction?.Invoke();
+}

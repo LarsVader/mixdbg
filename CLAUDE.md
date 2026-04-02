@@ -24,29 +24,35 @@ Adapter registered in `C:\Users\LarsVader\AppData\Local\nvim\lua\plugins\debug\n
 ```
 src/MixDbg/
   Program.cs                     # Entry point — DI composition root
-  ServiceCollectionExtensions.cs # AddMixDbgCore() — registers all services
+  ServiceCollectionExtensions.cs # AddMixDbgCore() — registers all services + models
   Dap/
-    DapMessages.cs               # All DAP protocol types as C# records
-    DapServerService.cs          # Stateless DAP transport (Content-Length framing), implements IDapServer
-    DapDispatcher.cs             # Command string → handler routing, logs all requests
+    DapMessages.cs               # All DAP protocol types as C# records, DisconnectException
   Engine/
-    DebugSession.cs              # Orchestrator: state machine, pending breakpoints, delegates to NativeDebugger
-    NativeDebugger.cs            # dbgeng wrapper: launch/attach, breakpoints, stepping, stack traces, threads
     DbgEng/
       Constants.cs               # DEBUG_STATUS_*, breakpoint flags, DebugCreate P/Invoke, DEBUG_STACK_FRAME struct
       Interfaces.cs              # COM interfaces: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSystemObjects, IDebugEventCallbacks
       EventCallbacks.cs          # IDebugEventCallbacks implementation — return values control WaitForEvent behavior
   Models/
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
+    DapDispatcherModel.cs        # Dispatcher state: handler registrations
+    DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
+    NativeDebuggerModel.cs       # Engine state: COM interfaces, threads, flags, breakpoint tracking
     LogEntry.cs                  # Immutable log record (timestamp, level, sender, message)
     LogStore.cs                  # Mutable log state: entries list, lock, file path
   Services/
     Interfaces/
-      IDapServer.cs              # Stateless DAP ops — all methods take DapServerModel
+      IDapServer.cs              # Stateless DAP transport — all methods take DapServerModel
+      IDapDispatcher.cs          # Stateless request dispatcher — all methods take DapDispatcherModel
+      IDebugSession.cs           # Stateless session orchestrator — all methods take DebugSessionModel
+      INativeDebugger.cs         # Stateless dbgeng wrapper — all methods take NativeDebuggerModel
       ILoggingService.cs         # LogInfo/LogWarning/LogError with [CallerFilePath] — all take LogStore
       ISourceFileService.cs      # IsNativeFile(string path)
-    LoggingService.cs            # File + in-memory logger (~/mixdbg.log), extracts caller name
-    SourceFileService.cs         # Native vs managed/CLI file detection
+    DapServerService.cs          # IDapServer: Content-Length framed JSON-RPC transport
+    DapDispatcherService.cs      # IDapDispatcher: command routing, request/response lifecycle
+    DebugSessionService.cs       # IDebugSession: state machine, delegates to INativeDebugger
+    NativeDebuggerService.cs     # INativeDebugger: dbgeng COM wrapper, engine thread, breakpoints
+    LoggingService.cs            # ILoggingService: file + in-memory logger, [CallerFilePath] sender
+    SourceFileService.cs         # ISourceFileService: native vs managed/CLI file detection
   Handlers/
     InitializeHandler.cs         # DAP initialize handshake
     LifecycleHandlers.cs         # launch, attach, configurationDone, disconnect, terminate, threads
@@ -55,7 +61,7 @@ src/MixDbg/
 
 ## Architecture
 
-**DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Follows model+service pattern from zonr: stateless services (`ILoggingService`, `IDapServer`, `ISourceFileService`) are singletons; state lives in models (`LogStore`, `DapServerModel`) created by services and registered as singletons. All service methods take their model as the first parameter. `NativeDebugger` is created lazily via an injected `Func<NativeDebugger>` factory (one per Launch/Attach).
+**DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Follows model+service pattern from zonr: all services are stateless singletons; all mutable state lives in model objects created by services via `CreateModel()` and registered as singletons. Service methods take their model as the first parameter. `NativeDebuggerModel` is created per-session (one per Launch/Attach) by `INativeDebugger.CreateModel()`, stored in `DebugSessionModel.Engine`.
 
 Two threads, one command queue:
 
