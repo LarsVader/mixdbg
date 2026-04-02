@@ -37,8 +37,8 @@ src/MixDbg/
     Events/                      # StoppedEventBody, OutputEventBody, BreakpointEventBody, Terminated/InitializedEventBody
   Engine/
     DbgEng/
-      Constants.cs               # DEBUG_STATUS_*, breakpoint flags, DebugCreate P/Invoke, DEBUG_STACK_FRAME struct
-      Interfaces.cs              # COM interfaces: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSystemObjects, IDebugEventCallbacks
+      Constants/                 # One file per type: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, DebugBreakpoint*, DebugEvent, DebugEnd, DebugExecute, DebugOutCtl, SymOpt, DebugScopeGroup, DEBUG_STACK_FRAME
+      Interfaces/                # One file per COM interface: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSystemObjects, IDebugEventCallbacks
       EventCallbacks.cs          # IDebugEventCallbacks implementation — return values control WaitForEvent behavior
   Models/
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
