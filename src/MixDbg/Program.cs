@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+using MixDbg;
 using MixDbg.Dap;
 using MixDbg.Engine;
 using MixDbg.Handlers;
@@ -6,9 +8,12 @@ using MixDbg.Handlers;
 using var stdin = Console.OpenStandardInput();
 using var stdout = Console.OpenStandardOutput();
 
-var server = new DapServer(stdin, stdout);
-var session = new DebugSession(server);
-var dispatcher = new DapDispatcher(server);
+var services = new ServiceCollection()
+    .AddMixDbgCore(stdin, stdout)
+    .BuildServiceProvider();
+
+var dispatcher = services.GetRequiredService<DapDispatcher>();
+var session = services.GetRequiredService<DebugSession>();
 
 // Register all handlers
 InitializeHandler.Register(dispatcher, session);

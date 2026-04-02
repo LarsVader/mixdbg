@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using MixDbg.Services;
 
 namespace MixDbg.Dap;
 
@@ -7,7 +8,7 @@ namespace MixDbg.Dap;
 /// Reads DAP messages from stdin and writes responses/events to stdout.
 /// DAP uses HTTP-style Content-Length headers followed by JSON bodies.
 /// </summary>
-public sealed class DapServer
+public sealed class DapServer : IDapServer
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
     {

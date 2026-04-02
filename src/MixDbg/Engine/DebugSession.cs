@@ -1,4 +1,5 @@
 using MixDbg.Dap;
+using MixDbg.Services;
 
 namespace MixDbg.Engine;
 
@@ -16,19 +17,21 @@ public enum SessionState
 /// Central orchestrator for the debug session. Manages state transitions
 /// and coordinates between the DAP layer and the debug engine.
 /// </summary>
-public sealed class DebugSession : IDisposable
+public sealed class DebugSession(
+    IDapServer server,
+    ISourceFileService sourceFiles,
+    ILogService log,
+    Func<NativeDebugger> engineFactory) : IDisposable
 {
-    private readonly DapServer _server;
+    private readonly IDapServer _server = server;
+    private readonly ISourceFileService _sourceFiles = sourceFiles;
+    private readonly ILogService _log = log;
+    private readonly Func<NativeDebugger> _engineFactory = engineFactory;
     private NativeDebugger? _engine;
     private int _nextPendingBpId = 1000; // Start high to avoid clashing with dbgeng IDs (0-based)
 
     // Breakpoints received before launch — applied in ConfigurationDone.
     private readonly List<SetBreakpointsArguments> _pendingBreakpoints = new();
-
-    public DebugSession(DapServer server)
-    {
-        _server = server;
-    }
 
     public SessionState State { get; private set; } = SessionState.Uninitialized;
 
@@ -60,7 +63,7 @@ public sealed class DebugSession : IDisposable
                 // Notify client that breakpoints are now verified.
                 foreach (var bp in bps)
                 {
-                    Log.Write($"Sending breakpoint changed: id={bp.Id} verified={bp.Verified}");
+                    _log.Write($"Sending breakpoint changed: id={bp.Id} verified={bp.Verified}");
                     _server.SendEvent("breakpoint", new BreakpointEventBody
                     {
                         Reason = "changed",
@@ -98,7 +101,7 @@ public sealed class DebugSession : IDisposable
                     .Where(s => s != null));
         }
 
-        _engine = new NativeDebugger(_server);
+        _engine = _engineFactory();
         _engine.Launch(args.Program, args.Cwd ?? progDir, symbolPath);
         State = SessionState.Running;
     }
@@ -109,7 +112,7 @@ public sealed class DebugSession : IDisposable
             ? string.Join(";", args.SymbolPath)
             : null;
 
-        _engine = new NativeDebugger(_server);
+        _engine = _engineFactory();
 
         if (args.Pid.HasValue)
         {
@@ -130,7 +133,7 @@ public sealed class DebugSession : IDisposable
             if (args.Source.Path != null)
                 _pendingBreakpoints.Add(args);
 
-            bool isNative = IsNativeSourceFile(args.Source.Path);
+            bool isNative = _sourceFiles.IsNativeFile(args.Source.Path!);
 
             return new SetBreakpointsResponseBody
             {
@@ -223,33 +226,4 @@ public sealed class DebugSession : IDisposable
         _engine?.Dispose();
     }
 
-    /// <summary>
-    /// Returns true for native C/C++ files that dbgeng can debug.
-    /// Returns false for managed (.cs) and C++/CLI files.
-    /// </summary>
-    private static bool IsNativeSourceFile(string? path)
-    {
-        if (path == null) return false;
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext is not ".cpp" and not ".c" and not ".cc" and not ".cxx"
-            and not ".h" and not ".hpp")
-            return false;
-
-        // C++/CLI projects compile to IL — not debuggable via dbgeng.
-        var dir = Path.GetDirectoryName(path);
-        if (dir != null)
-        {
-            try
-            {
-                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
-                {
-                    var text = File.ReadAllText(vcx);
-                    if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
-                        return false;
-                }
-            }
-            catch { /* ignore IO errors */ }
-        }
-        return true;
-    }
 }

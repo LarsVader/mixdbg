@@ -3,32 +3,16 @@ using System.Runtime.InteropServices;
 using System.Text;
 using MixDbg.Dap;
 using MixDbg.Engine.DbgEng;
+using MixDbg.Services;
 
 namespace MixDbg.Engine;
-
-public static class Log
-{
-    private static readonly string Path = System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        "mixdbg.log");
-    private static readonly object Lock = new();
-
-    public static void Write(string msg)
-    {
-        var line = $"[{DateTime.Now:HH:mm:ss.fff}] {msg}";
-        lock (Lock)
-        {
-            File.AppendAllText(Path, line + Environment.NewLine);
-        }
-    }
-}
 
 /// <summary>
 /// Wraps dbgeng for native debugging. Runs WaitForEvent on a
 /// dedicated engine thread. DAP handlers queue commands that
 /// execute when the target is stopped.
 /// </summary>
-public sealed class NativeDebugger : IDisposable
+public sealed class NativeDebugger(IDapServer server, ILogService log, ISourceFileService sourceFiles) : IDisposable
 {
     private IDebugClient _client = null!;
     private IDebugControl _control = null!;
@@ -56,16 +40,13 @@ public sealed class NativeDebugger : IDisposable
     private readonly ManualResetEventSlim _stopped = new(false);
 
     // DAP server for sending events.
-    private readonly DapServer _server;
+    private readonly IDapServer _server = server;
+    private readonly ILogService _log = log;
+    private readonly ISourceFileService _sourceFiles = sourceFiles;
 
     // Track breakpoints: DAP source:line -> dbgeng breakpoint id
     private readonly Dictionary<string, uint> _breakpointIds = new();
     private int _nextBpId;
-
-    public NativeDebugger(DapServer server)
-    {
-        _server = server;
-    }
 
     public bool IsTargetStopped => _stopped.IsSet;
 
@@ -117,10 +98,10 @@ public sealed class NativeDebugger : IDisposable
     /// </summary>
     public void Continue()
     {
-        Log.Write("Continue queued");
+        _log.Write("Continue queued");
         _commands.Add(() =>
         {
-            Log.Write("Continue executing: SetExecutionStatus(GO)");
+            _log.Write("Continue executing: SetExecutionStatus(GO)");
             _configDone = true;
             Check(_control.SetExecutionStatus(DebugStatus.Go));
         });
@@ -332,7 +313,7 @@ public sealed class NativeDebugger : IDisposable
 
     private void EngineLoop()
     {
-        Log.Write("EngineLoop started — initializing dbgeng on engine thread");
+        _log.Write("EngineLoop started — initializing dbgeng on engine thread");
         try
         {
             // All dbgeng COM calls must happen on this thread.
@@ -340,7 +321,7 @@ public sealed class NativeDebugger : IDisposable
 
             if (_isAttach)
             {
-                Log.Write($"Attach: pid={_attachPid}");
+                _log.Write($"Attach: pid={_attachPid}");
                 Check(_client.AttachProcess(0, _attachPid, DebugAttach.Default));
             }
             else
@@ -348,12 +329,12 @@ public sealed class NativeDebugger : IDisposable
                 if (_launchCwd != null)
                     _symbols.SetSourcePath(_launchCwd);
 
-                Log.Write($"Launch: CreateProcess({_launchProgram})");
+                _log.Write($"Launch: CreateProcess({_launchProgram})");
                 Check(_client.CreateProcess(
                     0,
                     _launchProgram!,
                     CreateProcessFlags.DebugOnlyThisProcess | CreateProcessFlags.CreateNewConsole));
-                Log.Write("Launch: CreateProcess succeeded");
+                _log.Write("Launch: CreateProcess succeeded");
             }
 
             // Signal the main thread that init is done.
@@ -361,12 +342,12 @@ public sealed class NativeDebugger : IDisposable
 
             while (!_terminated)
             {
-                Log.Write("WaitForEvent...");
+                _log.Write("WaitForEvent...");
                 int hr = _control.WaitForEvent(0, 0xFFFFFFFF); // INFINITE
-                Log.Write($"WaitForEvent returned hr=0x{hr:X8}");
+                _log.Write($"WaitForEvent returned hr=0x{hr:X8}");
                 if (hr < 0)
                 {
-                    Log.Write($"WaitForEvent failed, terminated={_terminated} exited={_targetExited}");
+                    _log.Write($"WaitForEvent failed, terminated={_terminated} exited={_targetExited}");
                     break;
                 }
 
@@ -375,7 +356,7 @@ public sealed class NativeDebugger : IDisposable
 
                 if (_targetExited)
                 {
-                    Log.Write("Target exited, sending terminated event");
+                    _log.Write("Target exited, sending terminated event");
                     _server.SendEvent("terminated", new TerminatedEventBody());
                     break;
                 }
@@ -388,12 +369,12 @@ public sealed class NativeDebugger : IDisposable
                     descBuf, 256, out _);
                 var desc = Marshal.PtrToStringAnsi(descBuf) ?? "";
                 Marshal.FreeHGlobal(descBuf);
-                Log.Write($"Event: type=0x{evtType:X} pid={evtPid} tid={evtTid} desc=\"{desc}\"");
-                Log.Write($"State: configDone={_configDone} hitUserBp={_hitUserBreakpoint} stepping={_stepping} pause={_pauseRequested}");
+                _log.Write($"Event: type=0x{evtType:X} pid={evtPid} tid={evtTid} desc=\"{desc}\"");
+                _log.Write($"State: configDone={_configDone} hitUserBp={_hitUserBreakpoint} stepping={_stepping} pause={_pauseRequested}");
 
                 if (!_configDone)
                 {
-                    Log.Write("Pre-configDone: processing commands until resume");
+                    _log.Write("Pre-configDone: processing commands until resume");
                     ProcessCommandsUntilResume();
                     continue;
                 }
@@ -420,7 +401,7 @@ public sealed class NativeDebugger : IDisposable
                 if (reason != null)
                 {
                     _sysObjects.GetEventThread(out var threadId);
-                    Log.Write($"User stop: reason={reason} threadId={threadId}");
+                    _log.Write($"User stop: reason={reason} threadId={threadId}");
                     _server.SendEvent("stopped", new StoppedEventBody
                     {
                         Reason = reason,
@@ -431,7 +412,7 @@ public sealed class NativeDebugger : IDisposable
                 }
                 else
                 {
-                    Log.Write("System stop — auto-continuing");
+                    _log.Write("System stop — auto-continuing");
                     _stopped.Reset();
                     _control.SetExecutionStatus(DebugStatus.Go);
                 }
@@ -439,7 +420,7 @@ public sealed class NativeDebugger : IDisposable
         }
         catch (Exception ex)
         {
-            Log.Write($"EngineLoop EXCEPTION: {ex}");
+            _log.Write($"EngineLoop EXCEPTION: {ex}");
             // If init failed, unblock the main thread.
             _engineInitError = ex;
             _engineReady.Set();
@@ -454,7 +435,7 @@ public sealed class NativeDebugger : IDisposable
 
     private void ProcessCommandsUntilResume()
     {
-        Log.Write("ProcessCommandsUntilResume: waiting for commands");
+        _log.Write("ProcessCommandsUntilResume: waiting for commands");
         while (!_terminated)
         {
             Action cmd;
@@ -464,19 +445,19 @@ public sealed class NativeDebugger : IDisposable
             }
             catch (InvalidOperationException)
             {
-                Log.Write("ProcessCommandsUntilResume: collection completed");
+                _log.Write("ProcessCommandsUntilResume: collection completed");
                 break;
             }
 
-            Log.Write("ProcessCommandsUntilResume: executing command");
+            _log.Write("ProcessCommandsUntilResume: executing command");
             cmd();
 
             _control.GetExecutionStatus(out var status);
-            Log.Write($"ProcessCommandsUntilResume: execStatus={status}");
+            _log.Write($"ProcessCommandsUntilResume: execStatus={status}");
             if (status != DebugStatus.Break
                 && status != DebugStatus.NoDebuggee)
             {
-                Log.Write("ProcessCommandsUntilResume: resuming");
+                _log.Write("ProcessCommandsUntilResume: resuming");
                 _stopped.Reset();
                 break;
             }
@@ -497,7 +478,7 @@ public sealed class NativeDebugger : IDisposable
         bp.GetId(out var id);
         _lastHitBpId = id;
         _hitUserBreakpoint = _userBreakpointIds.Contains(id);
-        Log.Write($"OnBreakpoint: id={id} isUser={_hitUserBreakpoint} (tracked: [{string.Join(",", _userBreakpointIds)}])");
+        _log.Write($"OnBreakpoint: id={id} isUser={_hitUserBreakpoint} (tracked: [{string.Join(",", _userBreakpointIds)}])");
 
         // Send verified update so nvim-dap clears the "rejected" marker.
         if (_hitUserBreakpoint)
@@ -538,42 +519,16 @@ public sealed class NativeDebugger : IDisposable
         });
     }
 
-    private static bool IsNativeFile(string path)
-    {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext is not ".cpp" and not ".c" and not ".cc" and not ".cxx"
-            and not ".h" and not ".hpp")
-            return false;
-
-        // Check if the file's directory has a vcxproj with CLRSupport
-        // (C++/CLI) — those compile to IL, not debuggable via dbgeng.
-        var dir = Path.GetDirectoryName(path);
-        if (dir != null)
-        {
-            try
-            {
-                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
-                {
-                    var text = File.ReadAllText(vcx);
-                    if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
-                        return false;
-                }
-            }
-            catch { /* ignore IO errors */ }
-        }
-        return true;
-    }
-
     private Breakpoint[] SetBreakpointsOnEngine(string filePath, SourceBreakpoint[] requested)
     {
-        Log.Write($"SetBreakpointsOnEngine: file={filePath} count={requested.Length}");
+        _log.Write($"SetBreakpointsOnEngine: file={filePath} count={requested.Length}");
         foreach (var r in requested)
-            Log.Write($"  requested: line={r.Line}");
+            _log.Write($"  requested: line={r.Line}");
 
         // Managed files can't be debugged via dbgeng yet (M4).
-        if (!IsNativeFile(filePath))
+        if (!_sourceFiles.IsNativeFile(filePath))
         {
-            Log.Write($"  Skipping non-native file: {filePath}");
+            _log.Write($"  Skipping non-native file: {filePath}");
             return requested.Select((bp, i) => new Breakpoint
             {
                 Id = i,
@@ -606,7 +561,7 @@ public sealed class NativeDebugger : IDisposable
             var key = $"{filePath}:{req.Line}";
 
             int hr = _symbols.GetOffsetByLine((uint)req.Line, filePath, out var offset);
-            Log.Write($"  GetOffsetByLine({req.Line}, {filePath}) -> hr=0x{hr:X8} offset=0x{offset:X}");
+            _log.Write($"  GetOffsetByLine({req.Line}, {filePath}) -> hr=0x{hr:X8} offset=0x{offset:X}");
             if (hr < 0)
             {
                 // GetOffsetByLine failed — module probably not loaded yet.
@@ -614,9 +569,9 @@ public sealed class NativeDebugger : IDisposable
                 var fileName = Path.GetFileName(filePath);
                 var moduleName = Path.GetFileNameWithoutExtension(filePath);
                 var buCmd = $"bu `{filePath}:{req.Line}`";
-                Log.Write($"  Trying deferred breakpoint: {buCmd}");
+                _log.Write($"  Trying deferred breakpoint: {buCmd}");
                 int buHr = _control.Execute(DebugOutCtl.Ignore, buCmd, DebugExecute.Default);
-                Log.Write($"  bu result: hr=0x{buHr:X8}");
+                _log.Write($"  bu result: hr=0x{buHr:X8}");
 
                 if (buHr >= 0)
                 {
@@ -633,7 +588,7 @@ public sealed class NativeDebugger : IDisposable
                             _userBreakpointIds.Add(deferredId);
                         }
                     }
-                    Log.Write($"  Deferred bp registered: id={deferredId}");
+                    _log.Write($"  Deferred bp registered: id={deferredId}");
                     results[i] = new Breakpoint
                     {
                         Id = (int)deferredId,
@@ -711,12 +666,12 @@ public sealed class NativeDebugger : IDisposable
     {
         if (maxFrames <= 0) maxFrames = 50;
         int frameSize = Marshal.SizeOf<DEBUG_STACK_FRAME>();
-        Log.Write($"DEBUG_STACK_FRAME size={frameSize}");
+        _log.Write($"DEBUG_STACK_FRAME size={frameSize}");
         IntPtr buf = Marshal.AllocHGlobal(frameSize * maxFrames);
         try
         {
         int hr = _control.GetStackTrace(0, 0, 0, buf, (uint)maxFrames, out var filled);
-        Log.Write($"GetStackTrace: hr=0x{hr:X8} filled={filled}");
+        _log.Write($"GetStackTrace: hr=0x{hr:X8} filled={filled}");
         if (hr < 0) return [];
 
         var frames = new DEBUG_STACK_FRAME[filled];
@@ -759,7 +714,7 @@ public sealed class NativeDebugger : IDisposable
                 };
             }
 
-            Log.Write($"  Frame {i}: ip=0x{f.InstructionOffset:X} name={name} nameHr=0x{nameHr:X8} lineHr=0x{lineHr:X8} line={line}");
+            _log.Write($"  Frame {i}: ip=0x{f.InstructionOffset:X} name={name} nameHr=0x{nameHr:X8} lineHr=0x{lineHr:X8} line={line}");
 
             result[i] = new StackFrame
             {

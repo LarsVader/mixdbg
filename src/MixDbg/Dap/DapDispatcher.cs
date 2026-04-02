@@ -1,26 +1,21 @@
 using System.Text.Json;
+using MixDbg.Services;
 
 namespace MixDbg.Dap;
 
 /// <summary>
 /// Routes DAP requests to handler methods and manages the request/response lifecycle.
 /// </summary>
-public sealed class DapDispatcher
+public sealed class DapDispatcher(IDapServer server, ILogService log)
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    private readonly DapServer _server;
+    private readonly IDapServer _server = server;
+    private readonly ILogService _log = log;
     private readonly Dictionary<string, Func<RequestMessage, object?>> _handlers = new(StringComparer.OrdinalIgnoreCase);
-
-    public DapDispatcher(DapServer server)
-    {
-        _server = server;
-    }
-
-    public DapServer Server => _server;
 
     /// <summary>
     /// Registers a handler for a DAP command. The handler returns
@@ -58,30 +53,30 @@ public sealed class DapDispatcher
             {
                 var argsStr = request.Arguments.HasValue
                     ? request.Arguments.Value.ToString() : "null";
-                MixDbg.Engine.Log.Write($"DAP request: seq={request.Seq} cmd={request.Command} args={argsStr}");
+                _log.Write($"DAP request: seq={request.Seq} cmd={request.Command} args={argsStr}");
 
                 if (_handlers.TryGetValue(request.Command, out var handler))
                 {
                     var body = handler(request);
                     _server.SendResponse(request, body);
-                    MixDbg.Engine.Log.Write($"DAP response: cmd={request.Command} success=true");
+                    _log.Write($"DAP response: cmd={request.Command} success=true");
                 }
                 else
                 {
                     _server.SendErrorResponse(request, $"Unknown command: {request.Command}");
-                    MixDbg.Engine.Log.Write($"DAP response: cmd={request.Command} UNKNOWN");
+                    _log.Write($"DAP response: cmd={request.Command} UNKNOWN");
                 }
             }
             catch (DisconnectException)
             {
                 _server.SendResponse(request);
-                MixDbg.Engine.Log.Write($"DAP disconnect");
+                _log.Write($"DAP disconnect");
                 break;
             }
             catch (Exception ex)
             {
                 _server.SendErrorResponse(request, ex.Message);
-                MixDbg.Engine.Log.Write($"DAP error: cmd={request.Command} err={ex.Message}");
+                _log.Write($"DAP error: cmd={request.Command} err={ex.Message}");
             }
         }
     }

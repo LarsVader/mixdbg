@@ -23,10 +23,11 @@ Adapter registered in `C:\Users\LarsVader\AppData\Local\nvim\lua\plugins\debug\n
 
 ```
 src/MixDbg/
-  Program.cs                     # Entry point — wires DapServer, DebugSession, handlers
+  Program.cs                     # Entry point — DI composition root
+  ServiceCollectionExtensions.cs # AddMixDbgCore() — registers all services
   Dap/
     DapMessages.cs               # All DAP protocol types as C# records
-    DapServer.cs                 # stdin/stdout JSON-RPC transport (Content-Length framing)
+    DapServer.cs                 # stdin/stdout JSON-RPC transport (Content-Length framing), implements IDapServer
     DapDispatcher.cs             # Command string → handler routing, logs all requests
   Engine/
     DebugSession.cs              # Orchestrator: state machine, pending breakpoints, delegates to NativeDebugger
@@ -35,6 +36,13 @@ src/MixDbg/
       Constants.cs               # DEBUG_STATUS_*, breakpoint flags, DebugCreate P/Invoke, DEBUG_STACK_FRAME struct
       Interfaces.cs              # COM interfaces: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSystemObjects, IDebugEventCallbacks
       EventCallbacks.cs          # IDebugEventCallbacks implementation — return values control WaitForEvent behavior
+  Services/
+    Interfaces/
+      IDapServer.cs              # ReadRequest, SendResponse, SendErrorResponse, SendEvent
+      ILogService.cs             # Write(string message)
+      ISourceFileService.cs      # IsNativeFile(string path)
+    LogService.cs                # File-based logger (~/mixdbg.log)
+    SourceFileService.cs         # Native vs managed/CLI file detection
   Handlers/
     InitializeHandler.cs         # DAP initialize handshake
     LifecycleHandlers.cs         # launch, attach, configurationDone, disconnect, terminate, threads
@@ -42,6 +50,8 @@ src/MixDbg/
 ```
 
 ## Architecture
+
+**DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Stateless services (`ILogService`, `ISourceFileService`) are singletons. `NativeDebugger` is created lazily via an injected `Func<NativeDebugger>` factory (one per Launch/Attach).
 
 Two threads, one command queue:
 
@@ -93,7 +103,7 @@ ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace
 
 ### Diagnostic Logging
 
-All sessions log to `~/mixdbg.log` — DAP requests/responses, dbgeng events, breakpoint resolution, stack frames. The `Log.Write()` static method is in `NativeDebugger.cs`.
+All sessions log to `~/mixdbg.log` — DAP requests/responses, dbgeng events, breakpoint resolution, stack frames. Logging goes through `ILogService` (implemented by `LogService`), injected into all consumers.
 
 ## Milestones
 
@@ -121,6 +131,7 @@ See README.md for full milestone descriptions.
 ## Key Dependencies
 
 - `dbgeng.dll` — ships with Windows (System32)
+- NuGet `Microsoft.Extensions.DependencyInjection` — DI container
 - `dotnet-sos` — `dotnet tool install -g dotnet-sos && dotnet-sos install` (needed for M4)
 - NuGet `Microsoft.Diagnostics.Runtime` (ClrMD) — needed for M5
 - dbgeng.h reference: `C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um/dbgeng.h`
