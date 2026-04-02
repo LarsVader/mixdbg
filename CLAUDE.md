@@ -25,8 +25,16 @@ Adapter registered in `C:\Users\LarsVader\AppData\Local\nvim\lua\plugins\debug\n
 src/MixDbg/
   Program.cs                     # Entry point — DI composition root
   ServiceCollectionExtensions.cs # AddMixDbgCore() — registers all services + models
-  Dap/
-    DapMessages.cs               # All DAP protocol types as C# records, DisconnectException
+  DapMessages/                     # DAP protocol types (namespace MixDbg.Dap), one file per type
+    Protocol/                    # ProtocolMessage, RequestMessage, ResponseMessage, EventMessage, Source, DisconnectException
+    Initialize/                  # InitializeRequestArguments, Capabilities
+    Lifecycle/                   # LaunchRequestArguments, AttachRequestArguments, DisconnectArguments
+    Breakpoints/                 # SetBreakpointsArguments, SourceBreakpoint, Breakpoint, SetBreakpointsResponseBody
+    Execution/                   # ContinueArguments, ContinueResponseBody, StepArguments
+    Inspection/                  # StackTraceArguments/ResponseBody, StackFrame, Scopes*, Variables*, Variable
+    Threads/                     # ThreadsResponseBody, DapThread
+    Evaluate/                    # EvaluateArguments, EvaluateResponseBody
+    Events/                      # StoppedEventBody, OutputEventBody, BreakpointEventBody, Terminated/InitializedEventBody
   Engine/
     DbgEng/
       Constants.cs               # DEBUG_STATUS_*, breakpoint flags, DebugCreate P/Invoke, DEBUG_STACK_FRAME struct
