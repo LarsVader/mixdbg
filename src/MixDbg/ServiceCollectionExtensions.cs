@@ -1,5 +1,4 @@
 using Microsoft.Extensions.DependencyInjection;
-using MixDbg.Models;
 using MixDbg.Services;
 
 namespace MixDbg;
