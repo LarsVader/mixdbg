@@ -191,6 +191,24 @@ internal sealed class DebugSessionService(
         };
     }
 
+    public ScopesResponseBody GetScopes(DebugSessionModel session, ScopesArguments args)
+    {
+        if (session.Engine == null)
+            return new ScopesResponseBody { Scopes = [] };
+
+        var scopes = _nativeDebugger.GetScopes(session.Engine, args.FrameId);
+        return new ScopesResponseBody { Scopes = scopes };
+    }
+
+    public VariablesResponseBody GetVariables(DebugSessionModel session, VariablesArguments args)
+    {
+        if (session.Engine == null)
+            return new VariablesResponseBody { Variables = [] };
+
+        var vars = _nativeDebugger.GetVariables(session.Engine, args.VariablesReference);
+        return new VariablesResponseBody { Variables = vars };
+    }
+
     public ThreadsResponseBody GetThreads(DebugSessionModel session)
     {
         if (session.Engine == null)

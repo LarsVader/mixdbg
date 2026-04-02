@@ -41,6 +41,12 @@ public interface INativeDebugger
     /// <summary>Gets the current call stack with resolved function names and source locations.</summary>
     StackFrame[] GetStackTrace(NativeDebuggerModel model, int maxFrames);
 
+    /// <summary>Gets the scopes (locals, arguments) for a stack frame by frame ID.</summary>
+    Scope[] GetScopes(NativeDebuggerModel model, int frameId);
+
+    /// <summary>Gets variables for a variablesReference handle allocated by GetScopes or a prior GetVariables call.</summary>
+    Variable[] GetVariables(NativeDebuggerModel model, int variablesReference);
+
     /// <summary>Gets all debugger threads with engine and system IDs.</summary>
     DapThread[] GetThreads(NativeDebuggerModel model);
 

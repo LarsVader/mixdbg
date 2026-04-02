@@ -46,6 +46,12 @@ public interface IDebugSession
     /// <summary>Returns the current call stack.</summary>
     StackTraceResponseBody GetStackTrace(DebugSessionModel session, StackTraceArguments args);
 
+    /// <summary>Returns the scopes (locals, arguments) for a stack frame.</summary>
+    ScopesResponseBody GetScopes(DebugSessionModel session, ScopesArguments args);
+
+    /// <summary>Returns the variables for a variablesReference handle.</summary>
+    VariablesResponseBody GetVariables(DebugSessionModel session, VariablesArguments args);
+
     /// <summary>Returns all debugger threads.</summary>
     ThreadsResponseBody GetThreads(DebugSessionModel session);
 

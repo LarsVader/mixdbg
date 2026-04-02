@@ -244,7 +244,7 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 
 ## Current Status
 
-**Working (M1+M2):**
+**Working (M1+M2+M3):**
 - DAP transport (JSON-RPC over stdin/stdout)
 - Process launch and attach via dbgeng
 - Native C++ breakpoints (including deferred)
@@ -252,9 +252,9 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 - Stepping (over, into, out)
 - Thread enumeration
 - Breakpoint classification (native vs managed vs CLI)
+- Native variable inspection (locals, types, values, struct/pointer expansion)
 
 **Not yet implemented:**
-- Variable inspection (M3)
 - C# / managed breakpoints and stack traces (M4)
 - Managed variable inspection (M5)
 - Cross-boundary stepping (M6)

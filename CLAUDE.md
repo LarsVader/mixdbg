@@ -37,14 +37,15 @@ src/MixDbg/
     Events/                      # StoppedEventBody, OutputEventBody, BreakpointEventBody, Terminated/InitializedEventBody
   Engine/
     DbgEng/
-      Constants/                 # One file per type: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, DebugBreakpoint*, DebugEvent, DebugEnd, DebugExecute, DebugOutCtl, SymOpt, DebugScopeGroup, DEBUG_STACK_FRAME
-      Interfaces/                # One file per COM interface: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSystemObjects, IDebugEventCallbacks
+      Constants/                 # One file per type: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, DebugBreakpoint*, DebugEvent, DebugEnd, DebugExecute, DebugOutCtl, SymOpt, DebugScopeGroup, DEBUG_STACK_FRAME, DEBUG_SYMBOL_PARAMETERS, DebugSymbolFlags
+      Interfaces/                # One file per COM interface: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSymbolGroup2, IDebugSystemObjects, IDebugEventCallbacks
       EventCallbacks.cs          # IDebugEventCallbacks implementation — return values control WaitForEvent behavior
   Models/
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
     DapDispatcherModel.cs        # Dispatcher state: handler registrations
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
-    NativeDebuggerModel.cs       # Engine state: COM interfaces, threads, flags, breakpoint tracking
+    NativeDebuggerModel.cs       # Engine state: COM interfaces, threads, flags, breakpoint tracking, variable store
+    VariableStore.cs             # Maps variablesReference handles to VariableContainer (symbol group + index range), invalidated per stop
     LogEntry.cs                  # Immutable log record (timestamp, level, sender, message)
     LogStore.cs                  # Mutable log state: entries list, lock, file path
   Services/
@@ -130,14 +131,9 @@ All sessions log to `~/mixdbg.log` — DAP requests/responses, dbgeng events, br
 
 Native C++ breakpoints, stack traces with source locations, stepping (over/into/out), thread enumeration, pause. Tested end-to-end with CLRApp3.
 
-### M3: Native Variable Inspection — TODO
+### M3: Native Variable Inspection — DONE
 
-Need to implement:
-- Add `IDebugSymbolGroup2` COM interface (vtable from dbgeng.h — methods: `GetNumberSymbols`, `GetSymbolName`, `GetSymbolTypeName`, `GetSymbolValueText`, `ExpandSymbol`, `GetSymbolEntryInformation`)
-- `ScopesHandler`: use `IDebugSymbols::SetScope` to select stack frame, `GetScopeSymbolGroup(DEBUG_SCOPE_GROUP_LOCALS)` to get locals
-- `VariablesHandler`: iterate `IDebugSymbolGroup2` for names/types/values
-- `VariableStore`: allocate integer `variablesReference` handles for expandable variables (structs/pointers), cache per stop (invalidate on continue)
-- Update `StubHandlers.cs` to wire `scopes` and `variables` to real implementations
+Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stops, selecting a stack frame returns locals via `SetScope` + `GetScopeSymbolGroup`. Expandable variables (structs/pointers with `SubElements > 0`) allocate child `variablesReference` handles. Variable store invalidated on continue/step.
 
 ### M4: Managed Debugging via SOS + ClrMD — TODO
 ### M5: Managed Variable Inspection via ClrMD — TODO

@@ -53,14 +53,14 @@ public static class StubHandlers
             return session.GetStackTrace(sessionModel, args);
         });
 
-        dispatcher.Register<ScopesArguments>(dispatcherModel, "scopes", _ =>
+        dispatcher.Register<ScopesArguments>(dispatcherModel, "scopes", args =>
         {
-            return new ScopesResponseBody { Scopes = [] };
+            return session.GetScopes(sessionModel, args);
         });
 
-        dispatcher.Register<VariablesArguments>(dispatcherModel, "variables", _ =>
+        dispatcher.Register<VariablesArguments>(dispatcherModel, "variables", args =>
         {
-            return new VariablesResponseBody { Variables = [] };
+            return session.GetVariables(sessionModel, args);
         });
 
         dispatcher.Register<EvaluateArguments>(dispatcherModel, "evaluate", args =>

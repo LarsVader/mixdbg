@@ -292,6 +292,56 @@ public sealed class DebugSessionServiceTests
         ThenThreadCountIs(2);
     }
 
+    // ── GetScopes ──────────────────────────────────────────
+
+    [Fact]
+    public void GetScopes_WhenNoEngine_ReturnsEmpty()
+    {
+        GivenScopesArgs(frameId: 1);
+
+        WhenGettingScopes();
+
+        ThenScopeCountIs(0);
+    }
+
+    [Fact]
+    public void GetScopes_WhenEngineExists_DelegatesToNativeDebugger()
+    {
+        GivenAnEngineIsRunning();
+        GivenScopesArgs(frameId: 1);
+        GivenNativeDebuggerReturnsScopes(1);
+
+        WhenGettingScopes();
+
+        ThenScopeCountIs(1);
+        ThenNativeDebuggerGetScopesWasCalled();
+    }
+
+    // ── GetVariables ────────────────────────────────────────
+
+    [Fact]
+    public void GetVariables_WhenNoEngine_ReturnsEmpty()
+    {
+        GivenVariablesArgs(variablesReference: 1);
+
+        WhenGettingVariables();
+
+        ThenVariableCountIs(0);
+    }
+
+    [Fact]
+    public void GetVariables_WhenEngineExists_DelegatesToNativeDebugger()
+    {
+        GivenAnEngineIsRunning();
+        GivenVariablesArgs(variablesReference: 1);
+        GivenNativeDebuggerReturnsVariables(3);
+
+        WhenGettingVariables();
+
+        ThenVariableCountIs(3);
+        ThenNativeDebuggerGetVariablesWasCalled();
+    }
+
     [Fact]
     public void Disconnect_WhenTerminateTrue_TerminatesEngine()
     {
@@ -415,6 +465,37 @@ public sealed class DebugSessionServiceTests
             }).ToArray());
     }
 
+    private void GivenScopesArgs(int frameId)
+    {
+        _scopesArgs = new ScopesArguments { FrameId = frameId };
+    }
+
+    private void GivenVariablesArgs(int variablesReference)
+    {
+        _variablesArgs = new VariablesArguments { VariablesReference = variablesReference };
+    }
+
+    private void GivenNativeDebuggerReturnsScopes(int count)
+    {
+        _nativeDebugger.GetScopes(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+            .Returns(Enumerable.Range(1, count).Select(i => new Scope
+            {
+                Name = $"Scope{i}",
+                VariablesReference = i,
+            }).ToArray());
+    }
+
+    private void GivenNativeDebuggerReturnsVariables(int count)
+    {
+        _nativeDebugger.GetVariables(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+            .Returns(Enumerable.Range(1, count).Select(i => new Variable
+            {
+                Name = $"var{i}",
+                Value = $"{i}",
+                VariablesReference = 0,
+            }).ToArray());
+    }
+
     private void GivenPendingBreakpointsExist(string filePath, int[] lines)
     {
         _session.PendingBreakpoints.Add(new SetBreakpointsArguments
@@ -502,6 +583,16 @@ public sealed class DebugSessionServiceTests
     private void WhenDisconnecting()
     {
         _testee.Disconnect(_session, _disconnectArgs!);
+    }
+
+    private void WhenGettingScopes()
+    {
+        _scopesResponse = _testee.GetScopes(_session, _scopesArgs!);
+    }
+
+    private void WhenGettingVariables()
+    {
+        _variablesResponse = _testee.GetVariables(_session, _variablesArgs!);
     }
 
     #endregion
@@ -672,6 +763,26 @@ public sealed class DebugSessionServiceTests
         _server.Received().SendEvent(_transport, "breakpoint", Arg.Any<BreakpointEventBody>());
     }
 
+    private void ThenScopeCountIs(int expected)
+    {
+        Assert.Equal(expected, _scopesResponse!.Scopes.Length);
+    }
+
+    private void ThenNativeDebuggerGetScopesWasCalled()
+    {
+        _nativeDebugger.Received(1).GetScopes(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>());
+    }
+
+    private void ThenVariableCountIs(int expected)
+    {
+        Assert.Equal(expected, _variablesResponse!.Variables.Length);
+    }
+
+    private void ThenNativeDebuggerGetVariablesWasCalled()
+    {
+        _nativeDebugger.Received(1).GetVariables(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>());
+    }
+
     #endregion
 
     #region Misc
@@ -696,6 +807,10 @@ public sealed class DebugSessionServiceTests
     private StackTraceArguments? _stackTraceArgs;
     private StackTraceResponseBody? _stackTraceResponse;
     private ThreadsResponseBody? _threadsResponse;
+    private ScopesArguments? _scopesArgs;
+    private ScopesResponseBody? _scopesResponse;
+    private VariablesArguments? _variablesArgs;
+    private VariablesResponseBody? _variablesResponse;
     private DisconnectArguments? _disconnectArgs;
     private Exception? _thrownException;
 

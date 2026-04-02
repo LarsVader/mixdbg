@@ -63,6 +63,7 @@ internal sealed class NativeDebuggerService(
     public void Continue(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "Continue queued");
+        model.Variables.Clear();
         model.Commands.Add(() =>
         {
             _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
@@ -91,6 +92,7 @@ internal sealed class NativeDebuggerService(
     {
         // dbgeng doesn't have a direct step-out status.
         // Use the "gu" (go up) command instead.
+        model.Variables.Clear();
         model.Commands.Add(() =>
         {
             model.Control.Execute(DebugOutCtl.Ignore, "gu", DebugExecute.NotLogged);
@@ -125,6 +127,44 @@ internal sealed class NativeDebuggerService(
             try
             {
                 tcs.SetResult(GetStackTraceOnEngine(model, maxFrames));
+            }
+            catch (Exception ex)
+            {
+                tcs.SetException(ex);
+            }
+        });
+
+        return tcs.Task.Result;
+    }
+
+    public Scope[] GetScopes(NativeDebuggerModel model, int frameId)
+    {
+        var tcs = new TaskCompletionSource<Scope[]>();
+
+        model.Commands.Add(() =>
+        {
+            try
+            {
+                tcs.SetResult(GetScopesOnEngine(model, frameId));
+            }
+            catch (Exception ex)
+            {
+                tcs.SetException(ex);
+            }
+        });
+
+        return tcs.Task.Result;
+    }
+
+    public Variable[] GetVariables(NativeDebuggerModel model, int variablesReference)
+    {
+        var tcs = new TaskCompletionSource<Variable[]>();
+
+        model.Commands.Add(() =>
+        {
+            try
+            {
+                tcs.SetResult(GetVariablesOnEngine(model, variablesReference));
             }
             catch (Exception ex)
             {
@@ -393,6 +433,7 @@ internal sealed class NativeDebuggerService(
     private static void QueueStep(NativeDebuggerModel model, uint stepKind)
     {
         model.Stepping = true;
+        model.Variables.Clear();
         model.Commands.Add(() =>
         {
             Check(model.Control.SetExecutionStatus(stepKind));
@@ -602,6 +643,9 @@ internal sealed class NativeDebuggerService(
         for (int i = 0; i < (int)filled; i++)
             frames[i] = Marshal.PtrToStructure<DEBUG_STACK_FRAME>(buf + i * frameSize);
 
+        // Cache raw frames so GetScopes can SetScope by instruction offset.
+        model.CachedStackFrames = frames;
+
         var result = new StackFrame[filled];
         IntPtr nameBuf = Marshal.AllocHGlobal(512);
         IntPtr fileBuf = Marshal.AllocHGlobal(512);
@@ -657,6 +701,142 @@ internal sealed class NativeDebuggerService(
         {
             Marshal.FreeHGlobal(buf);
         }
+    }
+
+    private Scope[] GetScopesOnEngine(NativeDebuggerModel model, int frameId)
+    {
+        // Frame IDs are 1-based (from GetStackTraceOnEngine).
+        int index = frameId - 1;
+        if (index < 0 || index >= model.CachedStackFrames.Length)
+        {
+            _log.LogWarning(_logStore, $"GetScopes: invalid frameId={frameId}");
+            return [];
+        }
+
+        var frame = model.CachedStackFrames[index];
+
+        // Pin the DEBUG_STACK_FRAME and pass to SetScope.
+        int frameSize = Marshal.SizeOf<DEBUG_STACK_FRAME>();
+        IntPtr frameBuf = Marshal.AllocHGlobal(frameSize);
+        Marshal.StructureToPtr(frame, frameBuf, false);
+        int hr = model.Symbols.SetScope(frame.InstructionOffset, frameBuf, IntPtr.Zero, 0);
+        Marshal.FreeHGlobal(frameBuf);
+        _log.LogInfo(_logStore, $"SetScope(ip=0x{frame.InstructionOffset:X}) -> hr=0x{hr:X8}");
+
+        // Get locals symbol group.
+        hr = model.Symbols.GetScopeSymbolGroup(
+            DebugScopeGroup.All, IntPtr.Zero, out var group);
+        _log.LogInfo(_logStore, $"GetScopeSymbolGroup(ALL) -> hr=0x{hr:X8}");
+        if (hr < 0)
+            return [];
+
+        group.GetNumberSymbols(out var count);
+        _log.LogInfo(_logStore, $"Symbol group has {count} symbols");
+        if (count == 0)
+            return [];
+
+        int localsRef = model.Variables.Allocate(group, 0, count);
+
+        return
+        [
+            new Scope
+            {
+                Name = "Locals",
+                VariablesReference = localsRef,
+                Expensive = false,
+            }
+        ];
+    }
+
+    private Variable[] GetVariablesOnEngine(NativeDebuggerModel model, int variablesReference)
+    {
+        var container = model.Variables.Get(variablesReference);
+        if (container == null)
+        {
+            _log.LogWarning(_logStore, $"GetVariables: unknown ref={variablesReference}");
+            return [];
+        }
+
+        var group = container.Group;
+        var start = container.StartIndex;
+        var count = container.Count;
+        _log.LogInfo(_logStore, $"GetVariables: ref={variablesReference} start={start} count={count}");
+
+        // Read parameters for all symbols in the range to check SubElements.
+        int paramSize = Marshal.SizeOf<DEBUG_SYMBOL_PARAMETERS>();
+        IntPtr paramsBuf = Marshal.AllocHGlobal(paramSize * (int)count);
+        int hr = group.GetSymbolParameters(start, count, paramsBuf);
+        _log.LogInfo(_logStore, $"GetSymbolParameters: hr=0x{hr:X8}");
+        var paramArray = new DEBUG_SYMBOL_PARAMETERS[count];
+        if (hr >= 0)
+        {
+            for (int i = 0; i < (int)count; i++)
+                paramArray[i] = Marshal.PtrToStructure<DEBUG_SYMBOL_PARAMETERS>(
+                    paramsBuf + i * paramSize);
+        }
+        Marshal.FreeHGlobal(paramsBuf);
+
+        IntPtr nameBuf = Marshal.AllocHGlobal(512);
+        IntPtr typeBuf = Marshal.AllocHGlobal(512);
+        IntPtr valBuf = Marshal.AllocHGlobal(1024);
+
+        var result = new Variable[count];
+        for (uint i = 0; i < count; i++)
+        {
+            uint idx = start + i;
+
+            string name = $"[{idx}]";
+            if (group.GetSymbolName(idx, nameBuf, 512, out _) >= 0)
+                name = Marshal.PtrToStringAnsi(nameBuf) ?? name;
+
+            string? type = null;
+            if (group.GetSymbolTypeName(idx, typeBuf, 512, out _) >= 0)
+                type = Marshal.PtrToStringAnsi(typeBuf);
+
+            string value = "";
+            if (group.GetSymbolValueText(idx, valBuf, 1024, out _) >= 0)
+                value = Marshal.PtrToStringAnsi(valBuf) ?? "";
+
+            int childRef = 0;
+            if (hr >= 0 && paramArray[i].SubElements > 0)
+            {
+                // Expand the symbol so its children appear in the group.
+                int expHr = group.ExpandSymbol(idx, true);
+                if (expHr >= 0)
+                {
+                    // After expansion, children are inserted right after this symbol.
+                    // Re-read the total count to find the new children.
+                    group.GetNumberSymbols(out var newTotal);
+                    uint childCount = paramArray[i].SubElements;
+                    uint childStart = idx + 1;
+
+                    // Clamp to avoid overrun.
+                    if (childStart + childCount > newTotal)
+                        childCount = newTotal - childStart;
+
+                    if (childCount > 0)
+                        childRef = model.Variables.Allocate(group, childStart, childCount);
+                }
+                _log.LogInfo(_logStore,
+                    $"  Expand {name}: hr=0x{expHr:X8} subElements={paramArray[i].SubElements} childRef={childRef}");
+            }
+
+            _log.LogInfo(_logStore, $"  Var[{idx}]: name=\"{name}\" type=\"{type}\" value=\"{value}\" childRef={childRef}");
+
+            result[i] = new Variable
+            {
+                Name = name,
+                Value = value,
+                Type = type,
+                VariablesReference = childRef,
+            };
+        }
+
+        Marshal.FreeHGlobal(nameBuf);
+        Marshal.FreeHGlobal(typeBuf);
+        Marshal.FreeHGlobal(valBuf);
+
+        return result;
     }
 
     private static DapThread[] GetThreadsOnEngine(NativeDebuggerModel model)

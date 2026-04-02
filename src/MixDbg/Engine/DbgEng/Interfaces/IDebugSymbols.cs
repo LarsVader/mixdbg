@@ -61,11 +61,15 @@ public interface IDebugSymbols
     // Slot 30: ResetScope
     void _VtblGap5_1();
 
-    // Slot 31: GetScopeSymbolGroup (skip for now)
-    void _VtblGap6_1();
+    // Slot 31
+    [PreserveSig]
+    int GetScopeSymbolGroup(
+        uint Flags,
+        IntPtr Update,
+        [MarshalAs(UnmanagedType.Interface)] out IDebugSymbolGroup2 Group);
 
     // Slots 32-37
-    void _VtblGap7_6();
+    void _VtblGap6_6();
 
     // Slot 38
     [PreserveSig]

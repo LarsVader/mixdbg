@@ -37,6 +37,10 @@ public sealed class NativeDebuggerModel : IDisposable
     // Command queue: main thread queues, engine thread executes.
     internal BlockingCollection<Action> Commands { get; } = new();
 
+    // Variable inspection — invalidated on continue/step.
+    internal VariableStore Variables { get; } = new();
+    internal DEBUG_STACK_FRAME[] CachedStackFrames { get; set; } = [];
+
     // Signaled when the target is stopped and ready for commands.
     internal ManualResetEventSlim Stopped { get; } = new(false);
 
