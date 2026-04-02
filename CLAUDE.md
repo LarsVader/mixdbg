@@ -27,7 +27,7 @@ src/MixDbg/
   ServiceCollectionExtensions.cs # AddMixDbgCore() — registers all services
   Dap/
     DapMessages.cs               # All DAP protocol types as C# records
-    DapServer.cs                 # stdin/stdout JSON-RPC transport (Content-Length framing), implements IDapServer
+    DapServerService.cs          # Stateless DAP transport (Content-Length framing), implements IDapServer
     DapDispatcher.cs             # Command string → handler routing, logs all requests
   Engine/
     DebugSession.cs              # Orchestrator: state machine, pending breakpoints, delegates to NativeDebugger
@@ -36,12 +36,16 @@ src/MixDbg/
       Constants.cs               # DEBUG_STATUS_*, breakpoint flags, DebugCreate P/Invoke, DEBUG_STACK_FRAME struct
       Interfaces.cs              # COM interfaces: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSystemObjects, IDebugEventCallbacks
       EventCallbacks.cs          # IDebugEventCallbacks implementation — return values control WaitForEvent behavior
+  Models/
+    DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
+    LogEntry.cs                  # Immutable log record (timestamp, level, sender, message)
+    LogStore.cs                  # Mutable log state: entries list, lock, file path
   Services/
     Interfaces/
-      IDapServer.cs              # ReadRequest, SendResponse, SendErrorResponse, SendEvent
-      ILogService.cs             # Write(string message)
+      IDapServer.cs              # Stateless DAP ops — all methods take DapServerModel
+      ILoggingService.cs         # LogInfo/LogWarning/LogError with [CallerFilePath] — all take LogStore
       ISourceFileService.cs      # IsNativeFile(string path)
-    LogService.cs                # File-based logger (~/mixdbg.log)
+    LoggingService.cs            # File + in-memory logger (~/mixdbg.log), extracts caller name
     SourceFileService.cs         # Native vs managed/CLI file detection
   Handlers/
     InitializeHandler.cs         # DAP initialize handshake
@@ -51,7 +55,7 @@ src/MixDbg/
 
 ## Architecture
 
-**DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Stateless services (`ILogService`, `ISourceFileService`) are singletons. `NativeDebugger` is created lazily via an injected `Func<NativeDebugger>` factory (one per Launch/Attach).
+**DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Follows model+service pattern from zonr: stateless services (`ILoggingService`, `IDapServer`, `ISourceFileService`) are singletons; state lives in models (`LogStore`, `DapServerModel`) created by services and registered as singletons. All service methods take their model as the first parameter. `NativeDebugger` is created lazily via an injected `Func<NativeDebugger>` factory (one per Launch/Attach).
 
 Two threads, one command queue:
 
@@ -103,7 +107,7 @@ ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace
 
 ### Diagnostic Logging
 
-All sessions log to `~/mixdbg.log` — DAP requests/responses, dbgeng events, breakpoint resolution, stack frames. Logging goes through `ILogService` (implemented by `LogService`), injected into all consumers.
+All sessions log to `~/mixdbg.log` — DAP requests/responses, dbgeng events, breakpoint resolution, stack frames. Logging goes through `ILoggingService` (implemented by `LoggingService`), with state in `LogStore`. Uses `[CallerFilePath]` to auto-tag log entries with the source file name. Writes to both in-memory `LogStore.Entries` and the log file.
 
 ## Milestones
 

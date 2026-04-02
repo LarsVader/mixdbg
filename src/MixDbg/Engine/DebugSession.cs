@@ -1,4 +1,5 @@
 using MixDbg.Dap;
+using MixDbg.Models;
 using MixDbg.Services;
 
 namespace MixDbg.Engine;
@@ -19,13 +20,17 @@ public enum SessionState
 /// </summary>
 public sealed class DebugSession(
     IDapServer server,
+    DapServerModel transport,
     ISourceFileService sourceFiles,
-    ILogService log,
+    ILoggingService log,
+    LogStore logStore,
     Func<NativeDebugger> engineFactory) : IDisposable
 {
     private readonly IDapServer _server = server;
+    private readonly DapServerModel _transport = transport;
     private readonly ISourceFileService _sourceFiles = sourceFiles;
-    private readonly ILogService _log = log;
+    private readonly ILoggingService _log = log;
+    private readonly LogStore _logStore = logStore;
     private readonly Func<NativeDebugger> _engineFactory = engineFactory;
     private NativeDebugger? _engine;
     private int _nextPendingBpId = 1000; // Start high to avoid clashing with dbgeng IDs (0-based)
@@ -38,7 +43,7 @@ public sealed class DebugSession(
     public Capabilities Initialize(InitializeRequestArguments args)
     {
         State = SessionState.Initialized;
-        _server.SendEvent("initialized", new InitializedEventBody());
+        _server.SendEvent(_transport, "initialized", new InitializedEventBody());
 
         return new Capabilities
         {
@@ -63,8 +68,8 @@ public sealed class DebugSession(
                 // Notify client that breakpoints are now verified.
                 foreach (var bp in bps)
                 {
-                    _log.Write($"Sending breakpoint changed: id={bp.Id} verified={bp.Verified}");
-                    _server.SendEvent("breakpoint", new BreakpointEventBody
+                    _log.LogInfo(_logStore, $"Sending breakpoint changed: id={bp.Id} verified={bp.Verified}");
+                    _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
                     {
                         Reason = "changed",
                         Breakpoint = bp,
@@ -225,5 +230,4 @@ public sealed class DebugSession(
     {
         _engine?.Dispose();
     }
-
 }

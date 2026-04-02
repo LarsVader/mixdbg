@@ -1,14 +1,15 @@
 using System.Text;
 using System.Text.Json;
+using MixDbg.Models;
 using MixDbg.Services;
 
 namespace MixDbg.Dap;
 
 /// <summary>
-/// Reads DAP messages from stdin and writes responses/events to stdout.
-/// DAP uses HTTP-style Content-Length headers followed by JSON bodies.
+/// Stateless DAP transport service. All mutable state lives in
+/// <see cref="DapServerModel"/>.
 /// </summary>
-public sealed class DapServer : IDapServer
+internal sealed class DapServerService : IDapServer
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -16,24 +17,12 @@ public sealed class DapServer : IDapServer
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private readonly Stream _input;
-    private readonly Stream _output;
-    private readonly object _writeLock = new();
-    private int _seq;
+    public DapServerModel CreateModel(Stream input, Stream output)
+        => new(input, output);
 
-    public DapServer(Stream input, Stream output)
+    public RequestMessage? ReadRequest(DapServerModel model)
     {
-        _input = input;
-        _output = output;
-    }
-
-    /// <summary>
-    /// Reads the next DAP request from the input stream.
-    /// Returns null on EOF.
-    /// </summary>
-    public RequestMessage? ReadRequest()
-    {
-        var headers = ReadHeaders();
+        var headers = ReadHeaders(model);
         if (headers is null) return null;
 
         if (!headers.TryGetValue("Content-Length", out var lengthStr)
@@ -46,7 +35,7 @@ public sealed class DapServer : IDapServer
         var read = 0;
         while (read < length)
         {
-            var n = _input.Read(body, read, length - read);
+            var n = model.Input.Read(body, read, length - read);
             if (n == 0) return null;
             read += n;
         }
@@ -55,75 +44,67 @@ public sealed class DapServer : IDapServer
         return JsonSerializer.Deserialize<RequestMessage>(json, JsonOpts);
     }
 
-    /// <summary>
-    /// Sends a successful response to a request.
-    /// </summary>
-    public void SendResponse(RequestMessage request, object? body = null)
+    public void SendResponse(DapServerModel model, RequestMessage request, object? body = null)
     {
         var response = new ResponseMessage
         {
-            Seq = NextSeq(),
+            Seq = NextSeq(model),
             RequestSeq = request.Seq,
             Success = true,
             Command = request.Command,
             Body = body,
         };
-        WriteMessage(response);
+        WriteMessage(model, response);
     }
 
-    /// <summary>
-    /// Sends an error response to a request.
-    /// </summary>
-    public void SendErrorResponse(RequestMessage request, string message)
+    public void SendErrorResponse(DapServerModel model, RequestMessage request, string message)
     {
         var response = new ResponseMessage
         {
-            Seq = NextSeq(),
+            Seq = NextSeq(model),
             RequestSeq = request.Seq,
             Success = false,
             Command = request.Command,
             Message = message,
         };
-        WriteMessage(response);
+        WriteMessage(model, response);
     }
 
-    /// <summary>
-    /// Sends a DAP event.
-    /// </summary>
-    public void SendEvent(string eventName, object? body = null)
+    public void SendEvent(DapServerModel model, string eventName, object? body = null)
     {
         var evt = new EventMessage
         {
-            Seq = NextSeq(),
+            Seq = NextSeq(model),
             Event = eventName,
             Body = body,
         };
-        WriteMessage(evt);
+        WriteMessage(model, evt);
     }
 
-    private void WriteMessage(ProtocolMessage message)
+    private static void WriteMessage(DapServerModel model, ProtocolMessage message)
     {
         var json = JsonSerializer.Serialize(message, message.GetType(), JsonOpts);
         var bytes = Encoding.UTF8.GetBytes(json);
         var header = $"Content-Length: {bytes.Length}\r\n\r\n";
         var headerBytes = Encoding.ASCII.GetBytes(header);
 
-        lock (_writeLock)
+        lock (model.WriteLock)
         {
-            _output.Write(headerBytes);
-            _output.Write(bytes);
-            _output.Flush();
+            model.Output.Write(headerBytes);
+            model.Output.Write(bytes);
+            model.Output.Flush();
         }
     }
 
-    private int NextSeq() => Interlocked.Increment(ref _seq);
+    private static int NextSeq(DapServerModel model)
+        => Interlocked.Increment(ref model.Seq);
 
-    private Dictionary<string, string>? ReadHeaders()
+    private static Dictionary<string, string>? ReadHeaders(DapServerModel model)
     {
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         while (true)
         {
-            var line = ReadLine();
+            var line = ReadLine(model);
             if (line is null) return null;
             if (line.Length == 0) break;
 
@@ -138,16 +119,16 @@ public sealed class DapServer : IDapServer
         return headers.Count > 0 ? headers : null;
     }
 
-    private string? ReadLine()
+    private static string? ReadLine(DapServerModel model)
     {
         var sb = new StringBuilder();
         while (true)
         {
-            var b = _input.ReadByte();
+            var b = model.Input.ReadByte();
             if (b == -1) return sb.Length > 0 ? sb.ToString() : null;
             if (b == '\r')
             {
-                var next = _input.ReadByte();
+                var next = model.Input.ReadByte();
                 if (next == '\n') return sb.ToString();
                 sb.Append((char)b);
                 if (next != -1) sb.Append((char)next);
