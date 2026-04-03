@@ -3,6 +3,6 @@ obj/
 .vs/
 *.user
 *.suo
-src/MixDbg.Tests/TestResults/
+**/TestResults/
 .claude/
 bash.exe.stackdump
