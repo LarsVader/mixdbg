@@ -37,4 +37,12 @@ public interface IDebugBreakpoint
     // Slot 8
     [PreserveSig]
     int SetOffset(ulong Offset);
+
+    // Slot 9
+    [PreserveSig]
+    int GetDataParameters(out uint Size, out uint AccessType);
+
+    // Slot 10
+    [PreserveSig]
+    int SetDataParameters(uint Size, uint AccessType);
 }

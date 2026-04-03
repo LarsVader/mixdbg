@@ -68,7 +68,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
     }
 
     [Fact]
-    public void SetBreakpoints_WhenManagedFile_ReturnsUnverified()
+    public void SetBreakpoints_WhenManagedFile_ReturnsOptimisticallyVerified()
     {
         GivenSourceFileIsManaged(@"C:\src\Program.cs");
         GivenDapRequests(
@@ -83,7 +83,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         WhenRunningPipeline();
 
         ThenResponseExistsForCommand("setBreakpoints", success: true);
-        ThenSetBreakpointsResponseAllVerified(false);
+        ThenSetBreakpointsResponseAllVerified(true);
     }
 
     [Fact]

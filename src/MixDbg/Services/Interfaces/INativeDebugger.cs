@@ -15,7 +15,7 @@ public interface INativeDebugger
     NativeDebuggerModel CreateModel();
 
     /// <summary>Launches a process under the debugger. Blocks until the engine thread has initialized.</summary>
-    void Launch(NativeDebuggerModel model, string program, string? cwd, string? symbolPath);
+    void Launch(NativeDebuggerModel model, string program, string? cwd, string? symbolPath, string[]? args = null);
 
     /// <summary>Attaches to a running process by PID. Blocks until the engine thread has initialized.</summary>
     void Attach(NativeDebuggerModel model, uint pid, string? symbolPath);

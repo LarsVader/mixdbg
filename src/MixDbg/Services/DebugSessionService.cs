@@ -10,14 +10,12 @@ namespace MixDbg.Services;
 internal sealed class DebugSessionService(
     IDapServer server,
     DapServerModel transport,
-    ISourceFileService sourceFiles,
     ILoggingService log,
     LogStore logStore,
     INativeDebugger nativeDebugger) : IDebugSession
 {
     private readonly IDapServer _server = server;
     private readonly DapServerModel _transport = transport;
-    private readonly ISourceFileService _sourceFiles = sourceFiles;
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
     private readonly INativeDebugger _nativeDebugger = nativeDebugger;
@@ -92,7 +90,7 @@ internal sealed class DebugSessionService(
         }
 
         session.Engine = _nativeDebugger.CreateModel();
-        _nativeDebugger.Launch(session.Engine, args.Program, args.Cwd ?? progDir, symbolPath);
+        _nativeDebugger.Launch(session.Engine, args.Program, args.Cwd ?? progDir, symbolPath, args.Args);
         session.State = SessionState.Running;
     }
 
@@ -123,17 +121,14 @@ internal sealed class DebugSessionService(
             if (args.Source.Path != null)
                 session.PendingBreakpoints.Add(args);
 
-            bool isNative = _sourceFiles.IsNativeFile(args.Source.Path!);
-
             return new SetBreakpointsResponseBody
             {
                 Breakpoints = args.Breakpoints.Select((bp, i) => new Breakpoint
                 {
                     Id = session.NextPendingBpId++,
-                    Verified = isNative,
+                    Verified = true,
                     Line = bp.Line,
                     Source = args.Source,
-                    Message = isNative ? null : "Managed breakpoints not yet supported",
                 }).ToArray(),
             };
         }

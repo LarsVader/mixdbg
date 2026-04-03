@@ -197,7 +197,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     // ── SetBreakpoints (managed file) ──────────────────────
 
     [Fact]
-    public void SetBreakpoints_WhenManagedFile_ReturnsUnverifiedBreakpoints()
+    public void SetBreakpoints_WhenManagedFile_ReturnsPendingVerifiedBreakpoints()
     {
         GivenSourceFileIsManaged(@"C:\src\Program.cs");
         GivenBreakpointRequest(@"C:\src\Program.cs", [10, 20]);
@@ -205,8 +205,8 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         WhenSettingBreakpointsOnDrainThread();
 
         ThenBreakpointResultCountIs(2);
-        ThenAllBreakpointsAreVerified(false);
-        ThenBreakpointsHaveMessage("Managed breakpoints not yet supported");
+        ThenAllBreakpointsAreVerified(true);
+        ThenBreakpointsHaveMessage("Pending — managed debugger not yet initialized");
     }
 
     // ── SetBreakpoints (native, offset resolved) ───────────
@@ -1145,6 +1145,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     private readonly IDapServer _server = Substitute.For<IDapServer>();
     private readonly ILoggingService _log = Substitute.For<ILoggingService>();
     private readonly ISourceFileService _sourceFiles = Substitute.For<ISourceFileService>();
+    private readonly IManagedDebugger _managedDebugger = Substitute.For<IManagedDebugger>();
     private readonly IDebugClient _client = Substitute.For<IDebugClient>();
     private readonly IDebugControl _control = Substitute.For<IDebugControl>();
     private readonly IDebugSymbols _symbols = Substitute.For<IDebugSymbols>();
@@ -1175,7 +1176,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     {
         _transport = new DapServerModel(Stream.Null, Stream.Null);
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
-        _testee = new NativeDebuggerService(_server, _transport, _log, _logStore, _sourceFiles);
+        _testee = new NativeDebuggerService(_server, _transport, _log, _logStore, _sourceFiles, _managedDebugger);
         _model = new NativeDebuggerModel
         {
             Client = _client,

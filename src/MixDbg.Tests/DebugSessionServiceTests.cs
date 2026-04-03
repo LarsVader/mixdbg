@@ -119,14 +119,14 @@ public sealed class DebugSessionServiceTests
     }
 
     [Fact]
-    public void SetBreakpoints_WhenNoEngine_ManagedFileBreakpointsAreNotVerified()
+    public void SetBreakpoints_WhenNoEngine_ManagedFileBreakpointsAreOptimisticallyVerified()
     {
         GivenSourceFileIsManaged("C:/src/Program.cs");
         GivenBreakpointsArgs("C:/src/Program.cs", [10]);
 
         WhenSettingBreakpoints();
 
-        ThenBreakpointAtIndexIsVerified(0, false);
+        ThenBreakpointAtIndexIsVerified(0, true);
     }
 
     [Fact]
@@ -820,7 +820,7 @@ public sealed class DebugSessionServiceTests
         _transport = new DapServerModel(Stream.Null, Stream.Null);
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
         _nativeDebugger.CreateModel().Returns(_engineModel);
-        _testee = new DebugSessionService(_server, _transport, _sourceFiles, _log, _logStore, _nativeDebugger);
+        _testee = new DebugSessionService(_server, _transport, _log, _logStore, _nativeDebugger);
     }
 
     #endregion

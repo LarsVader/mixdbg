@@ -14,13 +14,15 @@ internal sealed class NativeDebuggerService(
     DapServerModel transport,
     ILoggingService log,
     LogStore logStore,
-    ISourceFileService sourceFiles) : INativeDebugger
+    ISourceFileService sourceFiles,
+    IManagedDebugger managedDebugger) : INativeDebugger
 {
     private readonly IDapServer _server = server;
     private readonly DapServerModel _transport = transport;
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
     private readonly ISourceFileService _sourceFiles = sourceFiles;
+    private readonly IManagedDebugger _managedDebugger = managedDebugger;
 
     public NativeDebuggerModel CreateModel()
     {
@@ -30,6 +32,8 @@ internal sealed class NativeDebuggerService(
             model.Terminated = true;
             model.Commands.CompleteAdding();
             model.EngineThread?.Join(3000);
+            model.Runtime?.Dispose();
+            model.DataTarget?.Dispose();
             model.Commands.Dispose();
             model.Stopped.Dispose();
             model.EngineReady.Dispose();
@@ -48,11 +52,12 @@ internal sealed class NativeDebuggerService(
             throw model.EngineInitError;
     }
 
-    public void Launch(NativeDebuggerModel model, string program, string? cwd, string? symbolPath)
+    public void Launch(NativeDebuggerModel model, string program, string? cwd, string? symbolPath, string[]? args = null)
     {
         model.IsAttach = false;
         model.LaunchProgram = program;
         model.LaunchCwd = cwd;
+        model.LaunchArgs = args;
         model.SymbolPath = symbolPath;
         StartEngineThread(model);
         model.EngineReady.Wait();
@@ -255,7 +260,22 @@ internal sealed class NativeDebuggerService(
         };
         model.Callbacks.OnLoadModule += (mod, img) =>
         {
-            // Silent — could log if needed
+            if (!model.ClrLoaded && mod != null &&
+                mod.Equals("coreclr", StringComparison.OrdinalIgnoreCase))
+            {
+                model.ClrLoaded = true;
+                _log.LogInfo(_logStore, "CLR detected: coreclr module loaded");
+            }
+        };
+        model.Callbacks.OnClrNotification += () =>
+        {
+            // CLR notification exceptions fire during JIT compilation.
+            // Check if any deferred managed breakpoints can now be resolved.
+            if (model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
+            {
+                _log.LogInfo(_logStore, $"CLR notification: checking {model.DeferredManagedBreakpoints.Count} deferred bp(s)");
+                TryResolveDeferredOnNotification(model);
+            }
         };
 
         Check(model.Client.SetEventCallbacks(model.Callbacks));
@@ -295,10 +315,13 @@ internal sealed class NativeDebuggerService(
                 if (model.LaunchCwd != null)
                     model.Symbols.SetSourcePath(model.LaunchCwd);
 
-                _log.LogInfo(_logStore, $"Launch: CreateProcess({model.LaunchProgram})");
+                var cmdLine = model.LaunchProgram!;
+                if (model.LaunchArgs is { Length: > 0 })
+                    cmdLine += " " + string.Join(" ", model.LaunchArgs);
+                _log.LogInfo(_logStore, $"Launch: CreateProcess({cmdLine})");
                 Check(model.Client.CreateProcess(
                     0,
-                    model.LaunchProgram!,
+                    cmdLine,
                     CreateProcessFlags.DebugOnlyThisProcess | CreateProcessFlags.CreateNewConsole));
                 _log.LogInfo(_logStore, "Launch: CreateProcess succeeded");
             }
@@ -313,12 +336,21 @@ internal sealed class NativeDebuggerService(
                 _log.LogInfo(_logStore, $"WaitForEvent returned hr=0x{hr:X8}");
                 if (hr < 0)
                 {
-                    _log.LogInfo(_logStore, $"WaitForEvent failed, terminated={model.Terminated} exited={model.TargetExited}");
+
+                    _log.LogInfo(_logStore, $"WaitForEvent failed hr=0x{hr:X8}, terminated={model.Terminated} exited={model.TargetExited}");
                     break;
                 }
 
                 // Target is now stopped.
                 model.Stopped.Set();
+
+                // Initialize managed debugging when CLR is first detected.
+                if (model.ClrLoaded && !model.ManagedInitialized)
+                    TryInitializeManaged(model);
+
+                // Resolve deferred managed breakpoints on each stop.
+                if (model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
+                    TryResolveDeferredOnNotification(model);
 
                 if (model.TargetExited)
                 {
@@ -430,6 +462,95 @@ internal sealed class NativeDebuggerService(
         }
     }
 
+    private void TryInitializeManaged(NativeDebuggerModel model)
+    {
+        _log.LogInfo(_logStore, "Initializing managed debugging (CLR detected)...");
+        if (_managedDebugger.InitializeRuntime(model))
+        {
+            // Apply any managed breakpoints that were pending.
+            foreach (var pending in model.PendingManagedBreakpoints)
+            {
+                var bps = _managedDebugger.SetManagedBreakpoints(
+                    model, pending.Source.Path!, pending.Breakpoints);
+                foreach (var bp in bps)
+                {
+                    _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
+                    {
+                        Reason = "changed",
+                        Breakpoint = bp,
+                    });
+                }
+            }
+            model.PendingManagedBreakpoints.Clear();
+            _log.LogInfo(_logStore, "Managed debugging initialized");
+
+            // If there are deferred breakpoints (methods not yet JIT'd),
+            // schedule an interrupt to force an early stop for resolution.
+            if (model.DeferredManagedBreakpoints.Count > 0)
+                ScheduleDeferredBreakpointCheck(model);
+        }
+    }
+
+    /// <summary>
+    /// Schedules a delayed <c>SetInterrupt(ACTIVE)</c> to force WaitForEvent to return,
+    /// giving the engine loop a chance to resolve deferred managed breakpoints.
+    /// The injected break is handled as a system stop and auto-continued.
+    /// Re-schedules itself if deferred breakpoints remain unresolved.
+    /// </summary>
+    private void ScheduleDeferredBreakpointCheck(NativeDebuggerModel model, int delayMs = 2000)
+    {
+        Task.Delay(delayMs).ContinueWith(_ =>
+        {
+            if (model.Terminated || model.TargetExited
+                || model.DeferredManagedBreakpoints.Count == 0)
+                return;
+
+            // Stop after 10 consecutive DAC failures — the DataTarget is broken.
+            if (model.DeferredResolutionFailures >= 10)
+            {
+                _log.LogInfo(_logStore, "Stopping deferred bp checks after 10 consecutive DAC failures");
+                return;
+            }
+
+            _log.LogInfo(_logStore, "Requesting interrupt to resolve deferred managed breakpoints");
+            try
+            {
+                model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
+                ScheduleDeferredBreakpointCheck(model);
+            }
+            catch (Exception ex)
+            {
+                _log.LogInfo(_logStore, $"SetInterrupt failed: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Called from CLR notification callbacks (during JIT compilation).
+    /// Resolves any deferred managed breakpoints whose methods are now JIT-compiled
+    /// and sends breakpoint-changed events to the DAP client.
+    /// </summary>
+    private void TryResolveDeferredOnNotification(NativeDebuggerModel model)
+    {
+        try
+        {
+            var resolved = _managedDebugger.TryResolveDeferredBreakpoints(model);
+            foreach (var bp in resolved)
+            {
+                _log.LogInfo(_logStore, $"Deferred managed bp resolved: id={bp.Id} line={bp.Line}");
+                _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
+                {
+                    Reason = "changed",
+                    Breakpoint = bp,
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogInfo(_logStore, $"TryResolveDeferredOnNotification failed: {ex.Message}");
+        }
+    }
+
     private static void QueueStep(NativeDebuggerModel model, uint stepKind)
     {
         model.Stepping = true;
@@ -444,8 +565,9 @@ internal sealed class NativeDebuggerService(
     {
         bp.GetId(out var id);
         model.LastHitBpId = id;
-        model.HitUserBreakpoint = model.UserBreakpointIds.Contains(id);
-        _log.LogInfo(_logStore, $"OnBreakpoint: id={id} isUser={model.HitUserBreakpoint} (tracked: [{string.Join(",", model.UserBreakpointIds)}])");
+        model.HitUserBreakpoint = model.UserBreakpointIds.Contains(id)
+            || model.ManagedBreakpointIds.Contains(id);
+        _log.LogInfo(_logStore, $"OnBreakpoint: id={id} isUser={model.HitUserBreakpoint} (native: [{string.Join(",", model.UserBreakpointIds)}] managed: [{string.Join(",", model.ManagedBreakpointIds)}])");
 
         // Send verified update so nvim-dap clears the "rejected" marker.
         if (model.HitUserBreakpoint)
@@ -492,16 +614,49 @@ internal sealed class NativeDebuggerService(
         foreach (var r in requested)
             _log.LogInfo(_logStore, $"  requested: line={r.Line}");
 
-        // Managed files can't be debugged via dbgeng yet (M4).
+        // Delegate managed files to the managed debugger.
         if (!_sourceFiles.IsNativeFile(filePath))
         {
-            _log.LogInfo(_logStore, $"  Skipping non-native file: {filePath}");
+            // Remove old managed breakpoints for this file (hardware bp cleanup).
+            var managedKeysToRemove = model.BreakpointIds.Keys
+                .Where(k => k.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var key in managedKeysToRemove)
+            {
+                if (model.BreakpointIds.TryGetValue(key, out var oldId))
+                {
+                    int hr = model.Control.GetBreakpointById(oldId, out var oldBp);
+                    if (hr >= 0)
+                        model.Control.RemoveBreakpoint(oldBp);
+                    model.ManagedBreakpointIds.Remove(oldId);
+                    model.BreakpointIds.Remove(key);
+                    _log.LogInfo(_logStore, $"  Removed old managed bp: id={oldId} key={key}");
+                }
+            }
+            // Also clear deferred bps for this file.
+            model.DeferredManagedBreakpoints.RemoveAll(d =>
+                d.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
+
+            if (model.ManagedInitialized)
+            {
+                _log.LogInfo(_logStore, $"  Delegating to managed debugger: {filePath}");
+                return _managedDebugger.SetManagedBreakpoints(model, filePath, requested);
+            }
+
+            // CLR not loaded yet — store as pending, return optimistic verified: true.
+            _log.LogInfo(_logStore, $"  CLR not ready, storing as pending managed bp: {filePath}");
+            model.PendingManagedBreakpoints.Add(new SetBreakpointsArguments
+            {
+                Source = new Source { Name = Path.GetFileName(filePath), Path = filePath },
+                Breakpoints = requested,
+            });
             return requested.Select((bp, i) => new Breakpoint
             {
-                Id = i,
-                Verified = false,
+                Id = ++model.NextBpId,
+                Verified = true,
                 Line = bp.Line,
-                Message = "Managed breakpoints not yet supported",
+                Source = new Source { Name = Path.GetFileName(filePath), Path = filePath },
+                Message = "Pending — managed debugger not yet initialized",
             }).ToArray();
         }
 
@@ -695,11 +850,66 @@ internal sealed class NativeDebuggerService(
         }
         Marshal.FreeHGlobal(nameBuf);
         Marshal.FreeHGlobal(fileBuf);
+
+        // Merge managed frame info from ClrMD.
+        if (model.ManagedInitialized)
+            MergeManagedFrames(model, result);
+
         return result;
         }
         finally
         {
             Marshal.FreeHGlobal(buf);
+        }
+    }
+
+    private void MergeManagedFrames(NativeDebuggerModel model, StackFrame[] nativeFrames)
+    {
+        var managedFrames = _managedDebugger.GetManagedStackFrames(model);
+        if (managedFrames.Length == 0)
+            return;
+
+        // ClrMD GetManagedStackFrames returns frames with sequential IDs starting at 1.
+        // We stored the IP in the frame temporarily via the managed service. Instead,
+        // we match by walking both stacks: for each native frame without source info
+        // that looks like managed code, try to find a managed frame with the same IP.
+
+        // Build a set of managed frame IPs for lookup.
+        // The managed frames use the same IPs as the native stack since both read
+        // the physical stack. Store managed info keyed by position for sequential match.
+
+        // Best-effort merge: for each native frame without source info, if the
+        // next managed frame has a name, overlay it.
+        int managedIdx = 0;
+        for (int i = 0; i < nativeFrames.Length && managedIdx < managedFrames.Length; i++)
+        {
+            var nf = nativeFrames[i];
+
+            // Skip frames that already resolved to native source.
+            if (nf.Source != null)
+                continue;
+
+            // Check if this looks like a JIT-compiled or CLR infrastructure frame.
+            var name = nf.Name ?? "";
+            bool looksManaged = name.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("coreclr!", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("clrjit!", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("clr!", StringComparison.OrdinalIgnoreCase);
+
+            if (!looksManaged)
+                continue;
+
+            // Overlay with the next managed frame.
+            var mf = managedFrames[managedIdx++];
+            nativeFrames[i] = new StackFrame
+            {
+                Id = nf.Id,
+                Name = mf.Name,
+                Source = mf.Source,
+                Line = mf.Line,
+                Column = 0,
+            };
+            _log.LogInfo(_logStore, $"  Merged managed frame into slot {i}: {mf.Name}");
         }
     }
 

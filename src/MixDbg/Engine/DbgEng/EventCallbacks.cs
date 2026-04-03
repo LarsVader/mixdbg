@@ -15,6 +15,13 @@ public sealed class EventCallbacks : IDebugEventCallbacks
     public event Action<string?>? OnCreateProcess;
     public event Action<uint>? OnExceptionEvent;
 
+    /// <summary>
+    /// Fired on CLR notification exceptions (0xe0444143) which occur during JIT
+    /// compilation. Used to resolve deferred managed breakpoints at the moment
+    /// the method is compiled — before the compiled code executes.
+    /// </summary>
+    public event Action? OnClrNotification;
+
     private const int StatusGo = 1;        // DEBUG_STATUS_GO
     private const int StatusGoHandled = 2;  // DEBUG_STATUS_GO_HANDLED
     private const int StatusBreak = 6;      // DEBUG_STATUS_BREAK
@@ -43,8 +50,22 @@ public sealed class EventCallbacks : IDebugEventCallbacks
 
     public int Exception(IntPtr Exception, uint FirstChance)
     {
+        // Read the exception code from EXCEPTION_RECORD64.ExceptionCode (first uint).
+        uint exceptionCode = Exception != IntPtr.Zero
+            ? (uint)Marshal.ReadInt32(Exception)
+            : 0;
+
+        // CLR notification exceptions (e0444143) are used internally by SOS
+        // for JIT/module load notifications. Let them pass through without
+        // breaking — SOS handles them to resolve deferred breakpoints.
+        if (exceptionCode == 0xe0444143)
+        {
+            OnClrNotification?.Invoke();
+            return StatusGoHandled;
+        }
+
         OnExceptionEvent?.Invoke(FirstChance);
-        // Break on all exceptions so WaitForEvent returns.
+        // Break on all other exceptions so WaitForEvent returns.
         // The engine loop decides whether to auto-continue.
         return StatusBreak;
     }
