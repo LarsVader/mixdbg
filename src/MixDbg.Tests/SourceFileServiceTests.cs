@@ -66,6 +66,62 @@ public sealed class SourceFileServiceTests : IDisposable
         ThenResultIsTrue();
     }
 
+    // ── IsManagedFile ───────────────────────────────────────
+
+    [Theory]
+    [InlineData("Program.cs")]
+    [InlineData("Service.cs")]
+    public void IsManagedFile_WhenCsExtension_ReturnsTrue(string fileName)
+    {
+        GivenAFileWithName(fileName);
+
+        WhenCheckingIsManagedFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsManagedFile_WhenCppCliProject_ReturnsTrue()
+    {
+        GivenACppCliVcxproj();
+        GivenAFileWithName("wrapper.cpp");
+
+        WhenCheckingIsManagedFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsManagedFile_WhenNativeCpp_ReturnsFalse()
+    {
+        GivenANativeVcxproj();
+        GivenAFileWithName("native.cpp");
+
+        WhenCheckingIsManagedFile();
+
+        ThenResultIsFalse();
+    }
+
+    [Fact]
+    public void IsManagedFile_WhenNoCppNoCs_ReturnsFalse()
+    {
+        GivenAFileWithName("readme.txt");
+
+        WhenCheckingIsManagedFile();
+
+        ThenResultIsFalse();
+    }
+
+    [Fact]
+    public void IsManagedFile_WhenStandaloneCpp_ReturnsFalse()
+    {
+        GivenAFileWithName("standalone.cpp");
+
+        WhenCheckingIsManagedFile();
+
+        ThenResultIsFalse();
+    }
+
     #region Given
 
     private void GivenAFileWithName(string fileName)
@@ -95,6 +151,11 @@ public sealed class SourceFileServiceTests : IDisposable
     private void WhenCheckingIsNativeFile()
     {
         _result = _testee.IsNativeFile(_filePath);
+    }
+
+    private void WhenCheckingIsManagedFile()
+    {
+        _result = _testee.IsManagedFile(_filePath);
     }
 
     #endregion

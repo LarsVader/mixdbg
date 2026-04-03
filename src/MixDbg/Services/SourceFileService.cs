@@ -26,4 +26,34 @@ public sealed class SourceFileService : ISourceFileService
         }
         return true;
     }
+
+    public bool IsManagedFile(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+
+        // C# files are always managed.
+        if (ext == ".cs")
+            return true;
+
+        // C++/CLI files: .cpp/.c in a project with <CLRSupport>.
+        if (ext is ".cpp" or ".c" or ".cc" or ".cxx")
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (dir != null)
+            {
+                try
+                {
+                    foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                    {
+                        var text = File.ReadAllText(vcx);
+                        if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                }
+                catch { /* ignore IO errors */ }
+            }
+        }
+
+        return false;
+    }
 }

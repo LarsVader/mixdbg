@@ -12,4 +12,10 @@ public interface ISourceFileService
     /// (detected by scanning for CLRSupport in the directory's vcxproj).
     /// </summary>
     bool IsNativeFile(string path);
+
+    /// <summary>
+    /// Returns true for managed files: C# (.cs) and C++/CLI (.cpp with
+    /// CLRSupport in vcxproj). These require the managed debugger (SOS + ClrMD).
+    /// </summary>
+    bool IsManagedFile(string path);
 }

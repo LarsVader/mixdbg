@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using Microsoft.Diagnostics.Runtime;
+using MixDbg.Dap;
 using MixDbg.Engine.DbgEng;
 
 namespace MixDbg.Models;
@@ -37,6 +39,20 @@ public sealed class NativeDebuggerModel : IDisposable
     // Command queue: main thread queues, engine thread executes.
     internal BlockingCollection<Action> Commands { get; } = new();
 
+    // Managed breakpoint tracking.
+    internal HashSet<uint> ManagedBreakpointIds { get; } = new();
+    internal List<SetBreakpointsArguments> PendingManagedBreakpoints { get; } = new();
+    internal List<DeferredManagedBreakpoint> DeferredManagedBreakpoints { get; } = new();
+    internal int DeferredResolutionFailures;
+
+    // CLR / managed debugging state — set on the engine thread.
+    internal volatile bool ClrLoaded;
+    internal volatile bool ManagedInitialized;
+    internal DataTarget? DataTarget { get; set; }
+    internal ClrRuntime? Runtime { get; set; }
+    /// <summary>The original runtime created during InitializeRuntime — stable for stack traces.</summary>
+    internal ClrRuntime? OriginalRuntime { get; set; }
+
     // Variable inspection — invalidated on continue/step.
     internal VariableStore Variables { get; } = new();
     internal DEBUG_STACK_FRAME[] CachedStackFrames { get; set; } = [];
@@ -47,6 +63,7 @@ public sealed class NativeDebuggerModel : IDisposable
     // Saved launch/attach parameters — actual work happens on engine thread.
     internal string? LaunchProgram;
     internal string? LaunchCwd;
+    internal string[]? LaunchArgs;
     internal uint AttachPid;
     internal string? SymbolPath;
     internal bool IsAttach;
