@@ -25,13 +25,12 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenLaunchingWithAutoTest();
         await WhenSendingConfigurationDone();
 
-        // Hit 1: OnAddClick — auto-test clicks Add at 3s (JITs), then at 7s (bp fires).
+        // Hit 1: OnAddClick — ICorDebug handles pre-JIT breakpoints, fires on first call.
         await WhenWaitingForStoppedEvent(timeout: 20);
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        // Hit 2: OnMultiplyClick — auto-test clicks Multiply after gap (JITs), then again (bp fires).
-        // Longer timeout: WpfApp timers pause during debug stops, extending real elapsed time.
+        // Hit 2: OnMultiplyClick — fires on first call.
         await WhenWaitingForStoppedEvent(timeout: 30);
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
@@ -368,8 +367,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         _repoRoot, "test", "TestApp", "WpfApp", "bin", "x64", "Debug", "net10.0-windows", "WpfApp.exe");
     private static readonly string _bpFile = Path.Combine(
         _repoRoot, "test", "TestApp", "WpfApp", "MainWindow.xaml.cs");
-    private const int _addLine = 48;
-    private const int _multiplyLine = 57;
+    private const int _addLine = 49;
+    private const int _multiplyLine = 58;
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-test-{Guid.NewGuid():N}.log");

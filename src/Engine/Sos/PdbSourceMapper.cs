@@ -106,7 +106,7 @@ internal sealed class PdbSourceMapper : IDisposable
                     continue;
 
                 var docName = reader.GetString(reader.GetDocument(sp.Document).Name);
-                if (!docName.Equals(sourceFile, StringComparison.OrdinalIgnoreCase))
+                if (!Path.GetFullPath(docName).Equals(Path.GetFullPath(sourceFile), StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 if (sp.StartLine <= line && line <= sp.EndLine)

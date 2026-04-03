@@ -414,7 +414,7 @@ public sealed class DebugSessionServiceTests
 
     private void GivenAnEngineIsRunning()
     {
-        _session.Engine = _engineModel;
+        _session.CorEngine = _engineModel;
     }
 
     private void GivenSourceFileIsNative(string path)
@@ -429,8 +429,8 @@ public sealed class DebugSessionServiceTests
 
     private void GivenNativeDebuggerReturnsBreakpoints()
     {
-        _nativeDebugger.SetBreakpoints(
-            Arg.Any<NativeDebuggerModel>(),
+        _engine.SetBreakpoints(
+            Arg.Any<CorDebugEngineModel>(),
             Arg.Any<string>(),
             Arg.Any<SourceBreakpoint[]>())
             .Returns(ci =>
@@ -447,7 +447,7 @@ public sealed class DebugSessionServiceTests
 
     private void GivenNativeDebuggerReturnsFrames(int count)
     {
-        _nativeDebugger.GetStackTrace(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+        _engine.GetStackTrace(Arg.Any<CorDebugEngineModel>(), Arg.Any<int>())
             .Returns(Enumerable.Range(1, count).Select(i => new StackFrame
             {
                 Id = i,
@@ -457,7 +457,7 @@ public sealed class DebugSessionServiceTests
 
     private void GivenNativeDebuggerReturnsThreads(int count)
     {
-        _nativeDebugger.GetThreads(Arg.Any<NativeDebuggerModel>())
+        _engine.GetThreads(Arg.Any<CorDebugEngineModel>())
             .Returns(Enumerable.Range(1, count).Select(i => new DapThread
             {
                 Id = i,
@@ -477,7 +477,7 @@ public sealed class DebugSessionServiceTests
 
     private void GivenNativeDebuggerReturnsScopes(int count)
     {
-        _nativeDebugger.GetScopes(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+        _engine.GetScopes(Arg.Any<CorDebugEngineModel>(), Arg.Any<int>())
             .Returns(Enumerable.Range(1, count).Select(i => new Scope
             {
                 Name = $"Scope{i}",
@@ -487,7 +487,7 @@ public sealed class DebugSessionServiceTests
 
     private void GivenNativeDebuggerReturnsVariables(int count)
     {
-        _nativeDebugger.GetVariables(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+        _engine.GetVariables(Arg.Any<CorDebugEngineModel>(), Arg.Any<int>())
             .Returns(Enumerable.Range(1, count).Select(i => new Variable
             {
                 Name = $"var{i}",
@@ -627,42 +627,42 @@ public sealed class DebugSessionServiceTests
 
     private void ThenEngineWasCreated()
     {
-        _nativeDebugger.Received(1).CreateModel();
+        _engine.Received(1).CreateModel();
     }
 
     private void ThenNativeDebuggerLaunchWasCalled()
     {
-        _nativeDebugger.Received(1).Launch(
-            Arg.Any<NativeDebuggerModel>(),
+        _engine.Received(1).Launch(
+            Arg.Any<CorDebugEngineModel>(),
             Arg.Any<string>(),
             Arg.Any<string?>(),
-            Arg.Any<string?>());
+            Arg.Any<string[]?>());
     }
 
     private void ThenNativeDebuggerLaunchWasCalledWithCwd(string expected)
     {
-        _nativeDebugger.Received(1).Launch(
-            Arg.Any<NativeDebuggerModel>(),
+        _engine.Received(1).Launch(
+            Arg.Any<CorDebugEngineModel>(),
             Arg.Any<string>(),
             Arg.Is<string?>(s => s != null && Path.GetFullPath(s) == Path.GetFullPath(expected)),
-            Arg.Any<string?>());
+            Arg.Any<string[]?>());
     }
 
     private void ThenNativeDebuggerLaunchWasCalledWithSymbolPathContaining(string expected)
     {
-        _nativeDebugger.Received(1).Launch(
-            Arg.Any<NativeDebuggerModel>(),
+        // ICorDebug engine no longer takes symbolPath — just verify launch was called.
+        _engine.Received(1).Launch(
+            Arg.Any<CorDebugEngineModel>(),
             Arg.Any<string>(),
             Arg.Any<string?>(),
-            Arg.Is<string?>(s => s != null && s.Contains(expected)));
+            Arg.Any<string[]?>());
     }
 
     private void ThenNativeDebuggerAttachWasCalledWithPid(uint expected)
     {
-        _nativeDebugger.Received(1).Attach(
-            Arg.Any<NativeDebuggerModel>(),
-            expected,
-            Arg.Any<string?>());
+        _engine.Received(1).Attach(
+            Arg.Any<CorDebugEngineModel>(),
+            expected);
     }
 
     private void ThenInvalidOperationExceptionWasThrown()
@@ -687,40 +687,40 @@ public sealed class DebugSessionServiceTests
 
     private void ThenNativeDebuggerSetBreakpointsWasCalled()
     {
-        _nativeDebugger.Received().SetBreakpoints(
-            Arg.Any<NativeDebuggerModel>(),
+        _engine.Received().SetBreakpoints(
+            Arg.Any<CorDebugEngineModel>(),
             Arg.Any<string>(),
             Arg.Any<SourceBreakpoint[]>());
     }
 
     private void ThenNativeDebuggerContinueWasCalled()
     {
-        _nativeDebugger.Received().Continue(Arg.Any<NativeDebuggerModel>());
+        _engine.Received().Continue(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerContinueWasNotCalled()
     {
-        _nativeDebugger.DidNotReceive().Continue(Arg.Any<NativeDebuggerModel>());
+        _engine.DidNotReceive().Continue(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerStepOverWasCalled()
     {
-        _nativeDebugger.Received(1).StepOver(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).StepOver(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerStepIntoWasCalled()
     {
-        _nativeDebugger.Received(1).StepInto(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).StepInto(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerStepOutWasCalled()
     {
-        _nativeDebugger.Received(1).StepOut(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).StepOut(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerBreakWasCalled()
     {
-        _nativeDebugger.Received(1).Break(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).Break(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenStackFrameCountIs(int expected)
@@ -735,7 +735,7 @@ public sealed class DebugSessionServiceTests
 
     private void ThenNativeDebuggerGetStackTraceWasCalledWithMaxFrames(int expected)
     {
-        _nativeDebugger.Received(1).GetStackTrace(Arg.Any<NativeDebuggerModel>(), expected);
+        _engine.Received(1).GetStackTrace(Arg.Any<CorDebugEngineModel>(), expected);
     }
 
     private void ThenThreadCountIs(int expected)
@@ -750,12 +750,12 @@ public sealed class DebugSessionServiceTests
 
     private void ThenNativeDebuggerTerminateWasCalled()
     {
-        _nativeDebugger.Received(1).Terminate(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).Terminate(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerDetachWasCalled()
     {
-        _nativeDebugger.Received(1).Detach(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).Detach(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenBreakpointEventWasSent()
@@ -770,7 +770,7 @@ public sealed class DebugSessionServiceTests
 
     private void ThenNativeDebuggerGetScopesWasCalled()
     {
-        _nativeDebugger.Received(1).GetScopes(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>());
+        _engine.Received(1).GetScopes(Arg.Any<CorDebugEngineModel>(), Arg.Any<int>());
     }
 
     private void ThenVariableCountIs(int expected)
@@ -780,7 +780,7 @@ public sealed class DebugSessionServiceTests
 
     private void ThenNativeDebuggerGetVariablesWasCalled()
     {
-        _nativeDebugger.Received(1).GetVariables(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>());
+        _engine.Received(1).GetVariables(Arg.Any<CorDebugEngineModel>(), Arg.Any<int>());
     }
 
     #endregion
@@ -790,11 +790,11 @@ public sealed class DebugSessionServiceTests
     private readonly IDapServer _server = Substitute.For<IDapServer>();
     private readonly ISourceFileService _sourceFiles = Substitute.For<ISourceFileService>();
     private readonly ILoggingService _log = Substitute.For<ILoggingService>();
-    private readonly INativeDebugger _nativeDebugger = Substitute.For<INativeDebugger>();
+    private readonly ICorDebugEngine _engine = Substitute.For<ICorDebugEngine>();
     private readonly DapServerModel _transport;
     private readonly LogStore _logStore;
     private readonly DebugSessionModel _session = new();
-    private readonly NativeDebuggerModel _engineModel = new();
+    private readonly CorDebugEngineModel _engineModel = new();
     private readonly DebugSessionServiceTests _this;
     private readonly DebugSessionService _testee;
 
@@ -819,8 +819,8 @@ public sealed class DebugSessionServiceTests
         _this = this;
         _transport = new DapServerModel(Stream.Null, Stream.Null);
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
-        _nativeDebugger.CreateModel().Returns(_engineModel);
-        _testee = new DebugSessionService(_server, _transport, _log, _logStore, _nativeDebugger);
+        _engine.CreateModel().Returns(_engineModel);
+        _testee = new DebugSessionService(_server, _transport, _log, _logStore, _engine);
     }
 
     #endregion

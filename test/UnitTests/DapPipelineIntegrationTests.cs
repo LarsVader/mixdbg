@@ -430,8 +430,8 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void GivenNativeDebuggerReturnsBreakpoints()
     {
-        _nativeDebugger.SetBreakpoints(
-            Arg.Any<NativeDebuggerModel>(),
+        _engine.SetBreakpoints(
+            Arg.Any<CorDebugEngineModel>(),
             Arg.Any<string>(),
             Arg.Any<SourceBreakpoint[]>())
             .Returns(ci =>
@@ -448,7 +448,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void GivenNativeDebuggerReturnsFrames(int count)
     {
-        _nativeDebugger.GetStackTrace(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+        _engine.GetStackTrace(Arg.Any<CorDebugEngineModel>(), Arg.Any<int>())
             .Returns(Enumerable.Range(1, count).Select(i => new StackFrame
             {
                 Id = i,
@@ -459,7 +459,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void GivenNativeDebuggerReturnsThreads(int count)
     {
-        _nativeDebugger.GetThreads(Arg.Any<NativeDebuggerModel>())
+        _engine.GetThreads(Arg.Any<CorDebugEngineModel>())
             .Returns(Enumerable.Range(1, count).Select(i => new DapThread
             {
                 Id = i,
@@ -484,7 +484,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         services.AddSingleton<IDebugSession, DebugSessionService>();
 
         // Mocked services
-        services.AddSingleton(_nativeDebugger);
+        services.AddSingleton<ICorDebugEngine>(_engine);
         services.AddSingleton(_sourceFiles);
 
         // Models
@@ -539,49 +539,49 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void ThenNativeDebuggerLaunchWasCalled()
     {
-        _nativeDebugger.Received(1).Launch(
-            Arg.Any<NativeDebuggerModel>(),
+        _engine.Received(1).Launch(
+            Arg.Any<CorDebugEngineModel>(),
             Arg.Any<string>(),
             Arg.Any<string?>(),
-            Arg.Any<string?>());
+            Arg.Any<string[]?>());
     }
 
     private void ThenNativeDebuggerSetBreakpointsWasCalled(string filePath)
     {
-        _nativeDebugger.Received().SetBreakpoints(
-            Arg.Any<NativeDebuggerModel>(),
+        _engine.Received().SetBreakpoints(
+            Arg.Any<CorDebugEngineModel>(),
             filePath,
             Arg.Any<SourceBreakpoint[]>());
     }
 
     private void ThenNativeDebuggerContinueWasCalled()
     {
-        _nativeDebugger.Received().Continue(Arg.Any<NativeDebuggerModel>());
+        _engine.Received().Continue(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerStepOverWasCalled()
     {
-        _nativeDebugger.Received(1).StepOver(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).StepOver(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerStepIntoWasCalled()
     {
-        _nativeDebugger.Received(1).StepInto(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).StepInto(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerStepOutWasCalled()
     {
-        _nativeDebugger.Received(1).StepOut(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).StepOut(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerTerminateWasCalled()
     {
-        _nativeDebugger.Received().Terminate(Arg.Any<NativeDebuggerModel>());
+        _engine.Received().Terminate(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenNativeDebuggerDetachWasCalled()
     {
-        _nativeDebugger.Received().Detach(Arg.Any<NativeDebuggerModel>());
+        _engine.Received().Detach(Arg.Any<CorDebugEngineModel>());
     }
 
     private void ThenSetBreakpointsResponseHasCount(int expected)
@@ -676,7 +676,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private readonly INativeDebugger _nativeDebugger = Substitute.For<INativeDebugger>();
+    private readonly ICorDebugEngine _engine = Substitute.For<ICorDebugEngine>();
     private readonly ISourceFileService _sourceFiles = Substitute.For<ISourceFileService>();
     private MemoryStream? _inputStream;
     private MemoryStream? _outputStream;
@@ -692,7 +692,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     public DapPipelineIntegrationTests()
     {
-        _nativeDebugger.CreateModel().Returns(_ => new NativeDebuggerModel());
+        _engine.CreateModel().Returns(_ => new CorDebugEngineModel());
     }
 
     private static string MakeRequest(int seq, string command, object? args = null)

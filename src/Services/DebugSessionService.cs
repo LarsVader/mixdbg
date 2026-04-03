@@ -12,13 +12,13 @@ internal sealed class DebugSessionService(
     DapServerModel transport,
     ILoggingService log,
     LogStore logStore,
-    INativeDebugger nativeDebugger) : IDebugSession
+    ICorDebugEngine engine) : IDebugSession
 {
     private readonly IDapServer _server = server;
     private readonly DapServerModel _transport = transport;
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
-    private readonly INativeDebugger _nativeDebugger = nativeDebugger;
+    private readonly ICorDebugEngine _engine = engine;
 
     public DebugSessionModel CreateModel()
         => new();
@@ -41,14 +41,13 @@ internal sealed class DebugSessionService(
     {
         session.State = SessionState.Configured;
 
-        if (session.Engine != null)
+        if (session.CorEngine != null)
         {
             // Apply breakpoints that arrived before launch.
             foreach (var pending in session.PendingBreakpoints)
             {
-                var bps = _nativeDebugger.SetBreakpoints(
-                    session.Engine, pending.Source.Path!, pending.Breakpoints);
-                // Notify client that breakpoints are now verified.
+                var bps = _engine.SetBreakpoints(
+                    session.CorEngine, pending.Source.Path!, pending.Breakpoints);
                 foreach (var bp in bps)
                 {
                     _log.LogInfo(_logStore, $"Sending breakpoint changed: id={bp.Id} verified={bp.Verified}");
@@ -61,63 +60,34 @@ internal sealed class DebugSessionService(
             }
             session.PendingBreakpoints.Clear();
 
-            _nativeDebugger.Continue(session.Engine);
+            _engine.Continue(session.CorEngine);
             session.State = SessionState.Running;
         }
     }
 
     public void Launch(DebugSessionModel session, LaunchRequestArguments args)
     {
-        var symbolPath = args.SymbolPath != null
-            ? string.Join(";", args.SymbolPath)
-            : null;
-
-        var progDir = Path.GetDirectoryName(args.Program);
-        if (progDir != null)
-        {
-            // Walk up to find the solution root so PDBs in
-            // sibling output dirs (e.g. x64/Debug) are found.
-            var root = progDir;
-            for (int up = 0; up < 5; up++)
-            {
-                var parent = Path.GetDirectoryName(root);
-                if (parent == null) break;
-                root = parent;
-            }
-            symbolPath = string.Join(";",
-                new[] { progDir, root, symbolPath }
-                    .Where(s => s != null));
-        }
-
-        session.Engine = _nativeDebugger.CreateModel();
-        _nativeDebugger.Launch(session.Engine, args.Program, args.Cwd ?? progDir, symbolPath, args.Args);
+        session.CorEngine = _engine.CreateModel();
+        _engine.Launch(session.CorEngine, args.Program, args.Cwd ?? Path.GetDirectoryName(args.Program), args.Args);
         session.State = SessionState.Running;
     }
 
     public void Attach(DebugSessionModel session, AttachRequestArguments args)
     {
-        var symbolPath = args.SymbolPath != null
-            ? string.Join(";", args.SymbolPath)
-            : null;
-
-        session.Engine = _nativeDebugger.CreateModel();
+        session.CorEngine = _engine.CreateModel();
 
         if (args.Pid.HasValue)
-        {
-            _nativeDebugger.Attach(session.Engine, (uint)args.Pid.Value, symbolPath);
-        }
+            _engine.Attach(session.CorEngine, (uint)args.Pid.Value);
         else
-        {
             throw new InvalidOperationException("PID is required for attach");
-        }
+
         session.State = SessionState.Running;
     }
 
     public SetBreakpointsResponseBody SetBreakpoints(DebugSessionModel session, SetBreakpointsArguments args)
     {
-        if (session.Engine == null || args.Source.Path == null)
+        if (session.CorEngine == null || args.Source.Path == null)
         {
-            // Engine not ready yet — store for later.
             if (args.Source.Path != null)
                 session.PendingBreakpoints.Add(args);
 
@@ -133,52 +103,52 @@ internal sealed class DebugSessionService(
             };
         }
 
-        var bps = _nativeDebugger.SetBreakpoints(session.Engine, args.Source.Path, args.Breakpoints);
+        var bps = _engine.SetBreakpoints(session.CorEngine, args.Source.Path, args.Breakpoints);
         return new SetBreakpointsResponseBody { Breakpoints = bps };
     }
 
     public void Continue(DebugSessionModel session)
     {
-        if (session.Engine != null)
+        if (session.CorEngine != null)
         {
-            _nativeDebugger.Continue(session.Engine);
+            _engine.Continue(session.CorEngine);
             session.State = SessionState.Running;
         }
     }
 
     public void StepOver(DebugSessionModel session)
     {
-        if (session.Engine != null)
-            _nativeDebugger.StepOver(session.Engine);
+        if (session.CorEngine != null)
+            _engine.StepOver(session.CorEngine);
         session.State = SessionState.Running;
     }
 
     public void StepInto(DebugSessionModel session)
     {
-        if (session.Engine != null)
-            _nativeDebugger.StepInto(session.Engine);
+        if (session.CorEngine != null)
+            _engine.StepInto(session.CorEngine);
         session.State = SessionState.Running;
     }
 
     public void StepOut(DebugSessionModel session)
     {
-        if (session.Engine != null)
-            _nativeDebugger.StepOut(session.Engine);
+        if (session.CorEngine != null)
+            _engine.StepOut(session.CorEngine);
         session.State = SessionState.Running;
     }
 
     public void Pause(DebugSessionModel session)
     {
-        if (session.Engine != null)
-            _nativeDebugger.Break(session.Engine);
+        if (session.CorEngine != null)
+            _engine.Break(session.CorEngine);
     }
 
     public StackTraceResponseBody GetStackTrace(DebugSessionModel session, StackTraceArguments args)
     {
-        if (session.Engine == null)
+        if (session.CorEngine == null)
             return new StackTraceResponseBody { StackFrames = [] };
 
-        var frames = _nativeDebugger.GetStackTrace(session.Engine, args.Levels > 0 ? args.Levels : 50);
+        var frames = _engine.GetStackTrace(session.CorEngine, args.Levels > 0 ? args.Levels : 50);
         return new StackTraceResponseBody
         {
             StackFrames = frames,
@@ -188,42 +158,39 @@ internal sealed class DebugSessionService(
 
     public ScopesResponseBody GetScopes(DebugSessionModel session, ScopesArguments args)
     {
-        if (session.Engine == null)
+        if (session.CorEngine == null)
             return new ScopesResponseBody { Scopes = [] };
 
-        var scopes = _nativeDebugger.GetScopes(session.Engine, args.FrameId);
-        return new ScopesResponseBody { Scopes = scopes };
+        return new ScopesResponseBody { Scopes = _engine.GetScopes(session.CorEngine, args.FrameId) };
     }
 
     public VariablesResponseBody GetVariables(DebugSessionModel session, VariablesArguments args)
     {
-        if (session.Engine == null)
+        if (session.CorEngine == null)
             return new VariablesResponseBody { Variables = [] };
 
-        var vars = _nativeDebugger.GetVariables(session.Engine, args.VariablesReference);
-        return new VariablesResponseBody { Variables = vars };
+        return new VariablesResponseBody { Variables = _engine.GetVariables(session.CorEngine, args.VariablesReference) };
     }
 
     public ThreadsResponseBody GetThreads(DebugSessionModel session)
     {
-        if (session.Engine == null)
+        if (session.CorEngine == null)
             return new ThreadsResponseBody
             {
                 Threads = [new DapThread { Id = 1, Name = "Main Thread" }],
             };
 
-        var threads = _nativeDebugger.GetThreads(session.Engine);
-        return new ThreadsResponseBody { Threads = threads };
+        return new ThreadsResponseBody { Threads = _engine.GetThreads(session.CorEngine) };
     }
 
     public void Disconnect(DebugSessionModel session, DisconnectArguments args)
     {
-        if (session.Engine != null)
+        if (session.CorEngine != null)
         {
             if (args.TerminateDebuggee == true)
-                _nativeDebugger.Terminate(session.Engine);
+                _engine.Terminate(session.CorEngine);
             else
-                _nativeDebugger.Detach(session.Engine);
+                _engine.Detach(session.CorEngine);
         }
         session.State = SessionState.Terminated;
     }
