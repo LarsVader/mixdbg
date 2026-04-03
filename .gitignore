@@ -4,3 +4,5 @@ obj/
 *.user
 *.suo
 src/MixDbg.Tests/TestResults/
+.claude/
+bash.exe.stackdump

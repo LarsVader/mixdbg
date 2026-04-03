@@ -359,10 +359,11 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     #region Misc
 
     // Paths relative to repo root — computed from test assembly location.
+    // Assembly: test/IntegrationTests/bin/Debug/net10.0/ → 5 levels up.
     private static readonly string _repoRoot = Path.GetFullPath(
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
     private static readonly string _mixDbgPath = Path.Combine(
-        _repoRoot, "src", "MixDbg", "bin", "Debug", "net10.0", "win-x64", "MixDbg.exe");
+        _repoRoot, "src", "bin", "Debug", "net10.0", "win-x64", "MixDbg.exe");
     private static readonly string _wpfAppPath = Path.Combine(
         _repoRoot, "test", "TestApp", "WpfApp", "bin", "x64", "Debug", "net10.0-windows", "WpfApp.exe");
     private static readonly string _bpFile = Path.Combine(

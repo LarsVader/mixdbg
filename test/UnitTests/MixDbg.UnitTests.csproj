@@ -21,7 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\MixDbg\MixDbg.csproj" />
+    <ProjectReference Include="..\..\src\MixDbg.csproj" />
   </ItemGroup>
 
 </Project>

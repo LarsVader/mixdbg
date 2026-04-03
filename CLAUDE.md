@@ -5,11 +5,10 @@ A custom DAP adapter wrapping Windows `dbgeng.dll` for simultaneous C# and nativ
 ## Build
 
 ```bash
-cd mixdbg
-dotnet build src/MixDbg/MixDbg.csproj -c Debug
+dotnet build src/MixDbg.csproj -c Debug
 ```
 
-Output: `src/MixDbg/bin/Debug/net10.0/win-x64/MixDbg.exe`
+Output: `src/bin/Debug/net10.0/win-x64/MixDbg.exe`
 
 ## Test Target
 
@@ -22,10 +21,11 @@ Adapter registered in `C:\Users\LarsVader\AppData\Local\nvim\lua\plugins\debug\n
 ## Project Structure
 
 ```
-src/MixDbg/
+src/
+  MixDbg.csproj                  # Production project
   Program.cs                     # Entry point — DI composition root
   ServiceCollectionExtensions.cs # AddMixDbgCore() — registers all services + models
-  DapMessages/                     # DAP protocol types (namespace MixDbg.Dap), one file per type
+  DapMessages/                   # DAP protocol types (namespace MixDbg.Dap), one file per type
     Protocol/                    # ProtocolMessage, RequestMessage, ResponseMessage, EventMessage, Source, DisconnectException
     Initialize/                  # InitializeRequestArguments, Capabilities
     Lifecycle/                   # LaunchRequestArguments, AttachRequestArguments, DisconnectArguments
@@ -73,7 +73,10 @@ src/MixDbg/
     InitializeHandler.cs         # DAP initialize handshake
     LifecycleHandlers.cs         # launch, attach, configurationDone, disconnect, terminate, threads
     StubHandlers.cs              # setBreakpoints, continue, next, stepIn, stepOut, stackTrace, scopes, variables, evaluate
-test/TestApp/                        # Mixed-mode WPF integration test target
+test/
+  UnitTests/                         # xUnit + NSubstitute unit tests
+  IntegrationTests/                  # End-to-end tests against TestApp
+  TestApp/                           # Mixed-mode WPF integration test target
   TestApp.sln                        # Solution: NativeLib + CliWrapper + WpfApp
   Makefile                           # Build via MSBuild (make all)
   NativeLib/                         # Native C++ library (Calculator::Add/Multiply)

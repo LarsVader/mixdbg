@@ -11,7 +11,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="MixDbg.Tests" />
+    <InternalsVisibleTo Include="MixDbg.UnitTests" />
+    <InternalsVisibleTo Include="MixDbg.IntegrationTests" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,5 +1,9 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/MixDbg/MixDbg.csproj" />
+    <Project Path="src/MixDbg.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/UnitTests/MixDbg.UnitTests.csproj" />
+    <Project Path="test/IntegrationTests/MixDbg.IntegrationTests.csproj" />
   </Folder>
 </Solution>
