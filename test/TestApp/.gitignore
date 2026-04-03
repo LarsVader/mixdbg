@@ -1,0 +1,5 @@
+x64/
+WpfApp/bin/
+WpfApp/obj/
+NativeLib/x64/
+CliWrapper/x64/

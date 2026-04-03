@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CliWrapper\CliWrapper.vcxproj" />
+  </ItemGroup>
+  <Target Name="CopyNativeLib" AfterTargets="Build">
+    <Copy SourceFiles="$(SolutionDir)x64\$(Configuration)\NativeLib.dll;$(SolutionDir)x64\$(Configuration)\NativeLib.pdb"
+          DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

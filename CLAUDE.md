@@ -13,7 +13,7 @@ Output: `src/MixDbg/bin/Debug/net10.0/win-x64/MixDbg.exe`
 
 ## Test Target
 
-The CLRApp3 solution in the parent directory (`..`): C# WPF frontend → C++/CLI wrapper → native C++ library. Build with `make build` from `..`.
+The `test/TestApp/` directory contains a mixed-mode WPF app (C# frontend → C++/CLI wrapper → native C++ library) used as the integration test target. Build with `make all` from `test/TestApp/`.
 
 ## nvim-dap Integration
 
@@ -73,6 +73,12 @@ src/MixDbg/
     InitializeHandler.cs         # DAP initialize handshake
     LifecycleHandlers.cs         # launch, attach, configurationDone, disconnect, terminate, threads
     StubHandlers.cs              # setBreakpoints, continue, next, stepIn, stepOut, stackTrace, scopes, variables, evaluate
+test/TestApp/                        # Mixed-mode WPF integration test target
+  TestApp.sln                        # Solution: NativeLib + CliWrapper + WpfApp
+  Makefile                           # Build via MSBuild (make all)
+  NativeLib/                         # Native C++ library (Calculator::Add/Multiply)
+  CliWrapper/                        # C++/CLI wrapper (ManagedCalculator)
+  WpfApp/                            # C# WPF frontend — --auto-test / --auto-test-slow for CI
 ```
 
 ## Architecture
@@ -148,7 +154,7 @@ All sessions log to `~/mixdbg.log` — DAP requests/responses, dbgeng events, br
 ### M1: DAP Transport — DONE
 ### M2: Native Debugging via dbgeng — DONE
 
-Native C++ breakpoints, stack traces with source locations, stepping (over/into/out), thread enumeration, pause. Tested end-to-end with CLRApp3.
+Native C++ breakpoints, stack traces with source locations, stepping (over/into/out), thread enumeration, pause. Tested end-to-end with TestApp.
 
 ### M3: Native Variable Inspection — DONE
 

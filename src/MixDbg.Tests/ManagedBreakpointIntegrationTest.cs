@@ -358,12 +358,15 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
 
     #region Misc
 
-    private static readonly string _mixDbgPath =
-        @"D:\Lars\Dokumente\coding\CLRApp3\mixdbg\src\MixDbg\bin\Debug\net10.0\win-x64\MixDbg.exe";
-    private static readonly string _wpfAppPath =
-        @"D:\Lars\Dokumente\coding\CLRApp3\WpfApp\bin\x64\Debug\net10.0-windows\WpfApp.exe";
-    private static readonly string _bpFile =
-        @"D:\Lars\Dokumente\coding\CLRApp3\WpfApp\MainWindow.xaml.cs";
+    // Paths relative to repo root — computed from test assembly location.
+    private static readonly string _repoRoot = Path.GetFullPath(
+        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    private static readonly string _mixDbgPath = Path.Combine(
+        _repoRoot, "src", "MixDbg", "bin", "Debug", "net10.0", "win-x64", "MixDbg.exe");
+    private static readonly string _wpfAppPath = Path.Combine(
+        _repoRoot, "test", "TestApp", "WpfApp", "bin", "x64", "Debug", "net10.0-windows", "WpfApp.exe");
+    private static readonly string _bpFile = Path.Combine(
+        _repoRoot, "test", "TestApp", "WpfApp", "MainWindow.xaml.cs");
     private const int _addLine = 48;
     private const int _multiplyLine = 57;
 
