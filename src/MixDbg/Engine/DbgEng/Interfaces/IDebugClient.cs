@@ -47,8 +47,23 @@ public interface IDebugClient
     [PreserveSig]
     int GetExitCode(out uint Code);
 
-    // Slots 25-42
-    void _VtblGap4_18();
+    // Slots 25-29: DispatchCallbacks, ExitDispatch, CreateClient, GetInputCallbacks, SetInputCallbacks
+    void _VtblGap4_5();
+
+    // Slot 30
+    [PreserveSig]
+    int GetOutputCallbacks(
+        [MarshalAs(UnmanagedType.Interface)] out IDebugOutputCallbacks Callbacks);
+
+    // Slot 31
+    [PreserveSig]
+    int SetOutputCallbacks(
+        [MarshalAs(UnmanagedType.Interface)] IDebugOutputCallbacks? Callbacks);
+
+    // Slots 32-42: GetOutputMask, SetOutputMask, GetOtherOutputMask, SetOtherOutputMask,
+    //              GetOutputWidth, SetOutputWidth, GetOutputLinePrefix, SetOutputLinePrefix,
+    //              GetIdentity, OutputIdentity, GetEventCallbacks
+    void _VtblGap5_11();
 
     // Slot 43
     [PreserveSig]
