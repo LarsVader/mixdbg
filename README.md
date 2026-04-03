@@ -228,10 +228,10 @@ Not all files can be debugged via dbgeng:
 | File type | Debuggable | Why |
 |---|---|---|
 | `.cpp`/`.c` in native project | Yes | Pure native code, PDB symbols |
-| `.cpp`/`.h` in C++/CLI project | No | Compiled to IL (detected via `<CLRSupport>` in vcxproj) |
-| `.cs` | No | Managed code (needs SOS/ClrMD — future M4) |
+| `.cpp`/`.h` in C++/CLI project | Yes | Managed via ClrMD + SOS `!bpmd` (detected via `<CLRSupport>` in vcxproj) |
+| `.cs` | Yes | Managed via ClrMD + SOS `!bpmd` |
 
-The adapter checks file extensions AND scans the vcxproj for `<CLRSupport>` to classify breakpoints. Unsupported breakpoints are returned as `verified: false`.
+The adapter checks file extensions AND scans the vcxproj for `<CLRSupport>` to classify breakpoints. Native breakpoints use dbgeng directly. Managed breakpoints resolve the method via ClrMD/PDB and set via SOS `!bpmd`. Breakpoints received before the CLR loads are stored as pending and applied automatically once the runtime initializes.
 
 ## Diagnostic Logging
 
@@ -244,7 +244,7 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 
 ## Current Status
 
-**Working (M1+M2+M3):**
+**Working (M1+M2+M3+M4 partial):**
 - DAP transport (JSON-RPC over stdin/stdout)
 - Process launch and attach via dbgeng
 - Native C++ breakpoints (including deferred)
@@ -253,9 +253,16 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 - Thread enumeration
 - Breakpoint classification (native vs managed vs CLI)
 - Native variable inspection (locals, types, values, struct/pointer expansion)
+- Managed stack traces via ClrMD with source locations (C# method names, PDB source mapping)
+- Mixed native/managed stack trace merging
+- Managed breakpoints via hardware execution breakpoints (`ba e1`, CPU debug registers — bypasses JIT page protections)
+- Deferred managed breakpoint resolution (methods JIT-compiled after breakpoint set)
+- Command-line argument passthrough in DAP launch requests
+
+**Limitations:**
+- Max 4 concurrent managed breakpoints (x64 hardware debug register limit)
 
 **Not yet implemented:**
-- C# / managed breakpoints and stack traces (M4)
 - Managed variable inspection (M5)
 - Cross-boundary stepping (M6)
 

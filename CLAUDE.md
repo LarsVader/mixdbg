@@ -37,14 +37,19 @@ src/MixDbg/
     Events/                      # StoppedEventBody, OutputEventBody, BreakpointEventBody, Terminated/InitializedEventBody
   Engine/
     DbgEng/
-      Constants/                 # One file per type: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, DebugBreakpoint*, DebugEvent, DebugEnd, DebugExecute, DebugOutCtl, SymOpt, DebugScopeGroup, DEBUG_STACK_FRAME, DEBUG_SYMBOL_PARAMETERS, DebugSymbolFlags
-      Interfaces/                # One file per COM interface: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSymbolGroup2, IDebugSystemObjects, IDebugEventCallbacks
+      Constants/                 # One file per type: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, DebugBreakpoint*, DebugBreakAccess, DebugEvent, DebugEnd, DebugExecute, DebugOutCtl, SymOpt, DebugScopeGroup, DEBUG_STACK_FRAME, DEBUG_SYMBOL_PARAMETERS, DebugSymbolFlags
+      Interfaces/                # One file per COM interface: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSymbolGroup2, IDebugSystemObjects, IDebugEventCallbacks, IDebugOutputCallbacks
       EventCallbacks.cs          # IDebugEventCallbacks implementation — return values control WaitForEvent behavior
+      OutputCapture.cs           # IDebugOutputCallbacks implementation — captures SOS command text output
+    Sos/
+      SosOutputParser.cs         # Parses !bpmd text output to extract breakpoint IDs
+      PdbSourceMapper.cs         # Reads portable PDBs to map (method token, IL offset) → (source file, line)
   Models/
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
     DapDispatcherModel.cs        # Dispatcher state: handler registrations
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
-    NativeDebuggerModel.cs       # Engine state: COM interfaces, threads, flags, breakpoint tracking, variable store
+    NativeDebuggerModel.cs       # Engine state: COM interfaces, threads, flags, breakpoint tracking, variable store, ClrMD runtime, deferred managed bps
+    DeferredManagedBreakpoint.cs # Record: managed bp waiting for JIT compilation (file, line, assembly, method, bpId)
     VariableStore.cs             # Maps variablesReference handles to VariableContainer (symbol group + index range), invalidated per stop
     LogEntry.cs                  # Immutable log record (timestamp, level, sender, message)
     LogStore.cs                  # Mutable log state: entries list, lock, file path
@@ -55,11 +60,13 @@ src/MixDbg/
       IDebugSession.cs           # Stateless session orchestrator — all methods take DebugSessionModel
       INativeDebugger.cs         # Stateless dbgeng wrapper — all methods take NativeDebuggerModel
       ILoggingService.cs         # LogInfo/LogWarning/LogError with [CallerFilePath] — all take LogStore
-      ISourceFileService.cs      # IsNativeFile(string path)
+      ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
+      IManagedDebugger.cs        # Stateless managed debugging — ClrMD + SOS, all methods take NativeDebuggerModel
     DapServerService.cs          # IDapServer: Content-Length framed JSON-RPC transport
     DapDispatcherService.cs      # IDapDispatcher: command routing, request/response lifecycle
     DebugSessionService.cs       # IDebugSession: state machine, delegates to INativeDebugger
     NativeDebuggerService.cs     # INativeDebugger: dbgeng COM wrapper, engine thread, breakpoints
+    ManagedDebuggerService.cs    # IManagedDebugger: ClrMD runtime inspection + SOS !bpmd for managed breakpoints
     LoggingService.cs            # ILoggingService: file + in-memory logger, [CallerFilePath] sender
     SourceFileService.cs         # ISourceFileService: native vs managed/CLI file detection
   Handlers/
@@ -120,6 +127,18 @@ ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace
 - `NativeDebuggerModel.UserBreakpointIds` HashSet tracks which dbgeng breakpoint IDs are ours (vs system breakpoints).
 - `ISourceFileService.IsNativeFile` check: rejects `.cs` files AND `.cpp` files in C++/CLI projects (scans vcxproj for `<CLRSupport>`).
 
+### Managed Debugging (ClrMD)
+
+- **CLR detection**: `EventCallbacks.OnLoadModule` watches for `coreclr` module name. Sets `model.ClrLoaded` flag. ClrMD initialization happens on the next engine stop (can't init during `GO` state).
+- **ClrMD integration**: `DataTarget.CreateFromDbgEng(pDebugClient)` creates a ClrMD data target piggybacking on the existing dbgeng COM session. No second process attach. `ClrRuntime` used for managed stack traces and method resolution.
+- **Managed stack traces**: `ClrThread.EnumerateStackTrace()` gives managed frames. Merged with native frames by overlaying onto dbgeng stack positions that have no source resolution (JIT-compiled code shows as raw addresses or `coreclr!` prefixes).
+- **Source resolution**: C# uses portable PDBs read by `PdbSourceMapper` via `System.Reflection.Metadata`. C++/CLI uses Windows PDBs read natively by dbgeng's `GetLineByOffset`.
+- **Method resolution**: `PdbSourceMapper.FindMethodAtLine` resolves file:line → assembly + method name by reading portable PDBs. Falls back to searching PDBs on disk near the source file's `.csproj` when ClrMD modules aren't loaded yet.
+- **Managed breakpoints (hardware)**: Software breakpoints (`int3`) fail on JIT code pages (`0x800703E6`). Instead, uses **hardware execution breakpoints** (`ba e1`, `AddBreakpoint(Data)` + `SetDataParameters(1, Execute)`) which use CPU debug registers — no code modification needed. Limited to 4 concurrent managed breakpoints (x64 DR0-DR3 registers).
+- **Deferred managed breakpoints**: Methods not yet JIT-compiled have `NativeCode == 0`. Stored as `DeferredManagedBreakpoint` and resolved when: (a) CLR notification exceptions fire during JIT, or (b) `SetInterrupt(ACTIVE)` forces an engine stop ~2 seconds after init. `FlushCachedData()` + `FindNativeCodeAddress` checks each deferred bp.
+- **CLR notification exceptions** (code `e0444143`): Returned as `GO_HANDLED` from `EventCallbacks.Exception`. Also triggers deferred breakpoint resolution via `OnClrNotification` event.
+- **Pending breakpoints**: Managed breakpoints received before CLR loads are stored in `model.PendingManagedBreakpoints` and applied after `InitializeRuntime` succeeds.
+
 ### Diagnostic Logging
 
 All sessions log to `~/mixdbg.log` — DAP requests/responses, dbgeng events, breakpoint resolution, stack frames. Logging goes through `ILoggingService` (implemented by `LoggingService`), with state in `LogStore`. Uses `[CallerFilePath]` to auto-tag log entries with the source file name. Writes to both in-memory `LogStore.Entries` and the log file.
@@ -135,7 +154,16 @@ Native C++ breakpoints, stack traces with source locations, stepping (over/into/
 
 Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stops, selecting a stack frame returns locals via `SetScope` + `GetScopeSymbolGroup`. Expandable variables (structs/pointers with `SubElements > 0`) allocate child `variablesReference` handles. Variable store invalidated on continue/step.
 
-### M4: Managed Debugging via SOS + ClrMD — TODO
+### M4: Managed Debugging via ClrMD — PARTIAL
+
+Managed stack traces and managed breakpoints work via ClrMD + hardware execution breakpoints. Breakpoints require two clicks in manual sessions (first JITs, second hits). Multi-breakpoint reliability still being debugged.
+
+**Stack traces:** ClrMD (`DataTarget.CreateFromDbgEng`) piggybacking on the existing dbgeng session provides managed stack frames with method names. Source line resolution uses portable PDB reading (`System.Reflection.Metadata`) for C# and dbgeng's native `GetLineByOffset` for C++/CLI. CLR detection via `LoadModule` callback. Stack frame merging overlays managed info onto native frames.
+
+**Managed breakpoints:** Software breakpoints (`int3`) fail on .NET JIT code pages (`0x800703E6`). Bypassed using **hardware execution breakpoints** (`ba e1`) which use CPU debug registers instead of modifying code. ClrMD resolves method names via PDB, then `ClrMethod.NativeCode` provides the JIT-compiled address. Methods not yet JIT'd are deferred and resolved via `SetInterrupt(ACTIVE)` or on the next engine stop. Limited to 4 concurrent managed breakpoints (x64 hardware limit).
+
+**Launch args:** DAP `launch` request `args` field is threaded through to `CreateProcess` command line.
+
 ### M5: Managed Variable Inspection via ClrMD — TODO
 ### M6: Stepping Across Boundaries — TODO
 ### M7: Polish + Integration — TODO
@@ -146,6 +174,6 @@ See README.md for full milestone descriptions.
 
 - `dbgeng.dll` — ships with Windows (System32)
 - NuGet `Microsoft.Extensions.DependencyInjection` — DI container
-- `dotnet-sos` — `dotnet tool install -g dotnet-sos && dotnet-sos install` (needed for M4)
-- NuGet `Microsoft.Diagnostics.Runtime` (ClrMD) — needed for M5
+- `dotnet-sos` — `dotnet tool install -g dotnet-sos && dotnet-sos install` (fallback SOS load path)
+- NuGet `Microsoft.Diagnostics.Runtime` (ClrMD) — managed stack traces and method resolution
 - dbgeng.h reference: `C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um/dbgeng.h`
