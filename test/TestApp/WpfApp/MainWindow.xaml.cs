@@ -18,6 +18,9 @@ namespace WpfApp
 
         private void OnAutoTest(object sender, RoutedEventArgs e)
         {
+            // Hide window so integration tests run headlessly.
+            Hide();
+
             // Sequence: Add (JITs) → Add (bp hits) → [gap] → Multiply (JITs) → Multiply (bp hits) → exit
             // No PrepareMethod — matches the real manual debugging flow.
             // --auto-test-slow: 15s initial delay simulates a slow user, stressing the
