@@ -83,16 +83,12 @@ internal sealed class ManagedDebuggerService(
 
     public StackFrame[] GetManagedStackFrames(NativeDebuggerModel model)
     {
-        // Use the original runtime for stack traces — it was created during
-        // InitializeRuntime and is stable. Deferred bp resolution may replace
-        // model.Runtime with transient instances; use the original instead.
         var runtime = model.OriginalRuntime ?? model.Runtime;
         if (runtime == null)
             return [];
 
         try
         {
-            // Refresh runtime state after a stop.
             runtime.FlushCachedData();
 
             // Find the CLR thread matching the current dbgeng event thread.
@@ -168,35 +164,34 @@ internal sealed class ManagedDebuggerService(
         if (model.DataTarget == null || model.DeferredManagedBreakpoints.Count == 0)
             return [];
 
-        // FlushCachedData doesn't refresh JIT state on dbgeng-backed data targets,
-        // and reusing a DataTarget degrades after multiple CreateRuntime calls.
-        // Create a completely fresh DataTarget + Runtime for each check.
-        // The original DataTarget/Runtime are never touched — stack traces use OriginalRuntime.
+        // Create a fresh runtime from the cached ResolutionDataTarget to see newly
+        // JIT'd methods. The stack trace cache in NativeDebuggerService prevents
+        // repeated GetStackTrace/symbol lookup calls from degrading the DAC.
         ClrRuntime resolutionRuntime;
         try
         {
-            var pClient = Marshal.GetIUnknownForObject(model.Client);
-            try
+            if (model.ResolutionDataTarget == null)
             {
+                var pClient = Marshal.GetIUnknownForObject(model.Client);
+                try
+                {
 #pragma warning disable CS0618
-                var freshDt = DataTarget.CreateFromDbgEng(pClient);
+                    model.ResolutionDataTarget = DataTarget.CreateFromDbgEng(pClient);
 #pragma warning restore CS0618
-                resolutionRuntime = freshDt.ClrVersions[0].CreateRuntime();
+                }
+                finally
+                {
+                    Marshal.Release(pClient);
+                }
             }
-            finally
-            {
-                Marshal.Release(pClient);
-            }
+            resolutionRuntime = model.ResolutionDataTarget.ClrVersions[0].CreateRuntime();
         }
         catch (Exception ex)
         {
-            _log.LogInfo(_logStore, $"Resolution runtime creation failed: {ex.Message}");
+            _log.LogWarning(_logStore, $"Resolution runtime creation failed: {ex.Message}");
             model.DeferredResolutionFailures++;
             return [];
         }
-
-        // DataTarget recreation succeeded — reset failure counter.
-        model.DeferredResolutionFailures = 0;
 
         var resolved = new List<Breakpoint>();
         var toRemove = new List<DeferredManagedBreakpoint>();
@@ -263,7 +258,7 @@ internal sealed class ManagedDebuggerService(
 
         if (methodName == null || assemblyName == null)
         {
-            _log.LogInfo(_logStore, $"  Could not resolve {filePath}:{req.Line} to a managed method");
+            _log.LogWarning(_logStore, $"  Could not resolve {filePath}:{req.Line} to a managed method");
             return new Breakpoint
             {
                 Id = ++model.NextBpId,

@@ -19,6 +19,7 @@ public sealed class NativeDebuggerModel : IDisposable
     internal IDebugControl Control { get; set; } = null!;
     internal IDebugSymbols Symbols { get; set; } = null!;
     internal IDebugSystemObjects SysObjects { get; set; } = null!;
+    internal IDebugDataSpaces DataSpaces { get; set; } = null!;
     internal EventCallbacks Callbacks { get; set; } = null!;
 
     // Engine thread lifecycle.
@@ -52,6 +53,8 @@ public sealed class NativeDebuggerModel : IDisposable
     internal ClrRuntime? Runtime { get; set; }
     /// <summary>The original runtime created during InitializeRuntime — stable for stack traces.</summary>
     internal ClrRuntime? OriginalRuntime { get; set; }
+    /// <summary>Separate DataTarget for deferred bp resolution — has its own CreateRuntime budget.</summary>
+    internal DataTarget? ResolutionDataTarget { get; set; }
 
     // Variable inspection — invalidated on continue/step.
     internal VariableStore Variables { get; } = new();

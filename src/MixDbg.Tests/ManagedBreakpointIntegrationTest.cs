@@ -27,12 +27,13 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
 
         // Hit 1: OnAddClick — auto-test clicks Add at 3s (JITs), then at 7s (bp fires).
         await WhenWaitingForStoppedEvent(timeout: 20);
-        await WhenRequestingStackTrace();
+        await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        // Hit 2: OnMultiplyClick — auto-test clicks Multiply at 11s (JITs), then at 15s (bp fires).
-        await WhenWaitingForStoppedEvent(timeout: 15);
-        await WhenRequestingStackTrace();
+        // Hit 2: OnMultiplyClick — auto-test clicks Multiply after gap (JITs), then again (bp fires).
+        // Longer timeout: WpfApp timers pause during debug stops, extending real elapsed time.
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
         await WhenWaitingForSeconds(2);
@@ -43,6 +44,37 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenStackTraceHasSource(hitIndex: 0, "MainWindow.xaml.cs");
         ThenBreakpointWasHit(hitIndex: 1);
         ThenStackTraceHasSource(hitIndex: 1, "MainWindow.xaml.cs");
+        ThenNoLogErrors();
+    }
+
+    [Fact]
+    public async Task ManagedBreakpoint_WhenSlowUserDelaysFirstClick_BothStillFire()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+        await WhenSettingTwoManagedBreakpoints();
+        await WhenLaunchingWithAutoTestSlow();
+        await WhenSendingConfigurationDone();
+
+        // Hit 1: OnAddClick — slow auto-test delays 15s before first click (JITs),
+        // then 4s later (bp fires). Burns many CreateRuntime calls polling before JIT.
+        // 14 stackTrace requests per stop mimics nvim-dap's real behavior.
+        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenRequestingStackTraceForManyThreads(14);
+        await WhenSendingContinue();
+
+        // Hit 2: OnMultiplyClick — same gap as normal test.
+        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenRequestingStackTraceForManyThreads(14);
+        await WhenSendingContinue();
+
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenBreakpointWasHit(hitIndex: 1);
         ThenNoLogErrors();
     }
 
@@ -124,17 +156,66 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenWaitingForResponse("launch", timeout: 10);
     }
 
+    private async Task WhenLaunchingWithAutoTestSlow()
+    {
+        await SendDapRequest(3, "launch", new
+        {
+            program = _wpfAppPath.Replace("/", "\\"),
+            cwd = Path.GetDirectoryName(_wpfAppPath)!.Replace("/", "\\"),
+            args = new[] { "--auto-test-slow" },
+        });
+        await WhenWaitingForResponse("launch", timeout: 10);
+    }
+
     private async Task WhenSendingConfigurationDone()
     {
         await SendDapRequest(4, "configurationDone", new { });
         await WhenWaitingForResponse("configurationDone", timeout: 5);
     }
 
-    private async Task WhenRequestingStackTrace()
+    private async Task WhenRequestingStackTraceForMultipleThreads()
     {
+        // Mimic nvim-dap: request threads, then stackTrace for each thread.
+        // nvim-dap typically requests for 3-5 threads in a WPF app.
+        _nextSeq++;
+        await SendDapRequest(_nextSeq, "threads", new { });
+        await WhenWaitingForResponse("threads", timeout: 10);
+
+        // First thread (breakpoint thread) — record its source.
         _nextSeq++;
         await SendDapRequest(_nextSeq, "stackTrace", new { threadId = 0, startFrame = 0, levels = 5 });
         await WhenWaitingForStackTraceResponse(timeout: 10);
+
+        // Additional threads — send, wait, and CONSUME responses to avoid leftovers
+        // that would be picked up by the next WhenWaitingForStackTraceResponse.
+        for (int tid = 1; tid < 3; tid++)
+        {
+            _nextSeq++;
+            await SendDapRequest(_nextSeq, "stackTrace", new { threadId = tid, startFrame = 0, levels = 5 });
+            await WhenWaitingAndConsumingStackTraceResponse(timeout: 10);
+        }
+    }
+
+    private async Task WhenRequestingStackTraceForManyThreads(int threadCount)
+    {
+        // Mimic nvim-dap requesting stackTrace for all threads. In a WPF app
+        // nvim-dap typically sends 10-14 stackTrace requests. Without the
+        // stack trace cache, each call triggers GetStackTrace + symbol lookups
+        // (~100 COM calls), degrading the DAC and breaking CreateRuntime.
+        _nextSeq++;
+        await SendDapRequest(_nextSeq, "threads", new { });
+        await WhenWaitingForResponse("threads", timeout: 10);
+
+        _nextSeq++;
+        await SendDapRequest(_nextSeq, "stackTrace", new { threadId = 0, startFrame = 0, levels = 5 });
+        await WhenWaitingForStackTraceResponse(timeout: 10);
+
+        for (int tid = 1; tid < threadCount; tid++)
+        {
+            _nextSeq++;
+            await SendDapRequest(_nextSeq, "stackTrace", new { threadId = tid, startFrame = 0, levels = 5 });
+            await WhenWaitingAndConsumingStackTraceResponse(timeout: 10);
+        }
     }
 
     private async Task WhenSendingContinue()
@@ -214,6 +295,25 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         _stackTraceSourcePaths.Add(null);
     }
 
+    private async Task WhenWaitingAndConsumingStackTraceResponse(int timeout)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(timeout);
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (_responses)
+            {
+                var resp = _responses.FirstOrDefault(r =>
+                    r["command"]?.GetValue<string>() == "stackTrace");
+                if (resp != null)
+                {
+                    _responses.Remove(resp);
+                    return;
+                }
+            }
+            await Task.Delay(200);
+        }
+    }
+
     private async Task WhenWaitingForExit()
     {
         _cts.Cancel();
@@ -264,8 +364,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         @"D:\Lars\Dokumente\coding\CLRApp3\WpfApp\bin\x64\Debug\net10.0-windows\WpfApp.exe";
     private static readonly string _bpFile =
         @"D:\Lars\Dokumente\coding\CLRApp3\WpfApp\MainWindow.xaml.cs";
-    private const int _addLine = 46;
-    private const int _multiplyLine = 55;
+    private const int _addLine = 48;
+    private const int _multiplyLine = 57;
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-test-{Guid.NewGuid():N}.log");
@@ -292,7 +392,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         }
         _process?.Dispose();
         _cts.Dispose();
-        try { File.Delete(_sessionLogPath); } catch { }
+        // Don't delete — keep for post-failure inspection.
+        // try { File.Delete(_sessionLogPath); } catch { }
     }
 
     private async Task SendDapRequest(int seq, string command, object args)

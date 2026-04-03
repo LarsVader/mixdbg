@@ -73,6 +73,7 @@ internal sealed class NativeDebuggerService(
         {
             _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
             model.ConfigDone = true;
+            _cachedStackTraceResult = null;
             Check(model.Control.SetExecutionStatus(DebugStatus.Go));
         });
     }
@@ -246,6 +247,7 @@ internal sealed class NativeDebuggerService(
         model.Control = (IDebugControl)obj;
         model.Symbols = (IDebugSymbols)obj;
         model.SysObjects = (IDebugSystemObjects)obj;
+        model.DataSpaces = (IDebugDataSpaces)obj;
 
         model.Callbacks = new EventCallbacks();
         model.Callbacks.OnBreakpoint += bp => OnBreakpoint(model, bp);
@@ -348,9 +350,10 @@ internal sealed class NativeDebuggerService(
                 if (model.ClrLoaded && !model.ManagedInitialized)
                     TryInitializeManaged(model);
 
-                // Resolve deferred managed breakpoints on each stop.
-                if (model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
-                    TryResolveDeferredOnNotification(model);
+                // Deferred managed breakpoints are resolved via periodic interrupts
+                // (ScheduleDeferredBreakpointCheck), NOT on every stop. Resolving here
+                // wastes CreateRuntime budget when user stops follow with many stackTrace
+                // requests that degrade the DAC.
 
                 if (model.TargetExited)
                 {
@@ -410,6 +413,12 @@ internal sealed class NativeDebuggerService(
                 }
                 else
                 {
+                    // Resolve deferred managed breakpoints on system stops (interrupts).
+                    // NOT on user stops — those trigger many stackTrace requests that
+                    // degrade the DAC, exhausting the CreateRuntime budget.
+                    if (model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
+                        TryResolveDeferredOnNotification(model);
+
                     _log.LogInfo(_logStore, "System stop — auto-continuing");
                     model.Stopped.Reset();
                     model.Control.SetExecutionStatus(DebugStatus.Go);
@@ -497,7 +506,7 @@ internal sealed class NativeDebuggerService(
     /// The injected break is handled as a system stop and auto-continued.
     /// Re-schedules itself if deferred breakpoints remain unresolved.
     /// </summary>
-    private void ScheduleDeferredBreakpointCheck(NativeDebuggerModel model, int delayMs = 2000)
+    private void ScheduleDeferredBreakpointCheck(NativeDebuggerModel model, int delayMs = 5000)
     {
         Task.Delay(delayMs).ContinueWith(_ =>
         {
@@ -551,10 +560,11 @@ internal sealed class NativeDebuggerService(
         }
     }
 
-    private static void QueueStep(NativeDebuggerModel model, uint stepKind)
+    private void QueueStep(NativeDebuggerModel model, uint stepKind)
     {
         model.Stepping = true;
         model.Variables.Clear();
+        _cachedStackTraceResult = null;
         model.Commands.Add(() =>
         {
             Check(model.Control.SetExecutionStatus(stepKind));
@@ -782,8 +792,17 @@ internal sealed class NativeDebuggerService(
         return results;
     }
 
+    private StackFrame[]? _cachedStackTraceResult;
+
     private StackFrame[] GetStackTraceOnEngine(NativeDebuggerModel model, int maxFrames)
     {
+        // Cache the stack trace result per stop. Repeated stackTrace requests from
+        // nvim-dap (one per thread) all return the event thread's stack anyway,
+        // but the redundant GetStackTrace + symbol lookups degrade the DAC,
+        // breaking CreateRuntime for deferred breakpoint resolution.
+        if (_cachedStackTraceResult != null)
+            return _cachedStackTraceResult;
+
         if (maxFrames <= 0) maxFrames = 50;
         int frameSize = Marshal.SizeOf<DEBUG_STACK_FRAME>();
         _log.LogInfo(_logStore, $"DEBUG_STACK_FRAME size={frameSize}");
@@ -855,6 +874,7 @@ internal sealed class NativeDebuggerService(
         if (model.ManagedInitialized)
             MergeManagedFrames(model, result);
 
+        _cachedStackTraceResult = result;
         return result;
         }
         finally
