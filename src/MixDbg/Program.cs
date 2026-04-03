@@ -8,8 +8,16 @@ using MixDbg.Services;
 using var stdin = Console.OpenStandardInput();
 using var stdout = Console.OpenStandardOutput();
 
+// Optional: --logpath <path> overrides the default ~/mixdbg.log location.
+string? logPath = null;
+for (int i = 0; i < args.Length - 1; i++)
+{
+    if (args[i] == "--logpath")
+        logPath = args[i + 1];
+}
+
 var services = new ServiceCollection()
-    .AddMixDbgCore(stdin, stdout)
+    .AddMixDbgCore(stdin, stdout, logPath)
     .BuildServiceProvider();
 
 var dispatcher = services.GetRequiredService<IDapDispatcher>();
