@@ -124,6 +124,21 @@ internal sealed class PdbSourceMapper : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// Resolves a method token to its fully qualified name (Namespace.Type.Method)
+    /// by reading the PE metadata of the given assembly.
+    /// </summary>
+    /// <returns>The method name, or <c>null</c> if the token cannot be resolved.</returns>
+    public string? GetMethodName(string assemblyPath, int methodToken)
+    {
+        var peReaderAndStream = GetOrLoadPeReader(assemblyPath);
+        if (peReaderAndStream == null)
+            return null;
+
+        var handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        return GetFullMethodName(peReaderAndStream.Value.Reader, handle);
+    }
+
     private static string? GetFullMethodName(MetadataReader peReader, MethodDefinitionHandle handle)
     {
         try

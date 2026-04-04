@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.IO.Pipes;
 using ClrDebug;
 using MixDbg.Dap;
 using MixDbg.Engine.DbgEng;
@@ -73,6 +74,23 @@ public sealed class NativeDebuggerModel : IDisposable
     /// </summary>
     internal HashSet<ulong> ManagedBreakpointAddresses { get; } = new();
 
+    // JIT profiler pipe — receives JIT compilation notifications from MixDbgProfiler.dll.
+    internal NamedPipeServerStream? ProfilerPipe { get; set; }
+    internal StreamReader? ProfilerPipeReader { get; set; }
+    internal Thread? ProfilerReaderThread { get; set; }
+    internal string? ProfilerPipeName { get; set; }
+    internal ConcurrentQueue<JitNotification> JitNotifications { get; } = new();
+    internal volatile bool ProfilerConnected;
+    internal EventWaitHandle? ProfilerAckEvent { get; set; }
+
+    /// <summary>
+    /// Sorted map of all JIT-compiled methods reported by the profiler, keyed by native
+    /// code start address. Used for stack trace resolution: given an instruction pointer,
+    /// binary search finds the containing method → token + assembly → PDB source info.
+    /// Written by profiler reader thread, read by engine thread (under stop).
+    /// </summary>
+    internal SortedList<ulong, JitMethodInfo> JitMethodMap { get; } = new();
+
     // Variable inspection — invalidated on continue/step.
     internal VariableStore Variables { get; } = new();
     internal DEBUG_STACK_FRAME[] CachedStackFrames { get; set; } = [];
@@ -109,6 +127,19 @@ internal record PendingManagedBreakpoint(string FilePath, int Line, int BpId);
 /// fire during JIT compilation.
 /// </summary>
 internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodToken, int ILOffset, int BpId, string? AssemblyName);
+
+/// <summary>
+/// A JIT compilation notification received from the CLR profiler DLL via named pipe.
+/// Contains the metadata token, native code start address, code size, and assembly name
+/// of the freshly JIT-compiled method.
+/// </summary>
+internal record JitNotification(int MethodToken, ulong NativeAddress, uint CodeSize, string AssemblyName);
+
+/// <summary>
+/// Entry in the JIT method map. Stores enough information to resolve a native
+/// instruction pointer to a managed method name and source location via PDB lookup.
+/// </summary>
+internal record JitMethodInfo(int MethodToken, ulong StartAddress, uint CodeSize, string AssemblyName);
 
 /// <summary>
 /// Tracks a loaded managed module discovered via ICorDebug enumeration.

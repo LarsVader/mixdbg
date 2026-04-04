@@ -10,6 +10,18 @@ dotnet build src/MixDbg.csproj -c Debug
 
 Output: `src/bin/Debug/net10.0/win-x64/MixDbg.exe`
 
+### Profiler DLL
+
+The CLR profiler is a native C++ DLL that sends JIT notifications to MixDbg via a named pipe. Build from `profiler/`:
+
+```bash
+cd profiler && make all
+```
+
+Output: `profiler/x64/Debug/MixDbgProfiler.dll`
+
+MixDbg looks for the DLL next to its exe, or in `profiler/x64/Debug/` during development.
+
 ## Test Target
 
 The `test/TestApp/` directory contains a mixed-mode WPF app (C# frontend → C++/CLI wrapper → native C++ library) used as the integration test target. Build with `make all` from `test/TestApp/`.
@@ -74,6 +86,11 @@ src/
     InitializeHandler.cs         # DAP initialize handshake
     LifecycleHandlers.cs         # launch, attach, configurationDone, disconnect, terminate, threads
     StubHandlers.cs              # setBreakpoints, continue, next, stepIn, stepOut, stackTrace, scopes, variables, evaluate
+profiler/
+  MixDbgProfiler.cpp                 # CLR profiler DLL — ICorProfilerCallback2, sends JIT notifications via named pipe
+  MixDbgProfiler.vcxproj             # Native C++ build config (MSBuild, v145 toolset)
+  MixDbgProfiler.def                 # DLL exports: DllGetClassObject, DllCanUnloadNow
+  Makefile                           # Build shortcut (make all)
 test/
   UnitTests/                         # xUnit + NSubstitute unit tests
   IntegrationTests/                  # End-to-end tests against TestApp
@@ -89,10 +106,11 @@ test/
 
 **DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Follows model+service pattern from zonr: all services are stateless singletons; all mutable state lives in model objects created by services via `CreateModel()` and registered as singletons. Service methods take their model as the first parameter. `NativeDebuggerModel` is created per-session (one per Launch/Attach) by `INativeDebugger.CreateModel()`, stored in `DebugSessionModel.Engine`.
 
-Two threads, one command queue:
+Three threads, one command queue:
 
 - **Main thread**: reads DAP requests from stdin, dispatches to handlers. Handlers that need engine data queue a command + `TaskCompletionSource` and block.
 - **Engine thread**: all dbgeng COM calls happen here (thread affinity required). Runs `WaitForEvent` loop. When target stops, processes queued commands, sends DAP events via `IDapServer`.
+- **Profiler reader thread**: reads JIT notifications from the named pipe connected to `MixDbgProfiler.dll` (running in-process in the target). Enqueues `JitNotification` records and calls `SetInterrupt` to wake the engine thread when a notification matches a deferred breakpoint.
 
 ## Critical Implementation Details
 
@@ -137,14 +155,14 @@ ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace
 - `NativeDebuggerModel.UserBreakpointIds` HashSet tracks which dbgeng breakpoint IDs are ours (vs system breakpoints).
 - `ISourceFileService.IsNativeFile` check: rejects `.cs` files AND `.cpp` files in C++/CLI projects (scans vcxproj for `<CLRSupport>`).
 
-### Managed Debugging (ICorDebug V4)
+### Managed Debugging (CLR Profiler + ICorDebug V4)
 
 - **CLR detection**: `EventCallbacks.OnLoadModule` watches for `coreclr` module name. Sets `model.ClrLoaded` flag, captures `CoreClrPath` and `CoreClrBaseAddress`. ICorDebug V4 initialization happens on the next engine stop (can't init during `GO` state).
 - **ICorDebug V4 integration**: `ICLRDebugging::OpenVirtualProcess` creates an `ICorDebugProcess` piggybacked on the existing dbgeng session via `DbgEngDataTarget` (implements `ICorDebugMutableDataTarget`). No second debugger, no conflicts. dbgeng owns the process; ICorDebug V4 reads/writes memory through the bridge. `RuntimeLibraryProvider` locates `mscordbi.dll` next to `coreclr.dll`.
-- **Managed stack traces**: `ICorDebugProcess.Threads` → `thread.Chains` → `chain.Frames` → `ICorDebugILFrame` with method name resolution via `MetaDataImport` and source location via `PdbSourceMapper`. Merged with native frames by overlaying onto dbgeng stack positions that have no source resolution.
+- **CLR Profiler (`MixDbgProfiler.dll`)**: Native C++ DLL implementing `ICorProfilerCallback2`. CLR loads it at startup via `CORECLR_ENABLE_PROFILING` env vars. `JITCompilationFinished` sends `token:address:codeSize:assembly` to MixDbg via named pipe. Profiler blocks on a named ACK event after each notification so the hardware BP is set before the method body executes.
+- **First-click managed breakpoints**: PDB resolves file:line → method token + assembly. Stored as `DeferredManagedBreakpoint`. When the profiler reports JIT for a matching token+assembly, engine thread sets hardware BP (`ba e1`) at the native address and signals the ACK event. Profiler unblocks → CLR dispatches to method → BP fires on first call.
+- **Managed stack traces**: Profiler's `JitMethodMap` (sorted by native address) maps any IP in JIT'd code to method token + assembly. `ResolveFrameFromProfilerData` binary-searches the map, then uses `PdbSourceMapper` for method name + source file:line. This replaces the broken ICorDebug thread/chain enumeration (which returns `E_NOTIMPL` on piggybacked processes).
 - **Source resolution**: C# uses portable PDBs read by `PdbSourceMapper` via `System.Reflection.Metadata`. C++/CLI uses Windows PDBs read natively by dbgeng's `GetLineByOffset`.
-- **IL breakpoints**: `PdbSourceMapper.FindMethodAtLine` resolves file:line → method token + IL offset. `module.GetFunctionFromToken(token).ILCode.CreateBreakpoint(ilOffset)` sets an IL-level breakpoint. ICorDebug handles pre-JIT methods automatically — no deferred breakpoints needed. Unlimited concurrent managed breakpoints (no hardware debug register limit).
-- **Breakpoint hit detection**: ICorDebug IL breakpoints patch code with `int3`. dbgeng catches the resulting `EXCEPTION_BREAKPOINT` (0x80000003). `EventCallbacks.OnExceptionBreakpoint` fires with the address; `NativeDebuggerService` checks `model.ManagedBreakpointAddresses` to identify managed breakpoint hits.
 - **Module tracking**: `ManagedDebuggerService.EnumerateModules` walks `ICorDebugProcess.AppDomains` → assemblies → modules. Called on init and on each dbgeng LoadModule event for managed DLLs. Pending breakpoints bind when their module becomes available.
 - **CLR notification exceptions** (code `e0444143`): Returned as `GO_HANDLED` from `EventCallbacks.Exception`.
 - **Pending breakpoints**: Managed breakpoints received before CLR loads are stored in `model.PendingManagedBreakpoints` and applied after `InitializeRuntime` succeeds. Breakpoints for modules not yet in ICorDebug are stored as `PendingManagedBreakpoint` and bound on module load.
@@ -164,31 +182,22 @@ Native C++ breakpoints, stack traces with source locations, stepping (over/into/
 
 Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stops, selecting a stack frame returns locals via `SetScope` + `GetScopeSymbolGroup`. Expandable variables (structs/pointers with `SubElements > 0`) allocate child `variablesReference` handles. Variable store invalidated on continue/step.
 
-### M4: Managed Debugging — IN PROGRESS
+### M4: Managed Debugging — DONE
 
-**Status:** Piggybacked ICorDebug V4 works for managed stack traces and module/function resolution. Hardware breakpoints at DAC-resolved JIT addresses are proven working (second-call). First-click breakpoints need forced JIT before user interaction.
+**Managed breakpoints (working):** First-click breakpoints on C# code via CLR Profiler + hardware breakpoints. Pipeline: PDB → method token + assembly name → profiler `JITCompilationFinished` → named pipe → hardware BP (`ba e1`) at real JIT native address. Profiler blocks on ACK event so the BP is set before the method body executes. All 3 integration tests pass (first-click, slow-user, double-click).
 
-**Stack traces (working):** `mscordbi!OpenVirtualProcessImpl` piggybacked on dbgeng via `DbgEngDataTarget` bridge. Module enumeration works with `ProcessStateChanged(FLUSH_ALL)`. `GetFunctionFromToken` resolves PDB tokens. Source resolution via portable PDB (`PdbSourceMapper`) for C# and dbgeng `GetLineByOffset` for C++/CLI. Stack frame merging overlays managed info onto native frames.
+**Managed stack traces (working):** Profiler's `JitMethodMap` maps native IPs to method tokens + assemblies. `ResolveFrameFromProfilerData` binary-searches the map and resolves method names + source:line via `PdbSourceMapper`. Completely replaces the broken ICorDebug piggybacked thread enumeration (`E_NOTIMPL`).
 
-**Managed breakpoints (partially working):** Hardware breakpoints at real JIT native entry points work. The pipeline: PDB → method token + assembly name → DAC (`XCLRDataProcess.GetMethodDefinitionByToken` → `EnumInstance` → `GetRepresentativeEntryAddress`) → hardware BP (`ba e1`). Proven end-to-end with `--auto-test-double` (second-call hits). First-click breakpoints blocked by DAC cache latency (~12s) — see `docs/M4V2-managed-breakpoints.md` for full investigation and two viable paths forward.
+**CLR Profiler (`MixDbgProfiler.dll`):**
+- Native C++ DLL implementing `ICorProfilerCallback2`
+- CLR loads it via `CORECLR_ENABLE_PROFILING` env vars set before `CreateProcess`
+- `JITCompilationFinished` resolves `FunctionID` → method token + native address + code size + assembly name
+- Sends `TOKEN:ADDRESS:SIZE:ASSEMBLY\n` text lines to MixDbg via named pipe (`MIXDBG_PIPE_NAME`)
+- Blocks on ACK event (`MIXDBG_ACK_EVENT`) after each notification — MixDbg signals after setting the hardware BP, ensuring the BP is active before the method body executes
+- Profiler CLSID: `{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}`
+- Uses `ICorProfilerInfo` vtable calls by slot index (no corprof.h header dependency)
 
-**Key findings (M4V2, 2026-04-04):**
-- `CreateBreakpoint` on piggybacked process → E_NOTIMPL (inspection-only)
-- `GetOffsetByLine` for managed code → returns zero-filled placeholder addresses, not JIT'd code
-- INT3 (code) breakpoints at managed addresses → crashes process (`0x800703E6`)
-- SOS `!bpmd` → blocked (.NET 10 doesn't ship sos.dll, dbgeng SECURE policy)
-- DAC `GetRepresentativeEntryAddress` → returns REAL JIT address → hardware BPs fire
-- DAC has ~12s cache staleness (global state in `mscordaccore.dll`, `NativeLibrary.Load` returns same handle)
-- CLR notification exceptions (0xe0444143) do NOT fire for individual method JIT compilations
-- `EnumerateModules` must always refresh module refs (old ones get neutered after `FLUSH_ALL`)
-- Method tokens collide across assemblies — must filter by assembly name
-- `DOTNET_TieredCompilation=0` + `DOTNET_ReadyToRun=0` ensure stable addresses but don't force eager JIT
-
-**Two viable paths to first-click breakpoints:**
-1. **ICorDebug launch → force JIT → detach → attach dbgeng:** Launch with full ICorDebug, use `ICorDebugEval` to call `RuntimeHelpers.PrepareMethod` for each breakpointed method (forces JIT), detach, attach dbgeng, DAC finds addresses immediately. Stays in C#/ClrDebug.
-2. **CLR Profiler DLL:** Build a small C++ DLL implementing `ICorProfilerCallback::JITCompilationFinished`. CLR loads it via env vars, profiler notifies MixDbg via named pipe when methods are JIT'd with their native addresses. Real-time, no polling.
-
-See `docs/M4V2-managed-breakpoints.md` for full details.
+**Key findings (M4V2, 2026-04-04):** See `docs/M4V2-managed-breakpoints.md` for the full investigation of approaches that failed before the profiler approach succeeded.
 
 **Launch args:** DAP `launch` request `args` field is threaded through to `CreateProcess` command line.
 

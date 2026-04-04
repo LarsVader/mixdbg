@@ -1,0 +1,4 @@
+LIBRARY MixDbgProfiler
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

@@ -1,3 +1,4 @@
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using MixDbg.Dap;
 using MixDbg.Engine.DbgEng;
@@ -33,9 +34,21 @@ internal sealed class NativeDebuggerService(
             model.Terminated = true;
             model.Commands.CompleteAdding();
             model.EngineThread?.Join(3000);
+            model.ProfilerAckEvent?.Set(); // Unblock profiler if waiting.
+            model.ProfilerAckEvent?.Dispose();
+            model.ProfilerPipeReader?.Dispose();
+            model.ProfilerPipe?.Dispose();
+            model.ProfilerReaderThread?.Join(1000);
             model.Commands.Dispose();
             model.Stopped.Dispose();
             model.EngineReady.Dispose();
+
+            // Clear profiler env vars so they don't leak to other processes.
+            Environment.SetEnvironmentVariable("CORECLR_ENABLE_PROFILING", null);
+            Environment.SetEnvironmentVariable("CORECLR_PROFILER", null);
+            Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", null);
+            Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", null);
+            Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", null);
         };
         return model;
     }
@@ -340,6 +353,9 @@ internal sealed class NativeDebuggerService(
                 Environment.SetEnvironmentVariable("DOTNET_TieredCompilation", "0");
                 Environment.SetEnvironmentVariable("DOTNET_ReadyToRun", "0");
 
+                // Set up CLR profiler for real-time JIT notifications.
+                SetupProfilerPipe(model);
+
                 var cmdLine = model.LaunchProgram!;
                 if (model.LaunchArgs is { Length: > 0 })
                     cmdLine += " " + string.Join(" ", model.LaunchArgs);
@@ -349,6 +365,9 @@ internal sealed class NativeDebuggerService(
                     cmdLine,
                     CreateProcessFlags.DebugOnlyThisProcess | CreateProcessFlags.CreateNewConsole));
                 _log.LogInfo(_logStore, "Launch: CreateProcess succeeded");
+
+                // Start reading profiler notifications in the background.
+                StartProfilerReader(model);
             }
 
             // Signal the main thread that init is done.
@@ -398,7 +417,30 @@ internal sealed class NativeDebuggerService(
                     continue;
                 }
 
-                // Try to resolve deferred managed breakpoints (JIT may have compiled them).
+                // Process JIT notifications from the CLR profiler pipe.
+                // These arrive in real-time and match deferred breakpoints by token + assembly.
+                if (model.DeferredManagedBreakpoints.Count > 0 && !model.JitNotifications.IsEmpty)
+                {
+                    try
+                    {
+                        var jitResolved = _managedDebugger.HandleJitNotifications(model);
+                        foreach (var bp in jitResolved)
+                        {
+                            _log.LogInfo(_logStore, $"Profiler JIT bp resolved: id={bp.Id} verified={bp.Verified}");
+                            _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
+                            {
+                                Reason = "changed",
+                                Breakpoint = bp,
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogInfo(_logStore, $"HandleJitNotifications failed: {ex.Message}");
+                    }
+                }
+
+                // Fallback: try to resolve deferred managed breakpoints via DAC/XCLRData.
                 if (model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
                 {
                     try
@@ -474,6 +516,162 @@ internal sealed class NativeDebuggerService(
         }
     }
 
+    /// <summary>
+    /// Creates a named pipe server and sets CLR profiler environment variables
+    /// so the child process loads MixDbgProfiler.dll at startup.
+    /// Must be called before <c>CreateProcess</c> on the engine thread.
+    /// </summary>
+    private void SetupProfilerPipe(NativeDebuggerModel model)
+    {
+        // Find MixDbgProfiler.dll next to MixDbg.exe.
+        var exeDir = AppContext.BaseDirectory;
+        var profilerPath = Path.Combine(exeDir, "MixDbgProfiler.dll");
+
+        // Also check profiler/x64/Debug/ relative to the repo root (dev builds).
+        // Exe is at src/bin/Debug/net10.0/win-x64/ — 5 levels up to repo root.
+        if (!File.Exists(profilerPath))
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "..", ".."));
+            var devPath = Path.Combine(repoRoot, "profiler", "x64", "Debug", "MixDbgProfiler.dll");
+            if (File.Exists(devPath))
+                profilerPath = devPath;
+        }
+
+        if (!File.Exists(profilerPath))
+        {
+            _log.LogWarning(_logStore, $"MixDbgProfiler.dll not found at {profilerPath} — JIT notifications disabled");
+            return;
+        }
+
+        // Create a named pipe for the profiler to connect to.
+        var pipeName = $"MixDbgProfiler-{Environment.ProcessId}-{Guid.NewGuid():N}";
+        model.ProfilerPipeName = pipeName;
+        model.ProfilerPipe = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.In,
+            1, // max connections
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous,
+            65536, // inBufferSize
+            0);    // outBufferSize
+
+        // Create a named event for ACK signaling. The profiler blocks on this event
+        // after writing a JIT notification, ensuring the hardware breakpoint is set
+        // before the method body executes (first-click breakpoints).
+        var ackEventName = $"MixDbgProfilerAck-{pipeName}";
+        model.ProfilerAckEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ackEventName);
+
+        // Set CLR profiling env vars — child process inherits them.
+        Environment.SetEnvironmentVariable("CORECLR_ENABLE_PROFILING", "1");
+        Environment.SetEnvironmentVariable("CORECLR_PROFILER", "{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}");
+        Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", profilerPath);
+        Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", $@"\\.\pipe\{pipeName}");
+        Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", ackEventName);
+
+        _log.LogInfo(_logStore, $"Profiler pipe created: {pipeName}, DLL: {profilerPath}");
+    }
+
+    /// <summary>
+    /// Starts a background thread that reads JIT notifications from the profiler pipe.
+    /// Each notification is parsed and added to <c>model.JitNotifications</c>.
+    /// When a notification matches a deferred breakpoint, <c>SetInterrupt</c> is called
+    /// to wake the engine thread so it can set the hardware breakpoint.
+    /// </summary>
+    private void StartProfilerReader(NativeDebuggerModel model)
+    {
+        if (model.ProfilerPipe == null)
+            return;
+
+        model.ProfilerReaderThread = new Thread(() => ProfilerReaderLoop(model))
+        {
+            Name = "profiler-reader",
+            IsBackground = true,
+        };
+        model.ProfilerReaderThread.Start();
+    }
+
+    /// <summary>
+    /// Background thread loop: waits for the profiler to connect, then reads
+    /// JIT notification lines until the pipe closes or the session terminates.
+    /// </summary>
+    private void ProfilerReaderLoop(NativeDebuggerModel model)
+    {
+        try
+        {
+            _log.LogInfo(_logStore, "ProfilerReader: waiting for profiler to connect...");
+            model.ProfilerPipe!.WaitForConnection();
+            model.ProfilerConnected = true;
+            model.ProfilerPipeReader = new StreamReader(model.ProfilerPipe, System.Text.Encoding.UTF8);
+            _log.LogInfo(_logStore, "ProfilerReader: profiler connected");
+
+            while (!model.Terminated)
+            {
+                var line = model.ProfilerPipeReader.ReadLine();
+                if (line == null)
+                {
+                    _log.LogInfo(_logStore, "ProfilerReader: pipe closed (EOF)");
+                    break;
+                }
+
+                // Parse "TOKEN:ADDRESS:SIZE:ASSEMBLY\n"
+                var parts = line.Split(':');
+                if (parts.Length < 4)
+                    continue;
+
+                if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out var token))
+                    continue;
+                if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var address))
+                    continue;
+                if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out var codeSize))
+                    continue;
+                var assembly = parts[3];
+
+                // Store in the sorted map for stack trace resolution.
+                // Any IP in [address, address+codeSize) belongs to this method.
+                lock (model.JitMethodMap)
+                {
+                    model.JitMethodMap[address] = new JitMethodInfo(token, address, codeSize, assembly);
+                }
+
+                var notification = new JitNotification(token, address, codeSize, assembly);
+                model.JitNotifications.Enqueue(notification);
+
+                // If this token matches a deferred breakpoint, wake the engine thread
+                // so it can set the hardware BP before the method executes.
+                bool matches = false;
+                foreach (var deferred in model.DeferredManagedBreakpoints)
+                {
+                    if (deferred.MethodToken == token &&
+                        deferred.AssemblyName != null &&
+                        deferred.AssemblyName.Equals(assembly, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matches = true;
+                        break;
+                    }
+                }
+
+                if (matches)
+                {
+                    _log.LogInfo(_logStore,
+                        $"ProfilerReader: JIT match! token=0x{token:X8} addr=0x{address:X} asm={assembly} — interrupting engine");
+                    // DON'T signal ACK yet — engine thread will signal after setting
+                    // the hardware BP, keeping the profiler (and target thread) blocked
+                    // so the method can't execute before the BP is active.
+                    try { model.Control.SetInterrupt(0); } catch { }
+                }
+                else
+                {
+                    // No breakpoint interest — unblock the profiler immediately.
+                    model.ProfilerAckEvent?.Set();
+                }
+            }
+        }
+        catch (Exception ex) when (!model.Terminated)
+        {
+            _log.LogInfo(_logStore, $"ProfilerReader: error: {ex.Message}");
+        }
+    }
+
     private void ProcessCommandsUntilResume(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "ProcessCommandsUntilResume: waiting for commands");
@@ -528,7 +726,9 @@ internal sealed class NativeDebuggerService(
             _log.LogInfo(_logStore, "Managed debugging initialized (ICorDebug V4)");
 
             // Start polling for deferred managed breakpoint resolution.
-            if (model.DeferredManagedBreakpoints.Count > 0)
+            // Skip when profiler is connected — profiler JIT notifications are real-time
+            // and don't starve the WPF UI thread like the 2s SetInterrupt polling does.
+            if (model.DeferredManagedBreakpoints.Count > 0 && !model.ProfilerConnected)
                 StartDeferredBreakpointPoller(model);
         }
     }
@@ -865,6 +1065,23 @@ internal sealed class NativeDebuggerService(
                     Name = Path.GetFileName(path),
                     Path = path,
                 };
+            }
+
+            // Fallback: if dbgeng can't resolve, try the profiler's JIT method map.
+            // This handles managed (C#/CLI) frames where dbgeng has no symbol info.
+            if (source == null && model.JitMethodMap.Count > 0)
+            {
+                try
+                {
+                    var profilerFrame = _managedDebugger.ResolveFrameFromProfilerData(model, f.InstructionOffset);
+                    if (profilerFrame != null)
+                    {
+                        name = profilerFrame.Value.Name;
+                        source = profilerFrame.Value.Source;
+                        line = profilerFrame.Value.Line;
+                    }
+                }
+                catch { }
             }
 
             _log.LogInfo(_logStore, $"  Frame {i}: ip=0x{f.InstructionOffset:X} name={name} nameHr=0x{nameHr:X8} lineHr=0x{lineHr:X8} line={line}");

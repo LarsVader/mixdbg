@@ -231,7 +231,7 @@ Not all files can be debugged via dbgeng:
 | `.cpp`/`.h` in C++/CLI project | Yes | Managed via ICorDebug V4 piggybacked on dbgeng (detected via `<CLRSupport>` in vcxproj) |
 | `.cs` | Yes | Managed via ICorDebug V4 piggybacked on dbgeng |
 
-The adapter checks file extensions AND scans the vcxproj for `<CLRSupport>` to classify breakpoints. Native breakpoints use dbgeng directly. Managed breakpoints resolve the method via ICorDebug V4 module enumeration + PDB mapping. Breakpoints received before the CLR loads are stored as pending and applied automatically once the runtime initializes.
+The adapter checks file extensions AND scans the vcxproj for `<CLRSupport>` to classify breakpoints. Native breakpoints use dbgeng directly. Managed breakpoints are resolved via PDB (method token + assembly name) and set as hardware breakpoints (`ba e1`) at the real JIT'd native address reported by the CLR Profiler. The profiler blocks until MixDbg confirms the BP is set, guaranteeing first-click breakpoints. Breakpoints received before the CLR loads are stored as pending and applied automatically once the runtime initializes.
 
 ## Diagnostic Logging
 
@@ -244,11 +244,11 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 
 ## Current Status
 
-**Working (M1+M2+M3+M4 partial):**
+**Working (M1+M2+M3+M4):**
 - DAP transport (JSON-RPC over stdin/stdout)
 - Process launch and attach via dbgeng
 - Native C++ breakpoints (including deferred)
-- Stack traces with source locations
+- Stack traces with source locations (native via dbgeng, managed via CLR Profiler + PDB)
 - Stepping (over, into, out)
 - Thread enumeration
 - Breakpoint classification (native vs managed vs CLI)
@@ -256,10 +256,8 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 - Managed module/function resolution via ICorDebug V4 piggybacked on dbgeng (`OpenVirtualProcessImpl` + `DbgEngDataTarget` bridge)
 - PDB-based source mapping for C# via `System.Reflection.Metadata`
 - Command-line argument passthrough in DAP launch requests
-
-**In progress (M4):**
-- Managed breakpoints — hardware BPs at DAC-resolved JIT addresses work (second-call proven). First-click breakpoints need forced JIT before user interaction. Two paths under investigation: ICorDebug launch+handoff with `PrepareMethod`, or CLR profiler DLL for real-time JIT notifications. See `docs/M4V2-managed-breakpoints.md`.
-- Managed stack traces — ICorDebug V4 piggybacked process can enumerate threads/frames with source resolution via PDB
+- **First-click managed breakpoints** via CLR Profiler DLL (`MixDbgProfiler.dll`) — JIT notifications over named pipe → hardware breakpoints at real native addresses, with blocking ACK handshake to guarantee BP is set before method executes
+- **Managed stack traces** via profiler JIT method map — binary search maps native IPs to method tokens, PDB resolves source file:line
 
 **Not yet implemented:**
 - Managed variable inspection (M5)
@@ -269,7 +267,10 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 
 ```bash
 cd mixdbg
-dotnet build src/MixDbg/MixDbg.csproj -c Debug
+dotnet build src/MixDbg.csproj -c Debug    # Debug adapter
+cd profiler && make all                      # CLR Profiler DLL
 ```
+
+MixDbg looks for `MixDbgProfiler.dll` next to its exe, or in `profiler/x64/Debug/` during development.
 
 The adapter is configured in nvim-dap as an executable adapter. Select "Mixed C#/C++ (mixdbg)" from the debug config picker.

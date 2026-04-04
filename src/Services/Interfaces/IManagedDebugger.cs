@@ -51,4 +51,19 @@ public interface IManagedDebugger
     /// </summary>
     /// <returns>DAP breakpoint objects for each successfully resolved breakpoint.</returns>
     Breakpoint[] TryResolveDeferredBreakpoints(NativeDebuggerModel model);
+
+    /// <summary>
+    /// Handles a JIT compilation notification from the CLR profiler. If the
+    /// JIT'd method matches a deferred managed breakpoint (by token + assembly name),
+    /// sets a hardware breakpoint at the reported native address immediately.
+    /// </summary>
+    /// <returns>DAP breakpoint objects for each matched and resolved breakpoint.</returns>
+    Breakpoint[] HandleJitNotifications(NativeDebuggerModel model);
+
+    /// <summary>
+    /// Resolves a native instruction pointer to a managed method name and source
+    /// location using the profiler's JIT method map and PDB data. Returns <c>null</c>
+    /// if the IP doesn't belong to a known JIT'd method.
+    /// </summary>
+    (string Name, Source? Source, int Line)? ResolveFrameFromProfilerData(NativeDebuggerModel model, ulong instructionPointer);
 }

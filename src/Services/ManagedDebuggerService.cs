@@ -442,6 +442,172 @@ internal sealed class ManagedDebuggerService(
         return resolved.ToArray();
     }
 
+    public Breakpoint[] HandleJitNotifications(NativeDebuggerModel model)
+    {
+        if (model.DeferredManagedBreakpoints.Count == 0 || model.JitNotifications.IsEmpty)
+            return [];
+
+        var resolved = new List<Breakpoint>();
+        var bound = new List<DeferredManagedBreakpoint>();
+
+        // Drain all pending JIT notifications from the profiler pipe.
+        while (model.JitNotifications.TryDequeue(out var jit))
+        {
+            // Match against deferred breakpoints by token + assembly name.
+            foreach (var deferred in model.DeferredManagedBreakpoints)
+            {
+                if (deferred.MethodToken == jit.MethodToken &&
+                    deferred.AssemblyName != null &&
+                    deferred.AssemblyName.Equals(jit.AssemblyName, StringComparison.OrdinalIgnoreCase) &&
+                    !bound.Contains(deferred))
+                {
+                    _log.LogInfo(_logStore,
+                        $"  JIT notification matched deferred bp #{deferred.BpId}: " +
+                        $"token=0x{jit.MethodToken:X8} addr=0x{jit.NativeAddress:X} asm={jit.AssemblyName}");
+
+                    var hwBpId = SetManagedCodeBreakpoint(model, jit.NativeAddress, deferred.FilePath, deferred.Line);
+                    bound.Add(deferred);
+                    resolved.Add(new Breakpoint
+                    {
+                        Id = deferred.BpId,
+                        Verified = hwBpId != null,
+                        Line = deferred.Line,
+                        Source = new Source
+                        {
+                            Name = Path.GetFileName(deferred.FilePath),
+                            Path = deferred.FilePath,
+                        },
+                        Message = hwBpId == null ? "Failed to set hardware breakpoint" : null,
+                    });
+                }
+            }
+        }
+
+        foreach (var r in bound)
+            model.DeferredManagedBreakpoints.Remove(r);
+
+        // Signal the ACK event to unblock the profiler's JITCompilationFinished callback.
+        // The hardware BP is now set, so when the profiler unblocks and the CLR dispatches
+        // to the freshly JIT'd code, the BP will fire immediately.
+        if (resolved.Count > 0)
+            model.ProfilerAckEvent?.Set();
+
+        return resolved.ToArray();
+    }
+
+    public (string Name, Source? Source, int Line)? ResolveFrameFromProfilerData(
+        NativeDebuggerModel model, ulong instructionPointer)
+    {
+        // Binary search the sorted JIT method map for the largest start address ≤ ip.
+        JitMethodInfo? method;
+        lock (model.JitMethodMap)
+        {
+            method = FindContainingMethod(model.JitMethodMap, instructionPointer);
+        }
+
+        if (method == null)
+            return null;
+
+        // Find the assembly path from CorModules (match by assembly name).
+        string? assemblyPath = null;
+        foreach (var mod in model.CorModules.Values)
+        {
+            if (mod.Path != null &&
+                Path.GetFileNameWithoutExtension(mod.Path)
+                    .Equals(method.AssemblyName, StringComparison.OrdinalIgnoreCase))
+            {
+                assemblyPath = mod.Path;
+                break;
+            }
+        }
+
+        // Fallback: search near known module paths if CorModules didn't have it.
+        if (assemblyPath == null)
+        {
+            foreach (var mod in model.CorModules.Values)
+            {
+                if (mod.Path == null) continue;
+                var dir = Path.GetDirectoryName(mod.Path);
+                if (dir == null) continue;
+                var candidate = Path.Combine(dir, method.AssemblyName + ".dll");
+                if (File.Exists(candidate))
+                {
+                    assemblyPath = candidate;
+                    break;
+                }
+            }
+        }
+
+        // Resolve method name and source location via PDB.
+        string methodName = $"[{method.AssemblyName}] 0x{method.MethodToken:X8}";
+        Source? source = null;
+        int line = 0;
+
+        if (assemblyPath != null)
+        {
+            try
+            {
+                using var mapper = new PdbSourceMapper();
+
+                // Get source location (use IL offset 0 for approximate first line).
+                var srcLoc = mapper.GetSourceLocation(assemblyPath, method.MethodToken, 0);
+                if (srcLoc != null)
+                {
+                    source = new Source
+                    {
+                        Name = Path.GetFileName(srcLoc.Value.File),
+                        Path = srcLoc.Value.File,
+                    };
+                    line = srcLoc.Value.Line;
+                }
+
+                // Try to get a better method name from PDB metadata.
+                var methodInfo = mapper.GetMethodName(assemblyPath, method.MethodToken);
+                if (methodInfo != null)
+                    methodName = methodInfo;
+            }
+            catch (Exception ex)
+            {
+                _log.LogInfo(_logStore, $"  Profiler frame resolution failed for token 0x{method.MethodToken:X8}: {ex.Message}");
+            }
+        }
+
+        return (methodName, source, line);
+    }
+
+    /// <summary>
+    /// Binary searches the sorted JIT method map for the method containing the given IP.
+    /// Returns <c>null</c> if no method contains the address.
+    /// </summary>
+    private static JitMethodInfo? FindContainingMethod(SortedList<ulong, JitMethodInfo> map, ulong ip)
+    {
+        if (map.Count == 0)
+            return null;
+
+        var keys = map.Keys;
+        int lo = 0, hi = keys.Count - 1;
+
+        // Find the largest key ≤ ip.
+        while (lo <= hi)
+        {
+            int mid = lo + (hi - lo) / 2;
+            if (keys[mid] <= ip)
+                lo = mid + 1;
+            else
+                hi = mid - 1;
+        }
+
+        // hi is now the index of the largest key ≤ ip (or -1 if none).
+        if (hi < 0)
+            return null;
+
+        var entry = map.Values[hi];
+        if (ip < entry.StartAddress + entry.CodeSize)
+            return entry;
+
+        return null;
+    }
+
     private Breakpoint[] TryBindPendingBreakpoints(NativeDebuggerModel model)
     {
         var resolved = new List<Breakpoint>();
