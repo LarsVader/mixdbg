@@ -21,14 +21,26 @@ namespace WpfApp
             // Hide window so integration tests run headlessly.
             Hide();
 
-            // Sequence: Add (bp fires on first call) → Multiply (bp fires on first call) → exit
-            // ICorDebug handles pre-JIT breakpoints automatically — no double-click needed.
+            // Sequence: Add → Multiply → exit
             // --auto-test-slow: 15s initial delay simulates a slow user.
+            // --auto-test-double: clicks each button twice (first call JITs, second hits hw BP).
             int firstDelay = App.AutoTestSlow ? 15 : 3;
-            ScheduleActions(
-                (firstDelay, () => OnAddClick(this, new RoutedEventArgs())),      // bp fires on first call
-                (8, () => OnMultiplyClick(this, new RoutedEventArgs())),           // bp fires on first call
-                (3, () => Close()));
+            if (App.AutoTestDouble)
+            {
+                ScheduleActions(
+                    (firstDelay, () => OnAddClick(this, new RoutedEventArgs())),      // JIT + run (no bp yet)
+                    (3, () => OnAddClick(this, new RoutedEventArgs())),               // hw bp fires
+                    (3, () => OnMultiplyClick(this, new RoutedEventArgs())),           // JIT + run (no bp yet)
+                    (3, () => OnMultiplyClick(this, new RoutedEventArgs())),           // hw bp fires
+                    (3, () => Close()));
+            }
+            else
+            {
+                ScheduleActions(
+                    (firstDelay, () => OnAddClick(this, new RoutedEventArgs())),
+                    (8, () => OnMultiplyClick(this, new RoutedEventArgs())),
+                    (3, () => Close()));
+            }
         }
 
         private static void ScheduleActions(params (int DelaySec, Action Action)[] steps)

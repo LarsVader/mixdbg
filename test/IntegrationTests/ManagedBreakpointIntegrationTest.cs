@@ -47,6 +47,37 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ManagedBreakpoint_WhenDoubleClicked_BothFireOnSecondCall()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+        await WhenSettingTwoManagedBreakpoints();
+        await WhenLaunchingWithAutoTestDouble();
+        await WhenSendingConfigurationDone();
+
+        // Hit 1: OnAddClick — second call (first call JITs, hw BP set, second hits).
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 2: OnMultiplyClick — second call.
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "MainWindow.xaml.cs");
+        ThenBreakpointWasHit(hitIndex: 1);
+        ThenStackTraceHasSource(hitIndex: 1, "MainWindow.xaml.cs");
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task ManagedBreakpoint_WhenSlowUserDelaysFirstClick_BothStillFire()
     {
         GivenMixDbgAndWpfAppExist();
@@ -151,6 +182,17 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
             program = _wpfAppPath.Replace("/", "\\"),
             cwd = Path.GetDirectoryName(_wpfAppPath)!.Replace("/", "\\"),
             args = new[] { "--auto-test" },
+        });
+        await WhenWaitingForResponse("launch", timeout: 10);
+    }
+
+    private async Task WhenLaunchingWithAutoTestDouble()
+    {
+        await SendDapRequest(3, "launch", new
+        {
+            program = _wpfAppPath.Replace("/", "\\"),
+            cwd = Path.GetDirectoryName(_wpfAppPath)!.Replace("/", "\\"),
+            args = new[] { "--auto-test-double" },
         });
         await WhenWaitingForResponse("launch", timeout: 10);
     }
@@ -367,8 +409,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         _repoRoot, "test", "TestApp", "WpfApp", "bin", "x64", "Debug", "net10.0-windows", "WpfApp.exe");
     private static readonly string _bpFile = Path.Combine(
         _repoRoot, "test", "TestApp", "WpfApp", "MainWindow.xaml.cs");
-    private const int _addLine = 49;
-    private const int _multiplyLine = 58;
+    private const int _addLine = 61;
+    private const int _multiplyLine = 70;
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-test-{Guid.NewGuid():N}.log");
