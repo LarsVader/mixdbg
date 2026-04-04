@@ -14,7 +14,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDapServer, DapServerService>();
         services.AddSingleton<IDapDispatcher, DapDispatcherService>();
         services.AddSingleton<IDebugSession, DebugSessionService>();
-        services.AddSingleton<ICorDebugEngine, CorDebugEngineService>();
+        services.AddSingleton<INativeDebugger, NativeDebuggerService>();
+        services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();
 
         // State models (singletons created by services)
         services.AddSingleton(sp =>

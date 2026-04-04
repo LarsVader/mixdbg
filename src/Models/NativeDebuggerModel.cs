@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using Microsoft.Diagnostics.Runtime;
+using ClrDebug;
 using MixDbg.Dap;
 using MixDbg.Engine.DbgEng;
 
@@ -9,7 +9,8 @@ namespace MixDbg.Models;
 /// Mutable state for the native debug engine. Holds dbgeng COM interface
 /// references (thread-affine to the engine thread), volatile flags for
 /// cross-thread signaling, a command queue for marshaling DAP handler
-/// calls to the engine thread, and breakpoint tracking state.
+/// calls to the engine thread, breakpoint tracking state, and ICorDebug V4
+/// references for managed debugging piggybacked on the dbgeng session.
 /// Dispose tears down the engine thread and releases all resources.
 /// </summary>
 public sealed class NativeDebuggerModel : IDisposable
@@ -20,6 +21,7 @@ public sealed class NativeDebuggerModel : IDisposable
     internal IDebugSymbols Symbols { get; set; } = null!;
     internal IDebugSystemObjects SysObjects { get; set; } = null!;
     internal IDebugDataSpaces DataSpaces { get; set; } = null!;
+    internal IDebugAdvanced Advanced { get; set; } = null!;
     internal EventCallbacks Callbacks { get; set; } = null!;
 
     // Engine thread lifecycle.
@@ -30,7 +32,7 @@ public sealed class NativeDebuggerModel : IDisposable
     internal volatile bool Stepping;
     internal volatile bool PauseRequested;
 
-    // Breakpoint tracking.
+    // Native breakpoint tracking.
     internal HashSet<uint> UserBreakpointIds { get; } = new();
     internal uint LastHitBpId;
     internal volatile bool HitUserBreakpoint;
@@ -40,21 +42,26 @@ public sealed class NativeDebuggerModel : IDisposable
     // Command queue: main thread queues, engine thread executes.
     internal BlockingCollection<Action> Commands { get; } = new();
 
-    // Managed breakpoint tracking.
+    // Managed breakpoint tracking (ICorDebug V4).
     internal HashSet<uint> ManagedBreakpointIds { get; } = new();
     internal List<SetBreakpointsArguments> PendingManagedBreakpoints { get; } = new();
-    internal List<DeferredManagedBreakpoint> DeferredManagedBreakpoints { get; } = new();
-    internal int DeferredResolutionFailures;
 
-    // CLR / managed debugging state — set on the engine thread.
+    // ICorDebug V4 state — piggybacked on the dbgeng session via OpenVirtualProcess.
     internal volatile bool ClrLoaded;
     internal volatile bool ManagedInitialized;
-    internal DataTarget? DataTarget { get; set; }
-    internal ClrRuntime? Runtime { get; set; }
-    /// <summary>The original runtime created during InitializeRuntime — stable for stack traces.</summary>
-    internal ClrRuntime? OriginalRuntime { get; set; }
-    /// <summary>Separate DataTarget for deferred bp resolution — has its own CreateRuntime budget.</summary>
-    internal DataTarget? ResolutionDataTarget { get; set; }
+    internal string? CoreClrPath { get; set; }
+    internal ulong CoreClrBaseAddress { get; set; }
+    internal CorDebugProcess? CorProcess { get; set; }
+    internal Dictionary<long, ManagedModule> CorModules { get; } = new();
+    internal Dictionary<int, CorDebugFunctionBreakpoint> CorManagedBreakpoints { get; } = new();
+    internal Dictionary<string, List<int>> ManagedFileBreakpointIds { get; } = new();
+    internal List<PendingManagedBreakpoint> PendingILBreakpoints { get; } = new();
+
+    /// <summary>
+    /// Native addresses of active managed breakpoints (from ICorDebug IL breakpoints).
+    /// Used to identify managed breakpoint hits from dbgeng EXCEPTION_BREAKPOINT events.
+    /// </summary>
+    internal HashSet<ulong> ManagedBreakpointAddresses { get; } = new();
 
     // Variable inspection — invalidated on continue/step.
     internal VariableStore Variables { get; } = new();
@@ -78,4 +85,19 @@ public sealed class NativeDebuggerModel : IDisposable
     public bool IsTargetStopped => Stopped.IsSet;
 
     public void Dispose() => DisposeAction?.Invoke();
+}
+
+/// <summary>
+/// A managed breakpoint waiting for its module to load via ICorDebug.
+/// </summary>
+internal record PendingManagedBreakpoint(string FilePath, int Line, int BpId);
+
+/// <summary>
+/// Tracks a loaded managed module discovered via ICorDebug enumeration.
+/// </summary>
+internal sealed class ManagedModule
+{
+    public required CorDebugModule Module { get; init; }
+    public required string? Path { get; init; }
+    public required string? PdbPath { get; init; }
 }

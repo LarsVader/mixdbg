@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using MixDbg.Dap;
 using MixDbg.Engine.DbgEng;
+using MixDbg.Engine.CorDebug;
 using MixDbg.Models;
 
 namespace MixDbg.Services;
@@ -32,8 +33,6 @@ internal sealed class NativeDebuggerService(
             model.Terminated = true;
             model.Commands.CompleteAdding();
             model.EngineThread?.Join(3000);
-            model.Runtime?.Dispose();
-            model.DataTarget?.Dispose();
             model.Commands.Dispose();
             model.Stopped.Dispose();
             model.EngineReady.Dispose();
@@ -248,6 +247,7 @@ internal sealed class NativeDebuggerService(
         model.Symbols = (IDebugSymbols)obj;
         model.SysObjects = (IDebugSystemObjects)obj;
         model.DataSpaces = (IDebugDataSpaces)obj;
+        model.Advanced = (IDebugAdvanced)obj;
 
         model.Callbacks = new EventCallbacks();
         model.Callbacks.OnBreakpoint += bp => OnBreakpoint(model, bp);
@@ -260,23 +260,34 @@ internal sealed class NativeDebuggerService(
                 Output = $"[mixdbg] Process created: {name}\n",
             });
         };
-        model.Callbacks.OnLoadModule += (mod, img) =>
+        model.Callbacks.OnLoadModule += (mod, img, baseOffset) =>
         {
             if (!model.ClrLoaded && mod != null &&
                 mod.Equals("coreclr", StringComparison.OrdinalIgnoreCase))
             {
                 model.ClrLoaded = true;
-                _log.LogInfo(_logStore, "CLR detected: coreclr module loaded");
+                model.CoreClrPath = img;
+                model.CoreClrBaseAddress = baseOffset;
+                _log.LogInfo(_logStore, $"CLR detected: coreclr at {img} base=0x{baseOffset:X}");
+            }
+
+            // After managed init, notify on managed assembly loads so pending BPs can bind.
+            if (model.ManagedInitialized && img != null &&
+                (img.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
+                 img.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
+            {
+                TryBindManagedBreakpointsOnModuleLoad(model);
             }
         };
-        model.Callbacks.OnClrNotification += () =>
+        model.Callbacks.OnExceptionBreakpoint += addr =>
         {
-            // CLR notification exceptions fire during JIT compilation.
-            // Check if any deferred managed breakpoints can now be resolved.
-            if (model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
+            // Check if this EXCEPTION_BREAKPOINT is from a managed IL breakpoint.
+            if (model.ManagedInitialized &&
+                (model.ManagedBreakpointAddresses.Contains(addr) ||
+                 (model.CorManagedBreakpoints.Count > 0 && !model.UserBreakpointIds.Contains(model.LastHitBpId))))
             {
-                _log.LogInfo(_logStore, $"CLR notification: checking {model.DeferredManagedBreakpoints.Count} deferred bp(s)");
-                TryResolveDeferredOnNotification(model);
+                model.HitUserBreakpoint = true;
+                _log.LogInfo(_logStore, $"Managed breakpoint hit at 0x{addr:X}");
             }
         };
 
@@ -350,10 +361,7 @@ internal sealed class NativeDebuggerService(
                 if (model.ClrLoaded && !model.ManagedInitialized)
                     TryInitializeManaged(model);
 
-                // Deferred managed breakpoints are resolved via periodic interrupts
-                // (ScheduleDeferredBreakpointCheck), NOT on every stop. Resolving here
-                // wastes CreateRuntime budget when user stops follow with many stackTrace
-                // requests that degrade the DAC.
+                // After managed init, try to bind managed breakpoints on module load events.
 
                 if (model.TargetExited)
                 {
@@ -413,12 +421,6 @@ internal sealed class NativeDebuggerService(
                 }
                 else
                 {
-                    // Resolve deferred managed breakpoints on system stops (interrupts).
-                    // NOT on user stops — those trigger many stackTrace requests that
-                    // degrade the DAC, exhausting the CreateRuntime budget.
-                    if (model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
-                        TryResolveDeferredOnNotification(model);
-
                     _log.LogInfo(_logStore, "System stop — auto-continuing");
                     model.Stopped.Reset();
                     model.Control.SetExecutionStatus(DebugStatus.Go);
@@ -476,7 +478,7 @@ internal sealed class NativeDebuggerService(
         _log.LogInfo(_logStore, "Initializing managed debugging (CLR detected)...");
         if (_managedDebugger.InitializeRuntime(model))
         {
-            // Apply any managed breakpoints that were pending.
+            // Apply any managed breakpoints that were pending before CLR loaded.
             foreach (var pending in model.PendingManagedBreakpoints)
             {
                 var bps = _managedDebugger.SetManagedBreakpoints(
@@ -491,62 +493,22 @@ internal sealed class NativeDebuggerService(
                 }
             }
             model.PendingManagedBreakpoints.Clear();
-            _log.LogInfo(_logStore, "Managed debugging initialized");
-
-            // If there are deferred breakpoints (methods not yet JIT'd),
-            // schedule an interrupt to force an early stop for resolution.
-            if (model.DeferredManagedBreakpoints.Count > 0)
-                ScheduleDeferredBreakpointCheck(model);
+            _log.LogInfo(_logStore, "Managed debugging initialized (ICorDebug V4)");
         }
     }
 
     /// <summary>
-    /// Schedules a delayed <c>SetInterrupt(ACTIVE)</c> to force WaitForEvent to return,
-    /// giving the engine loop a chance to resolve deferred managed breakpoints.
-    /// The injected break is handled as a system stop and auto-continued.
-    /// Re-schedules itself if deferred breakpoints remain unresolved.
+    /// Called on managed module loads. Re-enumerates ICorDebug modules and tries
+    /// to bind any pending managed breakpoints against newly loaded assemblies.
     /// </summary>
-    private void ScheduleDeferredBreakpointCheck(NativeDebuggerModel model, int delayMs = 5000)
-    {
-        Task.Delay(delayMs).ContinueWith(_ =>
-        {
-            if (model.Terminated || model.TargetExited
-                || model.DeferredManagedBreakpoints.Count == 0)
-                return;
-
-            // Stop after 10 consecutive DAC failures — the DataTarget is broken.
-            if (model.DeferredResolutionFailures >= 10)
-            {
-                _log.LogInfo(_logStore, "Stopping deferred bp checks after 10 consecutive DAC failures");
-                return;
-            }
-
-            _log.LogInfo(_logStore, "Requesting interrupt to resolve deferred managed breakpoints");
-            try
-            {
-                model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
-                ScheduleDeferredBreakpointCheck(model);
-            }
-            catch (Exception ex)
-            {
-                _log.LogInfo(_logStore, $"SetInterrupt failed: {ex.Message}");
-            }
-        });
-    }
-
-    /// <summary>
-    /// Called from CLR notification callbacks (during JIT compilation).
-    /// Resolves any deferred managed breakpoints whose methods are now JIT-compiled
-    /// and sends breakpoint-changed events to the DAP client.
-    /// </summary>
-    private void TryResolveDeferredOnNotification(NativeDebuggerModel model)
+    private void TryBindManagedBreakpointsOnModuleLoad(NativeDebuggerModel model)
     {
         try
         {
-            var resolved = _managedDebugger.TryResolveDeferredBreakpoints(model);
+            var resolved = _managedDebugger.OnModuleLoad(model);
             foreach (var bp in resolved)
             {
-                _log.LogInfo(_logStore, $"Deferred managed bp resolved: id={bp.Id} line={bp.Line}");
+                _log.LogInfo(_logStore, $"Managed bp bound on module load: id={bp.Id} line={bp.Line}");
                 _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
                 {
                     Reason = "changed",
@@ -556,7 +518,7 @@ internal sealed class NativeDebuggerService(
         }
         catch (Exception ex)
         {
-            _log.LogInfo(_logStore, $"TryResolveDeferredOnNotification failed: {ex.Message}");
+            _log.LogInfo(_logStore, $"TryBindManagedBreakpointsOnModuleLoad failed: {ex.Message}");
         }
     }
 
@@ -575,9 +537,8 @@ internal sealed class NativeDebuggerService(
     {
         bp.GetId(out var id);
         model.LastHitBpId = id;
-        model.HitUserBreakpoint = model.UserBreakpointIds.Contains(id)
-            || model.ManagedBreakpointIds.Contains(id);
-        _log.LogInfo(_logStore, $"OnBreakpoint: id={id} isUser={model.HitUserBreakpoint} (native: [{string.Join(",", model.UserBreakpointIds)}] managed: [{string.Join(",", model.ManagedBreakpointIds)}])");
+        model.HitUserBreakpoint = model.UserBreakpointIds.Contains(id);
+        _log.LogInfo(_logStore, $"OnBreakpoint: id={id} isUser={model.HitUserBreakpoint} (native: [{string.Join(",", model.UserBreakpointIds)}])");
 
         // Send verified update so nvim-dap clears the "rejected" marker.
         if (model.HitUserBreakpoint)
@@ -627,26 +588,6 @@ internal sealed class NativeDebuggerService(
         // Delegate managed files to the managed debugger.
         if (!_sourceFiles.IsNativeFile(filePath))
         {
-            // Remove old managed breakpoints for this file (hardware bp cleanup).
-            var managedKeysToRemove = model.BreakpointIds.Keys
-                .Where(k => k.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            foreach (var key in managedKeysToRemove)
-            {
-                if (model.BreakpointIds.TryGetValue(key, out var oldId))
-                {
-                    int hr = model.Control.GetBreakpointById(oldId, out var oldBp);
-                    if (hr >= 0)
-                        model.Control.RemoveBreakpoint(oldBp);
-                    model.ManagedBreakpointIds.Remove(oldId);
-                    model.BreakpointIds.Remove(key);
-                    _log.LogInfo(_logStore, $"  Removed old managed bp: id={oldId} key={key}");
-                }
-            }
-            // Also clear deferred bps for this file.
-            model.DeferredManagedBreakpoints.RemoveAll(d =>
-                d.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
-
             if (model.ManagedInitialized)
             {
                 _log.LogInfo(_logStore, $"  Delegating to managed debugger: {filePath}");

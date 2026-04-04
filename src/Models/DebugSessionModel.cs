@@ -27,7 +27,6 @@ public sealed class DebugSessionModel : IDisposable
     public SessionState State { get; internal set; } = SessionState.Uninitialized;
 
     internal NativeDebuggerModel? Engine { get; set; }
-    internal CorDebugEngineModel? CorEngine { get; set; }
     internal int NextPendingBpId { get; set; } = 1000;
     internal List<SetBreakpointsArguments> PendingBreakpoints { get; } = new();
 

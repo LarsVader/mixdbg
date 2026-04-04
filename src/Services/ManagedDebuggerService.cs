@@ -1,16 +1,18 @@
 using System.Runtime.InteropServices;
-using Microsoft.Diagnostics.Runtime;
+using System.Runtime.InteropServices.Marshalling;
+using ClrDebug;
 using MixDbg.Dap;
-using MixDbg.Engine.DbgEng;
+using MixDbg.Engine.CorDebug;
 using MixDbg.Engine.Sos;
 using MixDbg.Models;
 
 namespace MixDbg.Services;
 
 /// <summary>
-/// Stateless managed debugging service. Uses ClrMD for runtime inspection
-/// (stack traces, method resolution) and hardware execution breakpoints
-/// (<c>ba e1</c>) for managed breakpoints. All methods execute on the engine thread.
+/// Stateless managed debugging service. Uses ICorDebug V4
+/// (<c>ICLRDebugging::OpenVirtualProcess</c>) piggybacked on the existing dbgeng
+/// session for IL-level breakpoints and managed stack traces.
+/// All methods execute on the engine thread.
 /// </summary>
 internal sealed class ManagedDebuggerService(
     ILoggingService log,
@@ -26,36 +28,30 @@ internal sealed class ManagedDebuggerService(
         if (model.ManagedInitialized)
             return true;
 
+        if (string.IsNullOrEmpty(model.CoreClrPath) || model.CoreClrBaseAddress == 0)
+        {
+            _log.LogWarning(_logStore, "Cannot initialize managed debugging: coreclr path or base address not set");
+            return false;
+        }
+
         try
         {
-            // Create ClrMD DataTarget from existing dbgeng IDebugClient.
-            var pClient = Marshal.GetIUnknownForObject(model.Client);
-            try
-            {
-#pragma warning disable CS0618 // CreateFromDbgEng is obsolete but works; DbgEngDataReader requires a separate NuGet
-                model.DataTarget = DataTarget.CreateFromDbgEng(pClient);
-#pragma warning restore CS0618
-            }
-            finally
-            {
-                Marshal.Release(pClient);
-            }
+            _log.LogInfo(_logStore, $"Initializing ICorDebug V4 via OpenVirtualProcessImpl (coreclr={model.CoreClrPath}, base=0x{model.CoreClrBaseAddress:X})");
 
-            var clrVersions = model.DataTarget.ClrVersions;
-            if (clrVersions.Length == 0)
-            {
-                _log.LogWarning(_logStore, "No CLR versions found in target process");
-                return false;
-            }
+            // Create the data target bridge that lets ICorDebug read/write through dbgeng.
+            var dataTarget = new DbgEngDataTarget(model.DataSpaces, model.Advanced, model.SysObjects);
 
-            model.Runtime = clrVersions[0].CreateRuntime();
-            _log.LogInfo(_logStore, $"ClrMD runtime created: {clrVersions[0].Version}");
+            // Call mscordbi!OpenVirtualProcessImpl directly — the .NET 10 mscordbi.dll
+            // doesn't export DllGetClassObject, and mscoree.dll's CLRCreateInstance
+            // doesn't understand .NET 10 (returns CORDBG_E_UNSUPPORTED_FORWARD_COMPAT).
+            model.CorProcess = OpenVirtualProcessImpl(
+                model.CoreClrPath, model.CoreClrBaseAddress, dataTarget, _log, _logStore,
+                out var clrVersion);
+            _log.LogInfo(_logStore, $"ICorDebug V4 initialized: CLR {clrVersion.wMajor}.{clrVersion.wMinor}.{clrVersion.wBuild}");
 
-            // Note: SOS is NOT loaded — SOS 9.0 is incompatible with .NET 10
-            // (causes SOS_HOSTING failure and WaitForEvent crashes).
-            // Managed breakpoints use ClrMD native code address polling instead.
+            // Enumerate currently loaded modules.
+            EnumerateModules(model);
 
-            model.OriginalRuntime = model.Runtime;
             model.ManagedInitialized = true;
             return true;
         }
@@ -70,37 +66,41 @@ internal sealed class ManagedDebuggerService(
     {
         _log.LogInfo(_logStore, $"SetManagedBreakpoints: file={filePath} count={requested.Length}");
 
-        var results = new Breakpoint[requested.Length];
+        // Clear existing managed breakpoints for this file.
+        ClearManagedBreakpointsForFile(model, filePath);
 
+        var results = new Breakpoint[requested.Length];
         for (int i = 0; i < requested.Length; i++)
         {
-            var req = requested[i];
-            results[i] = SetOneManagedBreakpoint(model, filePath, req);
+            results[i] = SetOneManagedBreakpoint(model, filePath, requested[i]);
         }
-
         return results;
     }
 
     public StackFrame[] GetManagedStackFrames(NativeDebuggerModel model)
     {
-        var runtime = model.OriginalRuntime ?? model.Runtime;
-        if (runtime == null)
+        if (model.CorProcess == null)
             return [];
 
         try
         {
-            runtime.FlushCachedData();
-
             // Find the CLR thread matching the current dbgeng event thread.
-            model.SysObjects.GetEventThread(out var osThreadId);
-            model.SysObjects.GetThreadIdsByIndex(0, 1, null!, new uint[1]);
-
-            // GetEventThread returns the engine thread ID; we need the OS thread ID.
-            // Save current thread, get OS ID.
             model.SysObjects.GetCurrentThreadSystemId(out var currentOsId);
 
-            var clrThread = runtime.Threads
-                .FirstOrDefault(t => t.OSThreadId == currentOsId);
+            CorDebugThread? clrThread = null;
+            foreach (var thread in model.CorProcess.Threads)
+            {
+                try
+                {
+                    // ICorDebugThread::GetID returns the OS thread ID in .NET Core.
+                    if ((uint)thread.Id == currentOsId)
+                    {
+                        clrThread = thread;
+                        break;
+                    }
+                }
+                catch { }
+            }
 
             if (clrThread == null)
             {
@@ -113,38 +113,67 @@ internal sealed class ManagedDebuggerService(
 
             using var pdbMapper = new PdbSourceMapper();
 
-            foreach (var frame in clrThread.EnumerateStackTrace(includeContext: false, maxFrames: 100))
+            foreach (var chain in clrThread.Chains)
             {
-                if (frame.Kind != ClrStackFrameKind.ManagedMethod || frame.Method == null)
+                if (!chain.IsManaged)
                     continue;
 
-                var method = frame.Method;
-                var name = method.Signature ?? $"{method.Type?.Name}.{method.Name}";
-
-                Source? source = null;
-                int line = 0;
-
-                // Try to resolve source location.
-                var srcLoc = ResolveSourceLocation(model, frame, pdbMapper);
-                if (srcLoc != null)
+                foreach (var frame in chain.Frames)
                 {
-                    source = new Source
+                    try
                     {
-                        Name = Path.GetFileName(srcLoc.Value.File),
-                        Path = srcLoc.Value.File,
-                    };
-                    line = srcLoc.Value.Line;
-                    _log.LogInfo(_logStore, $"  Managed frame: {name} -> {srcLoc.Value.File}:{srcLoc.Value.Line}");
-                }
+                        var function = frame.Function;
+                        var module = function.Module;
+                        var token = (int)function.Token;
+                        var modulePath = module.Name;
 
-                frames.Add(new StackFrame
-                {
-                    Id = frameId++,
-                    Name = name,
-                    Source = source,
-                    Line = line,
-                    Column = 0,
-                });
+                        // Get IL offset for source resolution.
+                        int ilOffset = 0;
+                        try
+                        {
+                            if (frame is CorDebugILFrame ilFrame)
+                            {
+                                var ip = ilFrame.IP;
+                                ilOffset = (int)ip.pnOffset;
+                            }
+                        }
+                        catch { }
+
+                        // Resolve source location via PDB.
+                        Source? source = null;
+                        int line = 0;
+
+                        if (modulePath != null)
+                        {
+                            var srcLoc = pdbMapper.GetSourceLocation(modulePath, token, ilOffset > 0 ? ilOffset : 1);
+                            if (srcLoc != null)
+                            {
+                                source = new Source
+                                {
+                                    Name = Path.GetFileName(srcLoc.Value.File),
+                                    Path = srcLoc.Value.File,
+                                };
+                                line = srcLoc.Value.Line;
+                            }
+                        }
+
+                        // Build frame name from metadata.
+                        var name = GetFrameName(function);
+
+                        frames.Add(new StackFrame
+                        {
+                            Id = frameId++,
+                            Name = name,
+                            Source = source,
+                            Line = line,
+                            Column = 0,
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogInfo(_logStore, $"  Frame enumeration error: {ex.Message}");
+                    }
+                }
             }
 
             _log.LogInfo(_logStore, $"GetManagedStackFrames: {frames.Count} managed frames");
@@ -157,362 +186,270 @@ internal sealed class ManagedDebuggerService(
         }
     }
 
-    // ── Private ─────────────────────────────────────────
-
-    public Breakpoint[] TryResolveDeferredBreakpoints(NativeDebuggerModel model)
+    public Breakpoint[] OnModuleLoad(NativeDebuggerModel model)
     {
-        if (model.DataTarget == null || model.DeferredManagedBreakpoints.Count == 0)
+        if (!model.ManagedInitialized || model.CorProcess == null)
             return [];
 
-        // Create a fresh runtime from the cached ResolutionDataTarget to see newly
-        // JIT'd methods. The stack trace cache in NativeDebuggerService prevents
-        // repeated GetStackTrace/symbol lookup calls from degrading the DAC.
-        ClrRuntime resolutionRuntime;
-        try
-        {
-            if (model.ResolutionDataTarget == null)
-            {
-                var pClient = Marshal.GetIUnknownForObject(model.Client);
-                try
-                {
-#pragma warning disable CS0618
-                    model.ResolutionDataTarget = DataTarget.CreateFromDbgEng(pClient);
-#pragma warning restore CS0618
-                }
-                finally
-                {
-                    Marshal.Release(pClient);
-                }
-            }
-            resolutionRuntime = model.ResolutionDataTarget.ClrVersions[0].CreateRuntime();
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(_logStore, $"Resolution runtime creation failed: {ex.Message}");
-            model.DeferredResolutionFailures++;
-            return [];
-        }
+        // Re-enumerate ICorDebug modules to pick up newly loaded assemblies.
+        EnumerateModules(model);
 
-        var resolved = new List<Breakpoint>();
-        var toRemove = new List<DeferredManagedBreakpoint>();
-
-        foreach (var deferred in model.DeferredManagedBreakpoints)
-        {
-            var addr = FindNativeCodeAddress(resolutionRuntime, deferred.AssemblyName, deferred.MethodName, deferred.ILOffset);
-            if (addr == 0)
-                continue;
-
-            _log.LogInfo(_logStore, $"  Deferred bp resolved: {deferred.MethodName} -> 0x{addr:X}");
-
-            var bpId = SetHardwareBreakpoint(model, addr, deferred.FilePath, deferred.Line);
-            if (bpId != null)
-            {
-                resolved.Add(new Breakpoint
-                {
-                    Id = (int)bpId.Value,
-                    Verified = true,
-                    Line = deferred.Line,
-                    Source = new Source
-                    {
-                        Name = Path.GetFileName(deferred.FilePath),
-                        Path = deferred.FilePath,
-                    },
-                });
-                toRemove.Add(deferred);
-            }
-        }
-
-        foreach (var r in toRemove)
-            model.DeferredManagedBreakpoints.Remove(r);
-
-        return resolved.ToArray();
+        // Try to bind pending managed breakpoints against the new modules.
+        return TryBindPendingBreakpoints(model);
     }
+
+    // ── Private ─────────────────────────────────────────
 
     private Breakpoint SetOneManagedBreakpoint(
         NativeDebuggerModel model, string filePath, SourceBreakpoint req)
     {
-        string? assemblyName = null;
-        string? methodName = null;
-        int ilOffset = 0;
+        var bpId = ++model.NextBpId;
 
-        // Try 1: Search loaded CLR modules (works when assemblies are already loaded).
-        var found = FindMethodInModules(model, filePath, req.Line);
-        if (found != null)
+        // Try to bind the breakpoint to a loaded module via PDB.
+        if (TryBindBreakpoint(model, filePath, req.Line, bpId))
         {
-            assemblyName = found.Value.AssemblyName;
-            methodName = found.Value.MethodName;
-            ilOffset = found.Value.ILOffset;
-        }
-
-        // Try 2: Search for PDB on disk.
-        if (methodName == null)
-        {
-            var diskResult = FindMethodFromDiskPdb(model, filePath, req.Line);
-            if (diskResult != null)
-            {
-                assemblyName = diskResult.Value.AssemblyName;
-                methodName = diskResult.Value.MethodName;
-                ilOffset = diskResult.Value.ILOffset;
-            }
-        }
-
-        if (methodName == null || assemblyName == null)
-        {
-            _log.LogWarning(_logStore, $"  Could not resolve {filePath}:{req.Line} to a managed method");
             return new Breakpoint
             {
-                Id = ++model.NextBpId,
-                Verified = false,
+                Id = bpId,
+                Verified = true,
                 Line = req.Line,
-                Message = "Could not resolve source line to a managed method",
+                Source = new Source { Name = Path.GetFileName(filePath), Path = filePath },
             };
         }
 
-        _log.LogInfo(_logStore, $"  Resolved managed method: {methodName} in {assemblyName} (IL offset={ilOffset})");
+        // Module not loaded yet — store as pending, will bind on module load.
+        model.PendingILBreakpoints.Add(new PendingManagedBreakpoint(filePath, req.Line, bpId));
+        _log.LogInfo(_logStore, $"  Breakpoint #{bpId} pending — module not loaded yet");
 
-        // Try to find the JIT-compiled native code address via ClrMD.
-        var nativeAddr = FindNativeCodeAddress(model, assemblyName, methodName, ilOffset);
-
-        if (nativeAddr != 0)
-        {
-            // Method is JIT-compiled — set a hardware execution breakpoint.
-            _log.LogInfo(_logStore, $"  NativeAddr=0x{nativeAddr:X} — setting hardware breakpoint");
-            var bpId = SetHardwareBreakpoint(model, nativeAddr, filePath, req.Line);
-            if (bpId != null)
-            {
-                return new Breakpoint
-                {
-                    Id = (int)bpId.Value,
-                    Verified = true,
-                    Line = req.Line,
-                    Source = new Source
-                    {
-                        Name = Path.GetFileName(filePath),
-                        Path = filePath,
-                    },
-                };
-            }
-
-            // Hardware breakpoint failed — likely all 4 debug registers in use.
-            _log.LogWarning(_logStore, $"  Hardware breakpoint failed at 0x{nativeAddr:X}");
-            return new Breakpoint
-            {
-                Id = ++model.NextBpId,
-                Verified = false,
-                Line = req.Line,
-                Source = new Source
-                {
-                    Name = Path.GetFileName(filePath),
-                    Path = filePath,
-                },
-                Message = "Hardware breakpoint limit reached (max 4 concurrent managed breakpoints)",
-            };
-        }
-
-        // Method not JIT-compiled yet — defer until interrupt detects JIT.
-        var deferredBpId = ++model.NextBpId;
-        model.DeferredManagedBreakpoints.Add(new DeferredManagedBreakpoint(
-            filePath, req.Line, assemblyName, methodName, ilOffset, deferredBpId));
-        _log.LogInfo(_logStore, $"  NativeCode=0 — deferred bp #{deferredBpId} for {methodName} (IL={ilOffset})");
+        if (!model.ManagedFileBreakpointIds.ContainsKey(filePath))
+            model.ManagedFileBreakpointIds[filePath] = new List<int>();
+        model.ManagedFileBreakpointIds[filePath].Add(bpId);
 
         return new Breakpoint
         {
-            Id = deferredBpId,
-            Verified = true,
+            Id = bpId,
+            Verified = true, // Optimistic — will bind on module load.
             Line = req.Line,
-            Source = new Source
-            {
-                Name = Path.GetFileName(filePath),
-                Path = filePath,
-            },
-            Message = "Deferred — method not yet JIT-compiled",
+            Source = new Source { Name = Path.GetFileName(filePath), Path = filePath },
+            Message = "Pending — module not yet loaded",
         };
     }
 
     /// <summary>
-    /// Searches the ClrMD runtime for the native address corresponding to a specific
-    /// IL offset within a method. Uses <c>ILOffsetMap</c> for line-precise breakpoints.
-    /// Returns 0 if the method hasn't been JIT-compiled yet.
+    /// Tries to bind a breakpoint to a loaded module via PDB resolution +
+    /// <c>ICorDebugCode::CreateBreakpoint</c>. Returns true if the breakpoint was bound.
     /// </summary>
-    private ulong FindNativeCodeAddress(NativeDebuggerModel model, string assemblyName, string methodName, int targetILOffset = 0)
-        => FindNativeCodeAddress(model.Runtime, assemblyName, methodName, targetILOffset);
-
-    private ulong FindNativeCodeAddress(ClrRuntime? runtime, string assemblyName, string methodName, int targetILOffset = 0)
+    private bool TryBindBreakpoint(NativeDebuggerModel model, string filePath, int line, int bpId)
     {
-        if (runtime == null)
-            return 0;
+        using var mapper = new PdbSourceMapper();
 
-        // Parse "Namespace.TypeName.MethodName" into type and method parts.
-        var lastDot = methodName.LastIndexOf('.');
-        if (lastDot < 0) return 0;
-
-        var fullTypeName = methodName[..lastDot];
-        var methName = methodName[(lastDot + 1)..];
-
-        foreach (var module in runtime.EnumerateModules())
+        foreach (var loaded in model.CorModules.Values)
         {
-            var modName = Path.GetFileNameWithoutExtension(module.Name ?? "");
-            if (!modName.Equals(assemblyName, StringComparison.OrdinalIgnoreCase))
+            if (loaded.PdbPath == null || loaded.Path == null)
                 continue;
+
+            var result = mapper.FindMethodAtLine(loaded.Path, filePath, line);
+            if (result == null)
+                continue;
+
+            var (_, _, methodToken, ilOffset) = result.Value;
+            _log.LogInfo(_logStore, $"  Resolved {filePath}:{line} -> token=0x{methodToken:X8} IL={ilOffset} in {loaded.Path}");
 
             try
             {
-                var type = module.GetTypeByName(fullTypeName);
-                if (type == null) continue;
+                var function = loaded.Module.GetFunctionFromToken(methodToken);
+                var ilCode = function.ILCode;
+                var corBp = ilCode.CreateBreakpoint(ilOffset);
+                corBp.Activate(true);
 
-                foreach (var method in type.Methods)
-                {
-                    if (method.Name != methName)
-                        continue;
+                model.CorManagedBreakpoints[bpId] = corBp;
+                if (!model.ManagedFileBreakpointIds.ContainsKey(filePath))
+                    model.ManagedFileBreakpointIds[filePath] = new List<int>();
+                model.ManagedFileBreakpointIds[filePath].Add(bpId);
 
-                    var nativeCode = method.NativeCode;
-                    // NativeCode is 0 or ulong.MaxValue when the method hasn't been JIT-compiled.
-                    if (nativeCode == 0 || nativeCode == ulong.MaxValue)
-                    {
-                        _log.LogInfo(_logStore, $"  ClrMD: {fullTypeName}.{methName} found but NativeCode=0x{nativeCode:X} (not JIT'd)");
-                        return 0;
-                    }
+                // Track the native address for breakpoint hit detection.
+                TrackBreakpointAddress(model, function, ilOffset);
 
-                    // Use ILOffsetMap to find the native address for the exact source line.
-                    var ilMap = method.ILOffsetMap;
-                    if (ilMap.Length > 0 && targetILOffset > 0)
-                    {
-                        // Find the map entry matching the target IL offset.
-                        // Entries have StartAddress (absolute native addr) and ILOffset.
-                        ulong bestAddr = nativeCode;
-                        int bestIL = -1;
-                        foreach (var entry in ilMap)
-                        {
-                            if (entry.ILOffset >= 0 && entry.ILOffset <= targetILOffset
-                                && entry.ILOffset > bestIL
-                                && entry.StartAddress != 0)
-                            {
-                                bestIL = entry.ILOffset;
-                                bestAddr = entry.StartAddress;
-                            }
-                        }
-                        _log.LogInfo(_logStore, $"  ClrMD: {fullTypeName}.{methName} IL={targetILOffset} -> native=0x{bestAddr:X} (matched IL={bestIL}, map has {ilMap.Length} entries)");
-                        return bestAddr;
-                    }
-
-                    _log.LogInfo(_logStore, $"  ClrMD: {fullTypeName}.{methName} -> NativeCode=0x{nativeCode:X} (entry point, no IL map)");
-                    return nativeCode;
-                }
-
-                // Method not found in type.
-                _log.LogInfo(_logStore, $"  ClrMD: {fullTypeName}.{methName} not found in type");
-                return 0;
+                _log.LogInfo(_logStore, $"  IL breakpoint #{bpId} set and activated");
+                return true;
             }
             catch (Exception ex)
             {
-                _log.LogInfo(_logStore, $"  ClrMD lookup error for {fullTypeName}: {ex.Message}");
+                _log.LogWarning(_logStore, $"  CreateBreakpoint failed: {ex.Message}");
             }
         }
 
-        return 0;
+        // Also try PDB on disk (for assemblies not yet in ICorDebug modules).
+        var diskResult = FindMethodFromDiskPdb(filePath, line);
+        if (diskResult != null)
+        {
+            _log.LogInfo(_logStore, $"  Found method via disk PDB: {diskResult.Value.MethodName} in {diskResult.Value.AssemblyName} — but module not in ICorDebug yet");
+        }
+
+        return false;
     }
 
     /// <summary>
-    /// Sets a hardware execution breakpoint (<c>ba e1</c>) at the given native address.
-    /// Uses CPU debug registers — no code page modification, bypasses JIT page protections.
-    /// Returns the dbgeng breakpoint ID, or <c>null</c> on failure.
+    /// Tries to get the native address where the IL breakpoint was set and tracks it
+    /// for managed breakpoint hit detection via EXCEPTION_BREAKPOINT events.
     /// </summary>
-    private uint? SetHardwareBreakpoint(
-        NativeDebuggerModel model, ulong address, string filePath, int line)
+    private void TrackBreakpointAddress(NativeDebuggerModel model, CorDebugFunction function, int ilOffset)
     {
-        // Create a data/processor breakpoint (DEBUG_BREAKPOINT_DATA).
-        int hr = model.Control.AddBreakpoint(
-            DebugBreakpointType.Data,
-            0xFFFFFFFF, // DEBUG_ANY_ID
-            out var bp);
-        if (hr < 0)
+        try
         {
-            _log.LogError(_logStore, $"  AddBreakpoint(Data) failed: hr=0x{hr:X8}");
-            return null;
-        }
+            var nativeCode = function.NativeCode;
+            if (nativeCode == null)
+                return;
 
-        // Set the address to break at.
-        hr = bp.SetOffset(address);
-        if (hr < 0)
+            var mapping = nativeCode.ILToNativeMapping;
+            if (mapping == null || mapping.Length == 0)
+            {
+                // Use code base address as fallback.
+                model.ManagedBreakpointAddresses.Add(nativeCode.Address);
+                return;
+            }
+
+            // Find the native offset for the IL offset.
+            foreach (var entry in mapping)
+            {
+                if (entry.ilOffset == ilOffset)
+                {
+                    var addr = nativeCode.Address + (ulong)entry.nativeStartOffset;
+                    model.ManagedBreakpointAddresses.Add(addr);
+                    _log.LogInfo(_logStore, $"  Tracked managed bp address: 0x{addr:X}");
+                    return;
+                }
+            }
+
+            // Fallback: track the base address.
+            model.ManagedBreakpointAddresses.Add(nativeCode.Address);
+        }
+        catch (Exception ex)
         {
-            _log.LogError(_logStore, $"  SetOffset(0x{address:X}) failed: hr=0x{hr:X8}");
-            model.Control.RemoveBreakpoint(bp);
-            return null;
+            _log.LogInfo(_logStore, $"  Could not track managed bp address: {ex.Message}");
         }
-
-        // Configure as execution breakpoint: size=1, access=Execute.
-        // This is the API equivalent of "ba e1 <address>".
-        hr = bp.SetDataParameters(1, DebugBreakAccess.Execute);
-        if (hr < 0)
-        {
-            _log.LogError(_logStore, $"  SetDataParameters(1, Execute) failed: hr=0x{hr:X8}");
-            model.Control.RemoveBreakpoint(bp);
-            return null;
-        }
-
-        hr = bp.AddFlags(DebugBreakpointFlag.Enabled);
-        if (hr < 0)
-        {
-            _log.LogError(_logStore, $"  AddFlags(Enabled) failed: hr=0x{hr:X8}");
-            model.Control.RemoveBreakpoint(bp);
-            return null;
-        }
-
-        bp.GetId(out var bpId);
-
-        // Track as a managed breakpoint.
-        var key = $"{filePath}:{line}";
-        model.ManagedBreakpointIds.Add(bpId);
-        model.BreakpointIds[key] = bpId;
-
-        _log.LogInfo(_logStore, $"  Hardware breakpoint set: id={bpId} addr=0x{address:X} ({key})");
-        return bpId;
     }
 
-    private (string AssemblyPath, string AssemblyName, string MethodName, int ILOffset)? FindMethodInModules(
-        NativeDebuggerModel model, string sourceFile, int line)
+    private Breakpoint[] TryBindPendingBreakpoints(NativeDebuggerModel model)
     {
-        if (model.Runtime == null)
-            return null;
+        var resolved = new List<Breakpoint>();
+        var bound = new List<PendingManagedBreakpoint>();
 
-        var modules = model.Runtime.EnumerateModules().ToList();
-        _log.LogInfo(_logStore, $"  ClrMD reports {modules.Count} modules");
-
-        foreach (var module in modules)
+        foreach (var pending in model.PendingILBreakpoints)
         {
-            var assemblyPath = module.Name;
-            if (string.IsNullOrEmpty(assemblyPath))
+            if (TryBindBreakpoint(model, pending.FilePath, pending.Line, pending.BpId))
             {
-                _log.LogInfo(_logStore, $"  Skipping module with empty name (addr=0x{module.Address:X})");
-                continue;
+                bound.Add(pending);
+                resolved.Add(new Breakpoint
+                {
+                    Id = pending.BpId,
+                    Verified = true,
+                    Line = pending.Line,
+                    Source = new Source
+                    {
+                        Name = Path.GetFileName(pending.FilePath),
+                        Path = pending.FilePath,
+                    },
+                });
             }
-
-            var pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
-            if (!File.Exists(pdbPath))
-            {
-                // Only log user assemblies, not framework ones
-                if (!assemblyPath.Contains("dotnet", StringComparison.OrdinalIgnoreCase)
-                    && !assemblyPath.Contains("Microsoft.NETCore", StringComparison.OrdinalIgnoreCase))
-                    _log.LogInfo(_logStore, $"  Module {assemblyPath} — no PDB at {pdbPath}");
-                continue;
-            }
-
-            _log.LogInfo(_logStore, $"  Checking module: {assemblyPath} (PDB exists at {pdbPath})");
-
-            using var mapper = new PdbSourceMapper();
-            var result = mapper.FindMethodAtLine(assemblyPath, sourceFile, line);
-            if (result != null)
-            {
-                _log.LogInfo(_logStore, $"  Found method: {result.Value.MethodName} in {result.Value.AssemblyName}");
-                return (assemblyPath, result.Value.AssemblyName, result.Value.MethodName, result.Value.ILOffset);
-            }
-
-            if (mapper.LastError != null)
-                _log.LogInfo(_logStore, $"  PDB error: {mapper.LastError}");
         }
 
-        _log.LogInfo(_logStore, $"  No module found containing {sourceFile}:{line}");
-        return null;
+        foreach (var r in bound)
+            model.PendingILBreakpoints.Remove(r);
+
+        return resolved.ToArray();
+    }
+
+    private void ClearManagedBreakpointsForFile(NativeDebuggerModel model, string filePath)
+    {
+        if (model.ManagedFileBreakpointIds.TryGetValue(filePath, out var existingIds))
+        {
+            foreach (var id in existingIds)
+            {
+                if (model.CorManagedBreakpoints.TryGetValue(id, out var bp))
+                {
+                    try { bp.Activate(false); } catch { }
+                    model.CorManagedBreakpoints.Remove(id);
+                }
+            }
+            existingIds.Clear();
+        }
+
+        model.PendingILBreakpoints.RemoveAll(p =>
+            p.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
+
+        // Note: we don't clear ManagedBreakpointAddresses here because old addresses
+        // are harmless (they'll just be false positives for hit detection).
+    }
+
+    private void EnumerateModules(NativeDebuggerModel model)
+    {
+        if (model.CorProcess == null)
+            return;
+
+        try
+        {
+            // Notify ICorDebug that the process is stopped so the DAC refreshes
+            // its view of the runtime's in-memory data structures.
+            try
+            {
+                model.CorProcess.ProcessStateChanged(CorDebugStateChange.FLUSH_ALL);
+            }
+            catch (Exception ex)
+            {
+                _log.LogInfo(_logStore, $"  ProcessStateChanged failed: {ex.Message}");
+            }
+
+            var appDomains = model.CorProcess.AppDomains;
+            _log.LogInfo(_logStore, $"  EnumerateModules: {appDomains.Length} app domains");
+
+            foreach (var appDomain in appDomains)
+            {
+                _log.LogInfo(_logStore, $"  AppDomain: {appDomain.Name}");
+                var assemblies = appDomain.Assemblies;
+                _log.LogInfo(_logStore, $"    {assemblies.Length} assemblies");
+
+                foreach (var assembly in assemblies)
+                {
+                    foreach (var module in assembly.Modules)
+                    {
+                        var baseAddr = (long)module.BaseAddress;
+                        if (model.CorModules.ContainsKey(baseAddr))
+                            continue;
+
+                        var name = module.Name;
+                        var pdbPath = name != null ? Path.ChangeExtension(name, ".pdb") : null;
+                        model.CorModules[baseAddr] = new ManagedModule
+                        {
+                            Module = module,
+                            Path = name,
+                            PdbPath = pdbPath != null && File.Exists(pdbPath) ? pdbPath : null,
+                        };
+                        _log.LogInfo(_logStore, $"  ICorDebug module: {name} (pdb={pdbPath != null && File.Exists(pdbPath)})");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogInfo(_logStore, $"  Module enumeration error: {ex.Message}");
+        }
+    }
+
+    private static string GetFrameName(CorDebugFunction function)
+    {
+        try
+        {
+            var module = function.Module;
+            var metaData = module.GetMetaDataInterface<MetaDataImport>();
+            var methodProps = metaData.GetMethodProps(function.Token);
+            var typeName = metaData.GetTypeDefProps(methodProps.pClass).szTypeDef;
+            return $"{typeName}.{methodProps.szMethod}";
+        }
+        catch
+        {
+            return $"<frame token=0x{function.Token:X8}>";
+        }
     }
 
     /// <summary>
@@ -521,9 +458,8 @@ internal sealed class ManagedDebuggerService(
     /// scans bin/ subdirectories for a matching PDB.
     /// </summary>
     private (string AssemblyName, string MethodName, int ILOffset)? FindMethodFromDiskPdb(
-        NativeDebuggerModel model, string sourceFile, int line)
+        string sourceFile, int line)
     {
-        // Walk up from the source file to find a .csproj
         var dir = Path.GetDirectoryName(sourceFile);
         string? projectDir = null;
         string? projectName = null;
@@ -541,14 +477,8 @@ internal sealed class ManagedDebuggerService(
         }
 
         if (projectDir == null || projectName == null)
-        {
-            _log.LogInfo(_logStore, $"  No .csproj found near {sourceFile}");
             return null;
-        }
 
-        _log.LogInfo(_logStore, $"  Found project: {projectName} at {projectDir}");
-
-        // Search bin/ and obj/ for the PDB.
         var searchDirs = new[] { "bin", "obj" };
         foreach (var subDir in searchDirs)
         {
@@ -562,60 +492,84 @@ internal sealed class ManagedDebuggerService(
                 if (!File.Exists(assemblyPath))
                     continue;
 
-                _log.LogInfo(_logStore, $"  Trying disk PDB: {pdbFile}");
-
                 using var mapper = new PdbSourceMapper();
                 var result = mapper.FindMethodAtLine(assemblyPath, sourceFile, line);
                 if (result != null)
-                {
-                    _log.LogInfo(_logStore, $"  Resolved via disk PDB: {result.Value.MethodName} in {result.Value.AssemblyName}");
                     return (result.Value.AssemblyName, result.Value.MethodName, result.Value.ILOffset);
-                }
-
-                if (mapper.LastError != null)
-                    _log.LogInfo(_logStore, $"  PDB error: {mapper.LastError}");
             }
         }
 
-        _log.LogInfo(_logStore, $"  No PDB found on disk for project {projectName}");
         return null;
     }
 
-    private (string File, int Line)? ResolveSourceLocation(
-        NativeDebuggerModel model, ClrStackFrame frame, PdbSourceMapper pdbMapper)
+    /// <summary>
+    /// Calls <c>mscordbi!OpenVirtualProcessImpl</c> directly to create a piggybacked
+    /// <c>ICorDebugProcess</c>. This bypasses <c>ICLRDebugging</c> entirely because
+    /// .NET 10's <c>mscordbi.dll</c> doesn't export <c>DllGetClassObject</c>, and
+    /// <c>mscoree.dll</c>'s <c>CLRCreateInstance</c> returns
+    /// <c>CORDBG_E_UNSUPPORTED_FORWARD_COMPAT</c> for modern runtimes.
+    /// </summary>
+    private static unsafe CorDebugProcess OpenVirtualProcessImpl(
+        string coreClrPath, ulong coreClrBase, DbgEngDataTarget dataTarget,
+        ILoggingService log, LogStore logStore, out CLR_DEBUGGING_VERSION clrVersion)
     {
-        if (frame.Method == null)
-            return null;
+        clrVersion = default;
+        var runtimeDir = Path.GetDirectoryName(coreClrPath)!;
+        var mscordbiPath = Path.Combine(runtimeDir, "mscordbi.dll");
+        var mscordacPath = Path.Combine(runtimeDir, "mscordaccore.dll");
 
-        // First try dbgeng's native symbol resolution (works for C++/CLI Windows PDBs).
-        IntPtr fileBuf = Marshal.AllocHGlobal(512);
+        var hMscordbi = NativeLibrary.Load(mscordbiPath);
+        var hDac = NativeLibrary.Load(mscordacPath);
+        var pFunc = NativeLibrary.GetExport(hMscordbi, "OpenVirtualProcessImpl");
+
+        // StrategyBasedComWrappers is required for both creating CCWs from our
+        // [GeneratedComClass] objects AND wrapping native COM pointers for
+        // ClrDebug's [GeneratedComInterface] types.
+        var comWrappers = new StrategyBasedComWrappers();
+
+        IntPtr pDataTarget = comWrappers.GetOrCreateComInterfaceForObject(
+            dataTarget, CreateComInterfaceFlags.None);
         try
         {
-            int hr = model.Symbols.GetLineByOffset(
-                frame.InstructionPointer, out var srcLine, fileBuf, 512, out _, out _);
-            if (hr >= 0)
+            var maxVersion = new CLR_DEBUGGING_VERSION
             {
-                var path = Marshal.PtrToStringAnsi(fileBuf) ?? "";
-                if (!string.IsNullOrEmpty(path))
-                    return (path, (int)srcLine);
-            }
+                wStructVersion = 0,
+                wMajor = 255, wMinor = 255, wBuild = 255, wRevision = 255,
+            };
+            var riid = typeof(ICorDebugProcess).GUID;
+            var version = new CLR_DEBUGGING_VERSION();
+            int flags = 0;
+            IntPtr ppInstance = IntPtr.Zero;
+
+            // OpenVirtualProcessImpl(clrInstanceId, pDataTarget, hDacModule,
+            //   pMaxVersion, riidProcess, ppInstance, pVersion, pdwFlags)
+            var fn = (delegate* unmanaged[Stdcall]<
+                ulong, IntPtr, IntPtr,
+                CLR_DEBUGGING_VERSION*, Guid*,
+                IntPtr*, CLR_DEBUGGING_VERSION*, int*, int>)pFunc;
+
+            int hr = fn(
+                coreClrBase, pDataTarget, hDac,
+                &maxVersion, &riid,
+                &ppInstance, &version, &flags);
+
+            log.LogInfo(logStore, $"OpenVirtualProcessImpl: hr=0x{hr:X8} flags=0x{flags:X} version={version.wMajor}.{version.wMinor}.{version.wBuild}");
+
+            if (hr < 0)
+                Marshal.ThrowExceptionForHR(hr);
+
+            // Use StrategyBasedComWrappers to create a proper wrapper compatible
+            // with ClrDebug's [GeneratedComInterface] types. Marshal.GetObjectForIUnknown
+            // creates a legacy RCW that can't QI for source-generated COM interfaces.
+            var raw = (ICorDebugProcess)comWrappers.GetOrCreateObjectForComInstance(
+                ppInstance, CreateObjectFlags.None);
+            Marshal.Release(ppInstance);
+            clrVersion = version;
+            return new CorDebugProcess(raw);
         }
         finally
         {
-            Marshal.FreeHGlobal(fileBuf);
+            Marshal.Release(pDataTarget);
         }
-
-        // Fall back to portable PDB reading for C# code.
-        var module = frame.Method.Type?.Module;
-        if (module?.Name == null)
-            return null;
-
-        var ilOffset = frame.Method.GetILOffset(frame.InstructionPointer);
-        // IL offset 0 maps to the opening brace '{' in the PDB. Use offset 1 to
-        // land on the first executable statement. Also handles -1 (JIT prolog).
-        if (ilOffset < 1)
-            ilOffset = 1;
-
-        return pdbMapper.GetSourceLocation(module.Name, (int)frame.Method.MetadataToken, ilOffset);
     }
 }

@@ -11,16 +11,22 @@ public sealed class EventCallbacks : IDebugEventCallbacks
 {
     public event Action<IDebugBreakpoint>? OnBreakpoint;
     public event Action<uint>? OnExitProcess;
-    public event Action<string?, string?>? OnLoadModule;
+    public event Action<string?, string?, ulong>? OnLoadModule;
     public event Action<string?>? OnCreateProcess;
     public event Action<uint>? OnExceptionEvent;
 
     /// <summary>
     /// Fired on CLR notification exceptions (0xe0444143) which occur during JIT
-    /// compilation. Used to resolve deferred managed breakpoints at the moment
-    /// the method is compiled — before the compiled code executes.
+    /// compilation and other CLR internal events.
     /// </summary>
     public event Action? OnClrNotification;
+
+    /// <summary>
+    /// Fired on EXCEPTION_BREAKPOINT (0x80000003) first-chance exceptions.
+    /// The parameter is the exception address — used to detect managed breakpoint
+    /// hits from ICorDebug IL breakpoints (which patch code with <c>int3</c>).
+    /// </summary>
+    public event Action<ulong>? OnExceptionBreakpoint;
 
     private const int StatusGo = 1;        // DEBUG_STATUS_GO
     private const int StatusGoHandled = 2;  // DEBUG_STATUS_GO_HANDLED
@@ -55,13 +61,22 @@ public sealed class EventCallbacks : IDebugEventCallbacks
             ? (uint)Marshal.ReadInt32(Exception)
             : 0;
 
-        // CLR notification exceptions (e0444143) are used internally by SOS
-        // for JIT/module load notifications. Let them pass through without
-        // breaking — SOS handles them to resolve deferred breakpoints.
+        // CLR notification exceptions (e0444143) are internal CLR events.
+        // Let them pass through without breaking.
         if (exceptionCode == 0xe0444143)
         {
             OnClrNotification?.Invoke();
             return StatusGoHandled;
+        }
+
+        // EXCEPTION_BREAKPOINT (0x80000003) — may be a managed breakpoint hit
+        // from ICorDebug IL breakpoints (int3 patches). Read the exception address
+        // and notify listeners for managed breakpoint detection.
+        if (exceptionCode == 0x80000003 && Exception != IntPtr.Zero)
+        {
+            // EXCEPTION_RECORD64.ExceptionAddress is at offset 16 (after code+flags+record).
+            ulong exceptionAddress = (ulong)Marshal.ReadInt64(Exception, 16);
+            OnExceptionBreakpoint?.Invoke(exceptionAddress);
         }
 
         OnExceptionEvent?.Invoke(FirstChance);
@@ -96,7 +111,7 @@ public sealed class EventCallbacks : IDebugEventCallbacks
         uint ModuleSize, string? ModuleName, string? ImageName,
         uint CheckSum, uint TimeDateStamp)
     {
-        OnLoadModule?.Invoke(ModuleName, ImageName);
+        OnLoadModule?.Invoke(ModuleName, ImageName, BaseOffset);
         return StatusGo;
     }
 

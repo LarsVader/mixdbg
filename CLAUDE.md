@@ -38,18 +38,19 @@ src/
   Engine/
     DbgEng/
       Constants/                 # One file per type: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, DebugBreakpoint*, DebugBreakAccess, DebugEvent, DebugEnd, DebugExecute, DebugOutCtl, SymOpt, DebugScopeGroup, DEBUG_STACK_FRAME, DEBUG_SYMBOL_PARAMETERS, DebugSymbolFlags
-      Interfaces/                # One file per COM interface: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSymbolGroup2, IDebugSystemObjects, IDebugEventCallbacks, IDebugOutputCallbacks
+      Interfaces/                # One file per COM interface: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSymbolGroup2, IDebugSystemObjects, IDebugAdvanced, IDebugEventCallbacks, IDebugOutputCallbacks
       EventCallbacks.cs          # IDebugEventCallbacks implementation — return values control WaitForEvent behavior
       OutputCapture.cs           # IDebugOutputCallbacks implementation — captures SOS command text output
+    CorDebug/
+      DbgEngDataTarget.cs        # ICorDebugMutableDataTarget bridge — reads/writes via dbgeng for OpenVirtualProcess
+      RuntimeLibraryProvider.cs  # ICLRDebuggingLibraryProvider — finds mscordbi.dll next to coreclr.dll
     Sos/
-      SosOutputParser.cs         # Parses !bpmd text output to extract breakpoint IDs
       PdbSourceMapper.cs         # Reads portable PDBs to map (method token, IL offset) → (source file, line)
   Models/
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
     DapDispatcherModel.cs        # Dispatcher state: handler registrations
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
-    NativeDebuggerModel.cs       # Engine state: COM interfaces, threads, flags, breakpoint tracking, variable store, ClrMD runtime, deferred managed bps
-    DeferredManagedBreakpoint.cs # Record: managed bp waiting for JIT compilation (file, line, assembly, method, bpId)
+    NativeDebuggerModel.cs       # Engine state: COM interfaces, threads, flags, breakpoint tracking, variable store, ICorDebug V4 refs
     VariableStore.cs             # Maps variablesReference handles to VariableContainer (symbol group + index range), invalidated per stop
     LogEntry.cs                  # Immutable log record (timestamp, level, sender, message)
     LogStore.cs                  # Mutable log state: entries list, lock, file path
@@ -66,7 +67,7 @@ src/
     DapDispatcherService.cs      # IDapDispatcher: command routing, request/response lifecycle
     DebugSessionService.cs       # IDebugSession: state machine, delegates to INativeDebugger
     NativeDebuggerService.cs     # INativeDebugger: dbgeng COM wrapper, engine thread, breakpoints
-    ManagedDebuggerService.cs    # IManagedDebugger: ClrMD runtime inspection + SOS !bpmd for managed breakpoints
+    ManagedDebuggerService.cs    # IManagedDebugger: ICorDebug V4 via OpenVirtualProcess — IL breakpoints + managed stack traces
     LoggingService.cs            # ILoggingService: file + in-memory logger, [CallerFilePath] sender
     SourceFileService.cs         # ISourceFileService: native vs managed/CLI file detection
   Handlers/
@@ -136,17 +137,17 @@ ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace
 - `NativeDebuggerModel.UserBreakpointIds` HashSet tracks which dbgeng breakpoint IDs are ours (vs system breakpoints).
 - `ISourceFileService.IsNativeFile` check: rejects `.cs` files AND `.cpp` files in C++/CLI projects (scans vcxproj for `<CLRSupport>`).
 
-### Managed Debugging (ClrMD)
+### Managed Debugging (ICorDebug V4)
 
-- **CLR detection**: `EventCallbacks.OnLoadModule` watches for `coreclr` module name. Sets `model.ClrLoaded` flag. ClrMD initialization happens on the next engine stop (can't init during `GO` state).
-- **ClrMD integration**: `DataTarget.CreateFromDbgEng(pDebugClient)` creates a ClrMD data target piggybacking on the existing dbgeng COM session. No second process attach. `ClrRuntime` used for managed stack traces and method resolution.
-- **Managed stack traces**: `ClrThread.EnumerateStackTrace()` gives managed frames. Merged with native frames by overlaying onto dbgeng stack positions that have no source resolution (JIT-compiled code shows as raw addresses or `coreclr!` prefixes).
+- **CLR detection**: `EventCallbacks.OnLoadModule` watches for `coreclr` module name. Sets `model.ClrLoaded` flag, captures `CoreClrPath` and `CoreClrBaseAddress`. ICorDebug V4 initialization happens on the next engine stop (can't init during `GO` state).
+- **ICorDebug V4 integration**: `ICLRDebugging::OpenVirtualProcess` creates an `ICorDebugProcess` piggybacked on the existing dbgeng session via `DbgEngDataTarget` (implements `ICorDebugMutableDataTarget`). No second debugger, no conflicts. dbgeng owns the process; ICorDebug V4 reads/writes memory through the bridge. `RuntimeLibraryProvider` locates `mscordbi.dll` next to `coreclr.dll`.
+- **Managed stack traces**: `ICorDebugProcess.Threads` → `thread.Chains` → `chain.Frames` → `ICorDebugILFrame` with method name resolution via `MetaDataImport` and source location via `PdbSourceMapper`. Merged with native frames by overlaying onto dbgeng stack positions that have no source resolution.
 - **Source resolution**: C# uses portable PDBs read by `PdbSourceMapper` via `System.Reflection.Metadata`. C++/CLI uses Windows PDBs read natively by dbgeng's `GetLineByOffset`.
-- **Method resolution**: `PdbSourceMapper.FindMethodAtLine` resolves file:line → assembly + method name by reading portable PDBs. Falls back to searching PDBs on disk near the source file's `.csproj` when ClrMD modules aren't loaded yet.
-- **Managed breakpoints (hardware)**: Software breakpoints (`int3`) fail on JIT code pages (`0x800703E6`). Instead, uses **hardware execution breakpoints** (`ba e1`, `AddBreakpoint(Data)` + `SetDataParameters(1, Execute)`) which use CPU debug registers — no code modification needed. Limited to 4 concurrent managed breakpoints (x64 DR0-DR3 registers).
-- **Deferred managed breakpoints**: Methods not yet JIT-compiled have `NativeCode == 0`. Stored as `DeferredManagedBreakpoint` and resolved when: (a) CLR notification exceptions fire during JIT, or (b) `SetInterrupt(ACTIVE)` forces an engine stop ~2 seconds after init. `FlushCachedData()` + `FindNativeCodeAddress` checks each deferred bp.
-- **CLR notification exceptions** (code `e0444143`): Returned as `GO_HANDLED` from `EventCallbacks.Exception`. Also triggers deferred breakpoint resolution via `OnClrNotification` event.
-- **Pending breakpoints**: Managed breakpoints received before CLR loads are stored in `model.PendingManagedBreakpoints` and applied after `InitializeRuntime` succeeds.
+- **IL breakpoints**: `PdbSourceMapper.FindMethodAtLine` resolves file:line → method token + IL offset. `module.GetFunctionFromToken(token).ILCode.CreateBreakpoint(ilOffset)` sets an IL-level breakpoint. ICorDebug handles pre-JIT methods automatically — no deferred breakpoints needed. Unlimited concurrent managed breakpoints (no hardware debug register limit).
+- **Breakpoint hit detection**: ICorDebug IL breakpoints patch code with `int3`. dbgeng catches the resulting `EXCEPTION_BREAKPOINT` (0x80000003). `EventCallbacks.OnExceptionBreakpoint` fires with the address; `NativeDebuggerService` checks `model.ManagedBreakpointAddresses` to identify managed breakpoint hits.
+- **Module tracking**: `ManagedDebuggerService.EnumerateModules` walks `ICorDebugProcess.AppDomains` → assemblies → modules. Called on init and on each dbgeng LoadModule event for managed DLLs. Pending breakpoints bind when their module becomes available.
+- **CLR notification exceptions** (code `e0444143`): Returned as `GO_HANDLED` from `EventCallbacks.Exception`.
+- **Pending breakpoints**: Managed breakpoints received before CLR loads are stored in `model.PendingManagedBreakpoints` and applied after `InitializeRuntime` succeeds. Breakpoints for modules not yet in ICorDebug are stored as `PendingManagedBreakpoint` and bound on module load.
 
 ### Diagnostic Logging
 
@@ -163,13 +164,13 @@ Native C++ breakpoints, stack traces with source locations, stepping (over/into/
 
 Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stops, selecting a stack frame returns locals via `SetScope` + `GetScopeSymbolGroup`. Expandable variables (structs/pointers with `SubElements > 0`) allocate child `variablesReference` handles. Variable store invalidated on continue/step.
 
-### M4: Managed Debugging via ClrMD — PARTIAL
+### M4: Managed Debugging via ICorDebug V4 — IN PROGRESS (breakpoints blocked)
 
-Managed stack traces and managed breakpoints work via ClrMD + hardware execution breakpoints. Breakpoints require two clicks in manual sessions (first JITs, second hits). Multi-breakpoint reliability still being debugged.
+ICorDebug V4 via `mscordbi!OpenVirtualProcessImpl` piggybacked on the dbgeng session. Module enumeration and function resolution work (with `ProcessStateChanged(FLUSH_ALL)`). **`CreateBreakpoint` returns E_NOTIMPL** — the piggybacked process is inspection-only. Breakpoints need a different approach (standalone ICorDebug via dbgshim, or direct code patching). The plumbing (data target bridge, COM interop, module enumeration) is in place and can be reused for managed stack traces.
 
-**Stack traces:** ClrMD (`DataTarget.CreateFromDbgEng`) piggybacking on the existing dbgeng session provides managed stack frames with method names. Source line resolution uses portable PDB reading (`System.Reflection.Metadata`) for C# and dbgeng's native `GetLineByOffset` for C++/CLI. CLR detection via `LoadModule` callback. Stack frame merging overlays managed info onto native frames.
+**Stack traces:** ICorDebug V4 (`CorDebugProcess.Threads`) provides managed stack frames with method names via `MetaDataImport`. Source line resolution uses portable PDB reading (`System.Reflection.Metadata`) for C# and dbgeng's native `GetLineByOffset` for C++/CLI. CLR detection via `LoadModule` callback (captures coreclr.dll path + base address). Stack frame merging overlays managed info onto native frames.
 
-**Managed breakpoints:** Software breakpoints (`int3`) fail on .NET JIT code pages (`0x800703E6`). Bypassed using **hardware execution breakpoints** (`ba e1`) which use CPU debug registers instead of modifying code. ClrMD resolves method names via PDB, then `ClrMethod.NativeCode` provides the JIT-compiled address. Methods not yet JIT'd are deferred and resolved via `SetInterrupt(ACTIVE)` or on the next engine stop. Limited to 4 concurrent managed breakpoints (x64 hardware limit).
+**Managed breakpoints:** `ICorDebugCode.CreateBreakpoint(ilOffset)` sets IL-level breakpoints that work before and after JIT. ICorDebug patches code with `int3` which dbgeng catches as `EXCEPTION_BREAKPOINT`. No hardware debug register limit — unlimited concurrent managed breakpoints. Module tracking via `ICorDebugProcess.AppDomains` enumeration; pending breakpoints bind on module load.
 
 **Launch args:** DAP `launch` request `args` field is threaded through to `CreateProcess` command line.
 
@@ -183,6 +184,5 @@ See README.md for full milestone descriptions.
 
 - `dbgeng.dll` — ships with Windows (System32)
 - NuGet `Microsoft.Extensions.DependencyInjection` — DI container
-- `dotnet-sos` — `dotnet tool install -g dotnet-sos && dotnet-sos install` (fallback SOS load path)
-- NuGet `Microsoft.Diagnostics.Runtime` (ClrMD) — managed stack traces and method resolution
+- NuGet `ClrDebug` — ICorDebug V4 COM interop wrappers for managed breakpoints and stack traces
 - dbgeng.h reference: `C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um/dbgeng.h`
