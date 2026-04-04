@@ -279,6 +279,13 @@ internal sealed class NativeDebuggerService(
                 TryBindManagedBreakpointsOnModuleLoad(model);
             }
         };
+        model.Callbacks.OnClrNotification += () =>
+        {
+            // When deferred managed breakpoints exist after configDone,
+            // break so the engine loop can recreate the DAC and check for JIT.
+            if (model.ConfigDone && model.DeferredManagedBreakpoints.Count > 0)
+                model.Callbacks.ClrNotificationShouldBreak = true;
+        };
         model.Callbacks.OnExceptionBreakpoint += addr =>
         {
             // Check if this EXCEPTION_BREAKPOINT is from a managed IL breakpoint.
