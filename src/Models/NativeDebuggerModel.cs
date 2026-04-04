@@ -108,7 +108,7 @@ internal record PendingManagedBreakpoint(string FilePath, int Line, int BpId);
 /// yet JIT-compiled). Resolved on CLR notification exceptions (0xe0444143) which
 /// fire during JIT compilation.
 /// </summary>
-internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodToken, int ILOffset, int BpId);
+internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodToken, int ILOffset, int BpId, string? AssemblyName);
 
 /// <summary>
 /// Tracks a loaded managed module discovered via ICorDebug enumeration.

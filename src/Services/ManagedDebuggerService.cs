@@ -252,6 +252,7 @@ internal sealed class ManagedDebuggerService(
         bool foundInPdb = false;
         int methodToken = 0;
         int ilOffset = 0;
+        string? assemblyName = null;
         using (var mapper = new PdbSourceMapper())
         {
             foreach (var loaded in model.CorModules.Values)
@@ -262,7 +263,8 @@ internal sealed class ManagedDebuggerService(
                 if (result != null)
                 {
                     (_, _, methodToken, ilOffset) = result.Value;
-                    _log.LogInfo(_logStore, $"  Resolved {filePath}:{line} -> token=0x{methodToken:X8} IL={ilOffset} in {loaded.Path}");
+                    assemblyName = Path.GetFileNameWithoutExtension(loaded.Path);
+                    _log.LogInfo(_logStore, $"  Resolved {filePath}:{line} -> token=0x{methodToken:X8} IL={ilOffset} in {assemblyName}");
                     foundInPdb = true;
                     break;
                 }
@@ -276,7 +278,8 @@ internal sealed class ManagedDebuggerService(
             {
                 methodToken = diskResult.Value.MethodToken;
                 ilOffset = diskResult.Value.ILOffset;
-                _log.LogInfo(_logStore, $"  Found method via disk PDB: {diskResult.Value.MethodName} token=0x{methodToken:X8} in {diskResult.Value.AssemblyName} — but module not in ICorDebug yet");
+                assemblyName = diskResult.Value.AssemblyName;
+                _log.LogInfo(_logStore, $"  Found method via disk PDB: {diskResult.Value.MethodName} token=0x{methodToken:X8} in {assemblyName} — but module not in ICorDebug yet");
                 foundInPdb = true;
             }
         }
@@ -303,7 +306,7 @@ internal sealed class ManagedDebuggerService(
 
         // Method not JIT'd yet — store as deferred for periodic polling.
         model.DeferredManagedBreakpoints.Add(
-            new DeferredManagedBreakpoint(filePath, line, methodToken, ilOffset, bpId));
+            new DeferredManagedBreakpoint(filePath, line, methodToken, ilOffset, bpId, assemblyName));
         if (!model.ManagedFileBreakpointIds.ContainsKey(filePath))
             model.ManagedFileBreakpointIds[filePath] = new List<int>();
         model.ManagedFileBreakpointIds[filePath].Add(bpId);
@@ -375,8 +378,7 @@ internal sealed class ManagedDebuggerService(
 
         _log.LogInfo(_logStore, $"TryResolveDeferredBreakpoints: {model.DeferredManagedBreakpoints.Count} deferred");
 
-        // Recreate the DAC so it sees the latest JIT state. The XCLRDataProcess
-        // created at init time has a stale view and enumerates 0 modules.
+        // Recreate the DAC so it sees the latest JIT state.
         try { TryInitializeDac(model); }
         catch { }
 
@@ -388,7 +390,7 @@ internal sealed class ManagedDebuggerService(
             try
             {
                 // Use the DAC (XCLRDataProcess) to find the real JIT native entry point.
-                var nativeAddress = ResolveViaXclrData(model, deferred.MethodToken);
+                var nativeAddress = ResolveViaXclrData(model, deferred.MethodToken, deferred.AssemblyName);
                 if (nativeAddress == 0)
                     continue;
 
@@ -602,9 +604,9 @@ internal sealed class ManagedDebuggerService(
     /// method definition by token and checks if it has a JIT'd instance.
     /// Returns 0 if the method is not yet JIT'd or the lookup fails.
     /// </summary>
-    private ulong ResolveViaXclrData(NativeDebuggerModel model, int methodToken)
+    private ulong ResolveViaXclrData(NativeDebuggerModel model, int methodToken, string? assemblyName)
     {
-        _log.LogInfo(_logStore, $"  ResolveViaXclrData: token=0x{methodToken:X8} xclrProcess={model.XclrProcess != null}");
+        _log.LogInfo(_logStore, $"  ResolveViaXclrData: token=0x{methodToken:X8} assembly={assemblyName} xclrProcess={model.XclrProcess != null}");
 
         if (model.XclrProcess == null)
             return 0;
@@ -626,15 +628,27 @@ internal sealed class ManagedDebuggerService(
 
                     try
                     {
+                        // Filter by assembly name to avoid token collisions.
+                        if (assemblyName != null)
+                        {
+                            string moduleName = "";
+                            try { moduleName = xModule.Name; } catch { }
+                            if (!moduleName.Contains(assemblyName, StringComparison.OrdinalIgnoreCase))
+                                continue;
+                        }
+
                         var methodDef = xModule.GetMethodDefinitionByToken((ClrDebug.mdMethodDef)methodToken);
-                        _log.LogInfo(_logStore, $"  XCLRData: found method def for token 0x{methodToken:X8} in module #{moduleCount}");
 
                         // Check if this method has a JIT'd instance.
-                        var instHandle = methodDef.StartEnumInstances(null!);
+                        var startResult = methodDef.TryStartEnumInstances(null!, out var instHandle);
+                        if (startResult != ClrDebug.HRESULT.S_OK)
+                        {
+                            _log.LogInfo(_logStore, $"  XCLRData: StartEnumInstances failed: {startResult}");
+                            continue;
+                        }
                         try
                         {
                             var instResult = methodDef.TryEnumInstance(ref instHandle, out var methodInst);
-                            _log.LogInfo(_logStore, $"  XCLRData: EnumInstance result={instResult}");
                             if (instResult == ClrDebug.HRESULT.S_OK)
                             {
                                 var entryResult = methodInst.TryGetRepresentativeEntryAddress(out var entryAddr);
