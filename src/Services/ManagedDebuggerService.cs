@@ -20,6 +20,7 @@ internal sealed class ManagedDebuggerService(
 {
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
+    private IntPtr _dacHandle;
 
     public bool IsInitialized(NativeDebuggerModel model) => model.ManagedInitialized;
 
@@ -374,8 +375,9 @@ internal sealed class ManagedDebuggerService(
 
         _log.LogInfo(_logStore, $"TryResolveDeferredBreakpoints: {model.DeferredManagedBreakpoints.Count} deferred");
 
-        // Flush the DAC cache so it sees the latest JIT state.
-        try { model.CorProcess?.ProcessStateChanged(ClrDebug.CorDebugStateChange.FLUSH_ALL); }
+        // Recreate the DAC so it sees the latest JIT state. The XCLRDataProcess
+        // created at init time has a stale view and enumerates 0 modules.
+        try { TryInitializeDac(model); }
         catch { }
 
         var resolved = new List<Breakpoint>();
@@ -572,18 +574,21 @@ internal sealed class ManagedDebuggerService(
             var runtimeDir = Path.GetDirectoryName(model.CoreClrPath)!;
             var dacPath = Path.Combine(runtimeDir, "mscordaccore.dll");
 
-            _log.LogInfo(_logStore, "DAC: Loading mscordaccore.dll...");
-            var hDac = System.Runtime.InteropServices.NativeLibrary.Load(dacPath);
+            // Load mscordaccore.dll once, reuse the handle.
+            if (_dacHandle == IntPtr.Zero)
+            {
+                _log.LogInfo(_logStore, "DAC: Loading mscordaccore.dll...");
+                _dacHandle = System.Runtime.InteropServices.NativeLibrary.Load(dacPath);
+            }
 
             var clrDataTarget = new DbgEngClrDataTarget(
                 model.DataSpaces, model.Advanced, model.SysObjects);
             clrDataTarget.AddModuleBase(model.CoreClrPath!, model.CoreClrBaseAddress);
 
-            _log.LogInfo(_logStore, "DAC: Calling CLRDataCreateInstance via ClrDebug Extensions...");
-            var interfaces = ClrDebug.Extensions.CLRDataCreateInstance(hDac, clrDataTarget);
+            var interfaces = ClrDebug.Extensions.CLRDataCreateInstance(_dacHandle, clrDataTarget);
             model.SosDac = interfaces.SOSDacInterface;
             model.XclrProcess = interfaces.XCLRDataProcess;
-            _log.LogInfo(_logStore, "SOSDacInterface + XCLRDataProcess initialized");
+            _log.LogInfo(_logStore, "DAC: XCLRDataProcess refreshed");
         }
         catch (Exception ex)
         {
@@ -609,6 +614,7 @@ internal sealed class ManagedDebuggerService(
             // Enumerate XCLR modules to find the one containing our method.
             _log.LogInfo(_logStore, "  XCLRData: StartEnumModules...");
             var enumHandle = model.XclrProcess.StartEnumModules();
+            int moduleCount = 0;
             try
             {
                 while (true)
@@ -616,11 +622,12 @@ internal sealed class ManagedDebuggerService(
                     var moduleResult = model.XclrProcess.TryEnumModule(ref enumHandle, out var xModule);
                     if (moduleResult != ClrDebug.HRESULT.S_OK)
                         break;
+                    moduleCount++;
 
                     try
                     {
                         var methodDef = xModule.GetMethodDefinitionByToken((ClrDebug.mdMethodDef)methodToken);
-                        _log.LogInfo(_logStore, $"  XCLRData: found method def for token 0x{methodToken:X8}");
+                        _log.LogInfo(_logStore, $"  XCLRData: found method def for token 0x{methodToken:X8} in module #{moduleCount}");
 
                         // Check if this method has a JIT'd instance.
                         var instHandle = methodDef.StartEnumInstances(null!);
@@ -631,7 +638,7 @@ internal sealed class ManagedDebuggerService(
                             if (instResult == ClrDebug.HRESULT.S_OK)
                             {
                                 var entryResult = methodInst.TryGetRepresentativeEntryAddress(out var entryAddr);
-                                _log.LogInfo(_logStore, $"  XCLRData: GetRepresentativeEntryAddress result={entryResult} addr=0x{(ulong)entryAddr:X}");
+                                _log.LogInfo(_logStore, $"  XCLRData: EntryAddress result={entryResult} addr=0x{(ulong)entryAddr:X}");
                                 if (entryResult == ClrDebug.HRESULT.S_OK && (ulong)entryAddr != 0)
                                 {
                                     return (ulong)entryAddr;
@@ -648,6 +655,7 @@ internal sealed class ManagedDebuggerService(
                         // Token not found in this module — try next.
                     }
                 }
+                _log.LogInfo(_logStore, $"  XCLRData: enumerated {moduleCount} modules, method not found/not JIT'd");
             }
             finally
             {
