@@ -495,6 +495,11 @@ internal sealed class ManagedDebuggerService(
         return resolved.ToArray();
     }
 
+    public void SetTransientBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line)
+    {
+        SetManagedCodeBreakpoint(model, address, filePath, line);
+    }
+
     public (string Name, Source? Source, int Line)? ResolveFrameFromProfilerData(
         NativeDebuggerModel model, ulong instructionPointer)
     {

@@ -68,6 +68,12 @@ public interface IManagedDebugger
     (string Name, Source? Source, int Line)? ResolveFrameFromProfilerData(NativeDebuggerModel model, ulong instructionPointer);
 
     /// <summary>
+    /// Sets a transient hardware breakpoint at the given native address.
+    /// Used by enter hook breakpoints — set on method entry, removed on Continue.
+    /// </summary>
+    void SetTransientBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line);
+
+    /// <summary>
     /// Resolves exact (assembly, token) pairs from breakpoint file:line hints by
     /// searching for PDB files on disk. Used to tell the CLR profiler which exact
     /// methods to block on during JIT (zero overhead for all other JITs).
