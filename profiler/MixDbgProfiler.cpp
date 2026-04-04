@@ -122,6 +122,13 @@ class MixDbgProfiler : public IUnknown {
     HANDLE m_hAckEvent;  // Signaled by MixDbg after processing a notification.
     CRITICAL_SECTION m_pipeLock;
 
+    // Exact (assembly, token) pairs that have breakpoints — only block JIT for these.
+    // All other methods send notifications without blocking.
+    static const int MAX_WATCH = 32;
+    struct WatchEntry { char assembly[256]; unsigned int token; };
+    WatchEntry m_watchEntries[MAX_WATCH];
+    int m_watchCount;
+
     void WriteToPipe(const char* data, int len) {
         EnterCriticalSection(&m_pipeLock);
         if (m_hPipe != INVALID_HANDLE_VALUE) {
@@ -131,9 +138,20 @@ class MixDbgProfiler : public IUnknown {
         LeaveCriticalSection(&m_pipeLock);
     }
 
+    // Check if an (assembly, token) pair is in the watch list.
+    bool IsWatchedMethod(const char* asmName, unsigned int token) {
+        for (int i = 0; i < m_watchCount; i++) {
+            if (m_watchEntries[i].token == token &&
+                _stricmp(m_watchEntries[i].assembly, asmName) == 0)
+                return true;
+        }
+        return false;
+    }
+
 public:
     MixDbgProfiler() : m_refCount(1), m_pInfo(nullptr),
-        m_hPipe(INVALID_HANDLE_VALUE), m_hAckEvent(nullptr) {
+        m_hPipe(INVALID_HANDLE_VALUE), m_hAckEvent(nullptr), m_watchCount(0) {
+        memset(m_watchEntries, 0, sizeof(m_watchEntries));
         InitializeCriticalSection(&m_pipeLock);
     }
 
@@ -217,6 +235,27 @@ public:
         len = GetEnvironmentVariableW(L"MIXDBG_ACK_EVENT", ackEventName, 256);
         if (len > 0 && len < 256)
             m_hAckEvent = OpenEventW(SYNCHRONIZE, FALSE, ackEventName);
+
+        // Parse "ASSEMBLY:TOKEN,ASSEMBLY:TOKEN,..." — exact methods to block on.
+        // Only these methods wait for MixDbg to set the hardware BP before executing.
+        // All other JITs (framework, runtime) pass through without blocking.
+        char watchBuf[2048] = {};
+        DWORD watchLen = GetEnvironmentVariableA("MIXDBG_WATCH_TOKENS", watchBuf, sizeof(watchBuf));
+        if (watchLen > 0 && watchLen < sizeof(watchBuf)) {
+            char* ctx = nullptr;
+            char* tok = strtok_s(watchBuf, ",", &ctx);
+            while (tok && m_watchCount < MAX_WATCH) {
+                // Parse "Assembly:HexToken"
+                char* colon = strchr(tok, ':');
+                if (colon) {
+                    *colon = '\0';
+                    strncpy_s(m_watchEntries[m_watchCount].assembly, 256, tok, _TRUNCATE);
+                    m_watchEntries[m_watchCount].token = strtoul(colon + 1, nullptr, 16);
+                    m_watchCount++;
+                }
+                tok = strtok_s(nullptr, ",", &ctx);
+            }
+        }
 
         return S_OK;
     }
@@ -327,10 +366,10 @@ public:
         if (lineLen > 0) {
             WriteToPipe(line, lineLen);
 
-            // Block until MixDbg acknowledges the notification. This ensures the
-            // hardware breakpoint is set BEFORE the JIT'd method body executes.
-            // Timeout after 500ms to avoid deadlocking if MixDbg is unresponsive.
-            if (m_hAckEvent)
+            // Only block for exact methods that have breakpoints. All other JIT
+            // compilations (framework, runtime, non-breakpointed user code) pass
+            // through without waiting — zero startup latency overhead.
+            if (m_hAckEvent && m_watchCount > 0 && IsWatchedMethod(asmUtf8, token))
                 WaitForSingleObject(m_hAckEvent, 500);
         }
 

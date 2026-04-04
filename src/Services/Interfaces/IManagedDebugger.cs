@@ -66,4 +66,11 @@ public interface IManagedDebugger
     /// if the IP doesn't belong to a known JIT'd method.
     /// </summary>
     (string Name, Source? Source, int Line)? ResolveFrameFromProfilerData(NativeDebuggerModel model, ulong instructionPointer);
+
+    /// <summary>
+    /// Resolves exact (assembly, token) pairs from breakpoint file:line hints by
+    /// searching for PDB files on disk. Used to tell the CLR profiler which exact
+    /// methods to block on during JIT (zero overhead for all other JITs).
+    /// </summary>
+    List<(string Assembly, int Token)> ResolveTokensFromBreakpoints(IEnumerable<(string FilePath, int Line)> breakpoints);
 }

@@ -98,6 +98,13 @@ public sealed class NativeDebuggerModel : IDisposable
     // Signaled when the target is stopped and ready for commands.
     internal ManualResetEventSlim Stopped { get; } = new(false);
 
+    /// <summary>
+    /// Breakpoint file:line hints from DAP setBreakpoints (received before launch).
+    /// Used by <see cref="Services.NativeDebuggerService.SetupProfilerPipe"/> to resolve
+    /// assembly names so the profiler knows which assemblies to block on during JIT.
+    /// </summary>
+    internal List<(string FilePath, int Line)> ProfilerBreakpointHints { get; } = new();
+
     // Saved launch/attach parameters — actual work happens on engine thread.
     internal string? LaunchProgram;
     internal string? LaunchCwd;

@@ -959,6 +959,23 @@ internal sealed class ManagedDebuggerService(
         return null;
     }
 
+    public List<(string Assembly, int Token)> ResolveTokensFromBreakpoints(
+        IEnumerable<(string FilePath, int Line)> breakpoints)
+    {
+        var tokens = new List<(string Assembly, int Token)>();
+        foreach (var (filePath, line) in breakpoints)
+        {
+            try
+            {
+                var result = FindMethodFromDiskPdb(filePath, line);
+                if (result != null)
+                    tokens.Add((result.Value.AssemblyName, result.Value.MethodToken));
+            }
+            catch { }
+        }
+        return tokens;
+    }
+
     /// <summary>
     /// Calls <c>mscordbi!OpenVirtualProcessImpl</c> directly to create a piggybacked
     /// <c>ICorDebugProcess</c>. This bypasses <c>ICLRDebugging</c> entirely because

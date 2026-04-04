@@ -68,6 +68,17 @@ internal sealed class DebugSessionService(
     {
         session.Engine = _nativeDebugger.CreateModel();
 
+        // Copy pending breakpoint file:line pairs so the profiler knows which
+        // assemblies to block on during JIT (avoids blocking all 2000+ startup JITs).
+        foreach (var pending in session.PendingBreakpoints)
+        {
+            if (pending.Source.Path != null)
+            {
+                foreach (var bp in pending.Breakpoints)
+                    session.Engine.ProfilerBreakpointHints.Add((pending.Source.Path, bp.Line));
+            }
+        }
+
         string? symbolPath = null;
         if (args.SymbolPath is { Length: > 0 })
             symbolPath = string.Join(";", args.SymbolPath);

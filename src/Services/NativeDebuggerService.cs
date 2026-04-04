@@ -49,6 +49,7 @@ internal sealed class NativeDebuggerService(
             Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", null);
             Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", null);
             Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", null);
+            Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", null);
         };
         return model;
     }
@@ -561,12 +562,27 @@ internal sealed class NativeDebuggerService(
         var ackEventName = $"MixDbgProfilerAck-{pipeName}";
         model.ProfilerAckEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ackEventName);
 
+        // Resolve exact method tokens from pending breakpoints so the profiler only
+        // blocks for breakpointed methods (skips all other JITs including framework).
+        string? watchTokens = null;
+        if (model.ProfilerBreakpointHints.Count > 0)
+        {
+            var tokens = _managedDebugger.ResolveTokensFromBreakpoints(model.ProfilerBreakpointHints);
+            if (tokens.Count > 0)
+            {
+                watchTokens = string.Join(",", tokens.Select(t => $"{t.Assembly}:{t.Token:X8}"));
+                _log.LogInfo(_logStore, $"Profiler watch tokens: {watchTokens}");
+            }
+        }
+
         // Set CLR profiling env vars — child process inherits them.
         Environment.SetEnvironmentVariable("CORECLR_ENABLE_PROFILING", "1");
         Environment.SetEnvironmentVariable("CORECLR_PROFILER", "{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}");
         Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", profilerPath);
         Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", $@"\\.\pipe\{pipeName}");
         Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", ackEventName);
+        if (watchTokens != null)
+            Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", watchTokens);
 
         _log.LogInfo(_logStore, $"Profiler pipe created: {pipeName}, DLL: {profilerPath}");
     }
@@ -659,11 +675,9 @@ internal sealed class NativeDebuggerService(
                     // so the method can't execute before the BP is active.
                     try { model.Control.SetInterrupt(0); } catch { }
                 }
-                else
-                {
-                    // No breakpoint interest — unblock the profiler immediately.
-                    model.ProfilerAckEvent?.Set();
-                }
+                // Non-matching: profiler doesn't block (token not in watch list),
+                // so no ACK needed. The notification is still stored in JitMethodMap
+                // for stack trace resolution.
             }
         }
         catch (Exception ex) when (!model.Terminated)
