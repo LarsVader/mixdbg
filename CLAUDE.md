@@ -164,13 +164,24 @@ Native C++ breakpoints, stack traces with source locations, stepping (over/into/
 
 Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stops, selecting a stack frame returns locals via `SetScope` + `GetScopeSymbolGroup`. Expandable variables (structs/pointers with `SubElements > 0`) allocate child `variablesReference` handles. Variable store invalidated on continue/step.
 
-### M4: Managed Debugging via ICorDebug V4 — IN PROGRESS (breakpoints blocked)
+### M4: Managed Debugging — IN PROGRESS
 
-ICorDebug V4 via `mscordbi!OpenVirtualProcessImpl` piggybacked on the dbgeng session. Module enumeration and function resolution work (with `ProcessStateChanged(FLUSH_ALL)`). **`CreateBreakpoint` returns E_NOTIMPL** — the piggybacked process is inspection-only. Breakpoints need a different approach (standalone ICorDebug via dbgshim, or direct code patching). The plumbing (data target bridge, COM interop, module enumeration) is in place and can be reused for managed stack traces.
+**Status:** Piggybacked ICorDebug V4 works for managed stack traces and module/function resolution. Managed breakpoints not yet working — needs hardware breakpoints + forced JIT (next step).
 
-**Stack traces:** ICorDebug V4 (`CorDebugProcess.Threads`) provides managed stack frames with method names via `MetaDataImport`. Source line resolution uses portable PDB reading (`System.Reflection.Metadata`) for C# and dbgeng's native `GetLineByOffset` for C++/CLI. CLR detection via `LoadModule` callback (captures coreclr.dll path + base address). Stack frame merging overlays managed info onto native frames.
+**Stack traces (working):** `mscordbi!OpenVirtualProcessImpl` piggybacked on dbgeng via `DbgEngDataTarget` bridge. Module enumeration works with `ProcessStateChanged(FLUSH_ALL)`. `GetFunctionFromToken` resolves PDB tokens. Source resolution via portable PDB (`PdbSourceMapper`) for C# and dbgeng `GetLineByOffset` for C++/CLI. Stack frame merging overlays managed info onto native frames.
 
-**Managed breakpoints:** `ICorDebugCode.CreateBreakpoint(ilOffset)` sets IL-level breakpoints that work before and after JIT. ICorDebug patches code with `int3` which dbgeng catches as `EXCEPTION_BREAKPOINT`. No hardware debug register limit — unlimited concurrent managed breakpoints. Module tracking via `ICorDebugProcess.AppDomains` enumeration; pending breakpoints bind on module load.
+**Managed breakpoints (not yet working):** `CreateBreakpoint` returns E_NOTIMPL on the piggybacked process (inspection-only). All approaches to get a full ICorDebug alongside dbgeng failed — see "Approaches tried and failed" below. Next step: return to hardware breakpoints (`ba e1`) with forced JIT compilation to achieve first-click breakpoints.
+
+**Approaches tried and failed for ICorDebug breakpoints (2026-04-04):**
+1. `OpenVirtualProcessImpl` → inspection-only, `CreateBreakpoint` = E_NOTIMPL
+2. `OpenVirtualProcess` (with `ICLRDebuggingLibraryProvider` v1) → E_FAIL (likely needs v3 for .NET 10)
+3. `CLRDebugging` via `mscoree.dll` → `CORDBG_E_UNSUPPORTED_FORWARD_COMPAT` (.NET 10 not recognized)
+4. `CoreCLRCreateCordbObject` + `DebugActiveProcess(pid, false)` → E_INVALIDARG (CLR transport inaccessible with dbgeng attached)
+5. `dbgshim.CreateVersionStringFromModule` → E_FAIL (`EnumerateCLRs` blocked by dbgeng debug port)
+6. `Microsoft.Diagnostics.NETCore.Client` → diagnostics-only (tracing/dumps), no ICorDebug or breakpoint APIs
+7. Reversed launch order (ICorDebug first, dbgeng second) → OS delivers first-chance exceptions to native debugger, bypassing ICorDebug's breakpoint handling
+
+**Fundamental constraint:** With dbgeng as native debugger, ICorDebug's `CreateBreakpoint` cannot work. The two debuggers cannot share exception handling. Viable paths: hardware breakpoints + forced JIT, or ICorDebug-only mode (no native debugging).
 
 **Launch args:** DAP `launch` request `args` field is threaded through to `CreateProcess` command line.
 

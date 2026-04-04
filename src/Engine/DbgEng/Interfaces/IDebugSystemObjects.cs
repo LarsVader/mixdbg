@@ -51,4 +51,8 @@ public interface IDebugSystemObjects
     // Slot 15
     [PreserveSig]
     int GetThreadIdBySystemId(uint SysId, out uint Id);
+
+    // Slot 16
+    [PreserveSig]
+    int GetCurrentProcessSystemId(out uint SysId);
 }

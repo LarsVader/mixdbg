@@ -228,10 +228,10 @@ Not all files can be debugged via dbgeng:
 | File type | Debuggable | Why |
 |---|---|---|
 | `.cpp`/`.c` in native project | Yes | Pure native code, PDB symbols |
-| `.cpp`/`.h` in C++/CLI project | Yes | Managed via ClrMD + SOS `!bpmd` (detected via `<CLRSupport>` in vcxproj) |
-| `.cs` | Yes | Managed via ClrMD + SOS `!bpmd` |
+| `.cpp`/`.h` in C++/CLI project | Yes | Managed via ICorDebug V4 piggybacked on dbgeng (detected via `<CLRSupport>` in vcxproj) |
+| `.cs` | Yes | Managed via ICorDebug V4 piggybacked on dbgeng |
 
-The adapter checks file extensions AND scans the vcxproj for `<CLRSupport>` to classify breakpoints. Native breakpoints use dbgeng directly. Managed breakpoints resolve the method via ClrMD/PDB and set via SOS `!bpmd`. Breakpoints received before the CLR loads are stored as pending and applied automatically once the runtime initializes.
+The adapter checks file extensions AND scans the vcxproj for `<CLRSupport>` to classify breakpoints. Native breakpoints use dbgeng directly. Managed breakpoints resolve the method via ICorDebug V4 module enumeration + PDB mapping. Breakpoints received before the CLR loads are stored as pending and applied automatically once the runtime initializes.
 
 ## Diagnostic Logging
 
@@ -253,14 +253,13 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 - Thread enumeration
 - Breakpoint classification (native vs managed vs CLI)
 - Native variable inspection (locals, types, values, struct/pointer expansion)
-- Managed stack traces via ClrMD with source locations (C# method names, PDB source mapping)
-- Mixed native/managed stack trace merging
-- Managed breakpoints via hardware execution breakpoints (`ba e1`, CPU debug registers — bypasses JIT page protections)
-- Deferred managed breakpoint resolution (methods JIT-compiled after breakpoint set)
+- Managed module/function resolution via ICorDebug V4 piggybacked on dbgeng (`OpenVirtualProcessImpl` + `DbgEngDataTarget` bridge)
+- PDB-based source mapping for C# via `System.Reflection.Metadata`
 - Command-line argument passthrough in DAP launch requests
 
-**Limitations:**
-- Max 4 concurrent managed breakpoints (x64 hardware debug register limit)
+**In progress (M4):**
+- Managed breakpoints — ICorDebug V4 `CreateBreakpoint` is E_NOTIMPL on the piggybacked (inspection-only) process. Next step: hardware breakpoints with forced JIT compilation.
+- Managed stack traces — ICorDebug V4 piggybacked process can enumerate threads/frames (pending integration)
 
 **Not yet implemented:**
 - Managed variable inspection (M5)

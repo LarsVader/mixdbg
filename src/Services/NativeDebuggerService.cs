@@ -361,8 +361,6 @@ internal sealed class NativeDebuggerService(
                 if (model.ClrLoaded && !model.ManagedInitialized)
                     TryInitializeManaged(model);
 
-                // After managed init, try to bind managed breakpoints on module load events.
-
                 if (model.TargetExited)
                 {
                     _log.LogInfo(_logStore, "Target exited, sending terminated event");
