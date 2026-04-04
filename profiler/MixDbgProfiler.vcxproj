@@ -66,15 +66,13 @@
   <ItemGroup>
     <ClCompile Include="MixDbgProfiler.cpp" />
   </ItemGroup>
-  <!-- Enter/leave hooks (MASM assembly stubs) — uncomment when enter/leave is ready.
   <ItemGroup>
     <MASM Include="EnterLeaveStubs.asm" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" />
-  -->
   <ItemGroup>
     <None Include="MixDbgProfiler.def" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <!-- <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" /> -->
+  <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
 </Project>

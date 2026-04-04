@@ -33,8 +33,9 @@ typedef UINT_PTR GCHandleID;
 typedef UINT_PTR AppDomainID;
 typedef UINT32   mdToken;
 
-// COR_PRF_MONITOR flags — we only need JIT notifications.
+// COR_PRF_MONITOR flags
 #define COR_PRF_MONITOR_JIT_COMPILATION 0x00000020
+#define COR_PRF_MONITOR_ENTERLEAVE      0x00001000
 
 // ============================================================================
 // GUIDs
@@ -95,6 +96,18 @@ public:
         return reinterpret_cast<Fn>(m_vtbl[16])(m_pInfo, dwEvents);
     }
 
+    // Slot 17: SetEnterLeaveFunctionHooks(FunctionEnter*, FunctionLeave*, FunctionTailcall*)
+    HRESULT SetEnterLeaveFunctionHooks(void* pEnter, void* pLeave, void* pTailcall) {
+        typedef HRESULT(STDMETHODCALLTYPE* Fn)(void*, void*, void*, void*);
+        return reinterpret_cast<Fn>(m_vtbl[17])(m_pInfo, pEnter, pLeave, pTailcall);
+    }
+
+    // Slot 18: SetFunctionIDMapper(FunctionIDMapper*)
+    HRESULT SetFunctionIDMapper(void* pFunc) {
+        typedef HRESULT(STDMETHODCALLTYPE* Fn)(void*, void*);
+        return reinterpret_cast<Fn>(m_vtbl[18])(m_pInfo, pFunc);
+    }
+
     // Slot 20: GetModuleInfo(ModuleID, LPCBYTE*, ULONG, ULONG*, WCHAR*, AssemblyID*)
     // Returns the file path and assembly ID for a module.
     HRESULT GetModuleInfo(ModuleID moduleId, LPCBYTE* ppBaseAddr, ULONG cchName,
@@ -103,6 +116,15 @@ public:
         return reinterpret_cast<Fn>(m_vtbl[20])(m_pInfo, moduleId, ppBaseAddr, cchName, pcchName, szName, pAssemblyId);
     }
 };
+
+// Forward declarations for assembly stubs and callbacks.
+extern "C" void FunctionEnterNaked();
+extern "C" void FunctionLeaveNaked();
+extern "C" void FunctionTailcallNaked();
+extern "C" UINT_PTR __stdcall MixDbgFunctionIDMapper(FunctionID funcId, BOOL* pbHookFunction);
+
+class MixDbgProfiler; // forward
+static MixDbgProfiler* g_pProfiler = nullptr;
 
 // ============================================================================
 // MixDbgProfiler — ICorProfilerCallback2 implementation
@@ -138,6 +160,7 @@ class MixDbgProfiler : public IUnknown {
         LeaveCriticalSection(&m_pipeLock);
     }
 
+public: // Accessed by static FunctionIDMapper callback — no vtable impact (non-virtual).
     // Check if an (assembly, token) pair is in the watch list.
     bool IsWatchedMethod(const char* asmName, unsigned int token) {
         for (int i = 0; i < m_watchCount; i++) {
@@ -148,11 +171,85 @@ class MixDbgProfiler : public IUnknown {
         return false;
     }
 
+    // --- Enter/leave hook data (all non-virtual, no vtable impact) ---
+
+    // Cached info for FunctionIDs that have hooks enabled.
+    struct FunctionWatchInfo { mdToken token; UINT_PTR codeStart; char assembly[256]; };
+    static const int MAX_WATCHED_FUNCS = 64;
+    struct FuncSlot { FunctionID id; FunctionWatchInfo info; bool used; };
+    FuncSlot m_funcSlots[MAX_WATCHED_FUNCS] = {};
+    CRITICAL_SECTION m_funcLock;
+
+public: // Accessed by static FunctionIDMapper — no vtable impact (all non-virtual).
+    bool m_hooksActive = false;
+
+    static void ExtractAssemblyName(const WCHAR* modulePath, char* out, int outSize) {
+        const WCHAR* fileName = modulePath;
+        for (const WCHAR* p = modulePath; *p; p++)
+            if (*p == L'\\' || *p == L'/') fileName = p + 1;
+        WCHAR asmW[256] = {};
+        wcsncpy_s(asmW, 256, fileName, _TRUNCATE);
+        WCHAR* dot = wcsrchr(asmW, L'.');
+        if (dot) *dot = L'\0';
+        WideCharToMultiByte(CP_UTF8, 0, asmW, -1, out, outSize, nullptr, nullptr);
+    }
+
+public:
+    // Public non-virtual accessors for use by static callbacks (no vtable impact).
+    ProfilerInfo* GetInfo() { return m_pInfo; }
+
+    void RegisterWatchedFunction(FunctionID funcId, const FunctionWatchInfo& info) {
+        EnterCriticalSection(&m_funcLock);
+        for (int i = 0; i < MAX_WATCHED_FUNCS; i++) {
+            if (!m_funcSlots[i].used) {
+                m_funcSlots[i].id = funcId;
+                m_funcSlots[i].info = info;
+                m_funcSlots[i].used = true;
+                break;
+            }
+        }
+        LeaveCriticalSection(&m_funcLock);
+    }
+
+    const FunctionWatchInfo* FindWatchedFunction(FunctionID funcId) {
+        for (int i = 0; i < MAX_WATCHED_FUNCS; i++) {
+            if (m_funcSlots[i].used && m_funcSlots[i].id == funcId)
+                return &m_funcSlots[i].info;
+        }
+        return nullptr;
+    }
+
+    void OnFunctionEnter(FunctionID funcId) {
+        auto* info = FindWatchedFunction(funcId);
+        if (!info || m_hPipe == INVALID_HANDLE_VALUE || !m_pInfo) return;
+
+        // Get the CURRENT native code address (available now, post-JIT).
+        UINT_PTR codeAddr = info->codeStart;
+        if (codeAddr == 0) {
+            LPCBYTE start = nullptr; ULONG size = 0;
+            if (SUCCEEDED(m_pInfo->GetCodeInfo(funcId, &start, &size)) && start)
+                codeAddr = (UINT_PTR)start;
+        }
+        if (codeAddr == 0) return;
+
+        // Include OS thread ID so MixDbg can report the correct thread in DAP stopped event.
+        DWORD osThreadId = GetCurrentThreadId();
+
+        char line[512];
+        int len = sprintf_s(line, sizeof(line), "ENTER:%08X:%016llX:%08X:%s\n",
+            (unsigned int)info->token, (unsigned long long)codeAddr, osThreadId, info->assembly);
+        if (len > 0) {
+            WriteToPipe(line, len);
+            if (m_hAckEvent) WaitForSingleObject(m_hAckEvent, 500);
+        }
+    }
+
 public:
     MixDbgProfiler() : m_refCount(1), m_pInfo(nullptr),
         m_hPipe(INVALID_HANDLE_VALUE), m_hAckEvent(nullptr), m_watchCount(0) {
         memset(m_watchEntries, 0, sizeof(m_watchEntries));
         InitializeCriticalSection(&m_pipeLock);
+        InitializeCriticalSection(&m_funcLock);
     }
 
     ~MixDbgProfiler() {
@@ -162,6 +259,7 @@ public:
         if (m_hAckEvent)
             CloseHandle(m_hAckEvent);
         DeleteCriticalSection(&m_pipeLock);
+        DeleteCriticalSection(&m_funcLock);
     }
 
     // ========================================================================
@@ -204,10 +302,8 @@ public:
 
         m_pInfo = new ProfilerInfo(pInfo);
 
-        // Only request JIT compilation notifications — minimal overhead.
-        hr = m_pInfo->SetEventMask(COR_PRF_MONITOR_JIT_COMPILATION);
-        if (FAILED(hr))
-            return E_FAIL;
+        // Request JIT notifications. If watch tokens exist, also request enter/leave hooks.
+        DWORD eventMask = COR_PRF_MONITOR_JIT_COMPILATION;
 
         // Read pipe name from env var set by MixDbg before CreateProcess.
         WCHAR pipeName[256] = {};
@@ -256,6 +352,21 @@ public:
                 tok = strtok_s(nullptr, ",", &ctx);
             }
         }
+
+        if (m_watchCount > 0) {
+            g_pProfiler = this;
+            m_pInfo->SetFunctionIDMapper((void*)&MixDbgFunctionIDMapper);
+            hr = m_pInfo->SetEnterLeaveFunctionHooks(
+                (void*)FunctionEnterNaked, (void*)FunctionLeaveNaked, (void*)FunctionTailcallNaked);
+            if (SUCCEEDED(hr)) {
+                eventMask |= COR_PRF_MONITOR_ENTERLEAVE;
+                m_hooksActive = true;
+            }
+        }
+
+        hr = m_pInfo->SetEventMask(eventMask);
+        if (FAILED(hr))
+            return E_FAIL;
 
         return S_OK;
     }
@@ -352,25 +463,29 @@ public:
         if (dot) *dot = L'\0';
 
         // Format notification line and send to MixDbg.
-        // Format: <token_hex>:<address_hex>:<codeSize_hex>:<assembly_name>\n
         char asmUtf8[256] = {};
         WideCharToMultiByte(CP_UTF8, 0, assemblyName, -1, asmUtf8, 256, nullptr, nullptr);
 
         char line[512];
-        int lineLen = sprintf_s(line, sizeof(line), "%08X:%016llX:%08X:%s\n",
-            (unsigned int)token,
-            (unsigned long long)(UINT_PTR)codeStart,
-            (unsigned int)codeSize,
-            asmUtf8);
+        int lineLen;
 
-        if (lineLen > 0) {
-            WriteToPipe(line, lineLen);
-
-            // Only block for exact methods that have breakpoints. All other JIT
-            // compilations (framework, runtime, non-breakpointed user code) pass
-            // through without waiting — zero startup latency overhead.
-            if (m_hAckEvent && m_watchCount > 0 && IsWatchedMethod(asmUtf8, token))
-                WaitForSingleObject(m_hAckEvent, 500);
+        if (m_hooksActive) {
+            // With enter/leave hooks: send prefixed JIT notification (no blocking).
+            // Enter hooks handle breakpoint timing — JIT notifications are for stack traces only.
+            lineLen = sprintf_s(line, sizeof(line), "JIT:%08X:%016llX:%08X:%s\n",
+                (unsigned int)token, (unsigned long long)(UINT_PTR)codeStart,
+                (unsigned int)codeSize, asmUtf8);
+            if (lineLen > 0) WriteToPipe(line, lineLen);
+        } else {
+            // Without hooks: use old format with blocking for watched methods.
+            lineLen = sprintf_s(line, sizeof(line), "%08X:%016llX:%08X:%s\n",
+                (unsigned int)token, (unsigned long long)(UINT_PTR)codeStart,
+                (unsigned int)codeSize, asmUtf8);
+            if (lineLen > 0) {
+                WriteToPipe(line, lineLen);
+                if (m_hAckEvent && m_watchCount > 0 && IsWatchedMethod(asmUtf8, token))
+                    WaitForSingleObject(m_hAckEvent, 500);
+            }
         }
 
         return S_OK;
@@ -453,6 +568,48 @@ public:
     virtual HRESULT STDMETHODCALLTYPE HandleCreated(GCHandleID, ObjectID) { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE HandleDestroyed(GCHandleID) { return S_OK; }
 };
+
+// ============================================================================
+// FunctionIDMapper — called by CLR for every function to decide if hooks fire
+// ============================================================================
+extern "C" UINT_PTR __stdcall MixDbgFunctionIDMapper(FunctionID funcId, BOOL* pbHookFunction) {
+    *pbHookFunction = FALSE;
+    if (!g_pProfiler || !g_pProfiler->GetInfo()) return funcId;
+
+    ClassID classId = 0; ModuleID moduleId = 0; mdToken token = 0;
+    if (FAILED(g_pProfiler->GetInfo()->GetFunctionInfo(funcId, &classId, &moduleId, &token)))
+        return funcId;
+
+    WCHAR modulePath[512] = {}; ULONG pathLen = 0; AssemblyID asmId = 0; LPCBYTE baseAddr = nullptr;
+    if (FAILED(g_pProfiler->GetInfo()->GetModuleInfo(moduleId, &baseAddr, 512, &pathLen, modulePath, &asmId)))
+        return funcId;
+    if (modulePath[0] == L'\0') return funcId;
+
+    char asmUtf8[256] = {};
+    MixDbgProfiler::ExtractAssemblyName(modulePath, asmUtf8, sizeof(asmUtf8));
+
+    if (g_pProfiler->IsWatchedMethod(asmUtf8, token)) {
+        // Only enable hooks if the profiler has them active.
+        if (g_pProfiler->m_hooksActive)
+            *pbHookFunction = TRUE;
+        LPCBYTE codeStart = nullptr; ULONG codeSize = 0;
+        g_pProfiler->GetInfo()->GetCodeInfo(funcId, &codeStart, &codeSize);
+
+        MixDbgProfiler::FunctionWatchInfo info;
+        info.token = token;
+        info.codeStart = (UINT_PTR)codeStart;
+        strncpy_s(info.assembly, 256, asmUtf8, _TRUNCATE);
+        g_pProfiler->RegisterWatchedFunction(funcId, info);
+    }
+    return funcId;
+}
+
+// Enter/Leave/Tailcall C++ impls (called from asm stubs in EnterLeaveStubs.asm)
+extern "C" void FunctionEnterImpl(FunctionID funcId) {
+    if (g_pProfiler) g_pProfiler->OnFunctionEnter(funcId);
+}
+extern "C" void FunctionLeaveImpl(FunctionID) {}
+extern "C" void FunctionTailcallImpl(FunctionID) {}
 
 // ============================================================================
 // ClassFactory — creates MixDbgProfiler instances
