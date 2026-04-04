@@ -236,98 +236,189 @@ internal sealed class ManagedDebuggerService(
     }
 
     /// <summary>
-    /// Tries to bind a breakpoint to a loaded module via PDB resolution +
-    /// <c>ICorDebugCode::CreateBreakpoint</c>. Returns true if the breakpoint was bound.
+    /// Tries to bind a breakpoint to a loaded module. First attempts direct resolution
+    /// via <c>GetOffsetByLine</c> (works if method is JIT'd). If not JIT'd, stores as
+    /// a <see cref="DeferredManagedBreakpoint"/> for periodic polling via
+    /// <c>GetOffsetByLine</c> + hardware breakpoint.
     /// </summary>
     private bool TryBindBreakpoint(NativeDebuggerModel model, string filePath, int line, int bpId)
     {
-        using var mapper = new PdbSourceMapper();
-
-        foreach (var loaded in model.CorModules.Values)
+        // First check if PDB resolution finds the method in any loaded module.
+        bool foundInPdb = false;
+        int methodToken = 0;
+        int ilOffset = 0;
+        using (var mapper = new PdbSourceMapper())
         {
-            if (loaded.PdbPath == null || loaded.Path == null)
-                continue;
-
-            var result = mapper.FindMethodAtLine(loaded.Path, filePath, line);
-            if (result == null)
-                continue;
-
-            var (_, _, methodToken, ilOffset) = result.Value;
-            _log.LogInfo(_logStore, $"  Resolved {filePath}:{line} -> token=0x{methodToken:X8} IL={ilOffset} in {loaded.Path}");
-
-            try
+            foreach (var loaded in model.CorModules.Values)
             {
-                var function = loaded.Module.GetFunctionFromToken(methodToken);
-                var ilCode = function.ILCode;
-                var corBp = ilCode.CreateBreakpoint(ilOffset);
-                corBp.Activate(true);
+                if (loaded.PdbPath == null || loaded.Path == null)
+                    continue;
+                var result = mapper.FindMethodAtLine(loaded.Path, filePath, line);
+                if (result != null)
+                {
+                    (_, _, methodToken, ilOffset) = result.Value;
+                    _log.LogInfo(_logStore, $"  Resolved {filePath}:{line} -> token=0x{methodToken:X8} IL={ilOffset} in {loaded.Path}");
+                    foundInPdb = true;
+                    break;
+                }
+            }
+        }
 
-                model.CorManagedBreakpoints[bpId] = corBp;
+        if (!foundInPdb)
+        {
+            var diskResult = FindMethodFromDiskPdb(filePath, line);
+            if (diskResult != null)
+            {
+                _log.LogInfo(_logStore, $"  Found method via disk PDB: {diskResult.Value.MethodName} in {diskResult.Value.AssemblyName} — but module not in ICorDebug yet");
+                foundInPdb = true;
+            }
+        }
+
+        if (!foundInPdb)
+            return false;
+
+        // Try direct resolution via GetOffsetByLine (works if method is already JIT'd).
+        int hr = model.Symbols.GetOffsetByLine((uint)line, filePath, out var offset);
+        if (hr >= 0 && offset != 0)
+        {
+            _log.LogInfo(_logStore, $"  GetOffsetByLine({line}) -> 0x{offset:X} — setting hardware breakpoint");
+            var hwBpId = SetManagedCodeBreakpoint(model, offset, filePath, line);
+            if (hwBpId != null)
+            {
                 if (!model.ManagedFileBreakpointIds.ContainsKey(filePath))
                     model.ManagedFileBreakpointIds[filePath] = new List<int>();
                 model.ManagedFileBreakpointIds[filePath].Add(bpId);
-
-                // Track the native address for breakpoint hit detection.
-                TrackBreakpointAddress(model, function, ilOffset);
-
-                _log.LogInfo(_logStore, $"  IL breakpoint #{bpId} set and activated");
                 return true;
             }
-            catch (Exception ex)
-            {
-                _log.LogWarning(_logStore, $"  CreateBreakpoint failed: {ex.Message}");
-            }
+            _log.LogWarning(_logStore, $"  Hardware breakpoint limit reached for managed bp #{bpId}");
+            return false;
         }
 
-        // Also try PDB on disk (for assemblies not yet in ICorDebug modules).
-        var diskResult = FindMethodFromDiskPdb(filePath, line);
-        if (diskResult != null)
-        {
-            _log.LogInfo(_logStore, $"  Found method via disk PDB: {diskResult.Value.MethodName} in {diskResult.Value.AssemblyName} — but module not in ICorDebug yet");
-        }
-
-        return false;
+        // Method not JIT'd yet — store as deferred for periodic polling.
+        model.DeferredManagedBreakpoints.Add(
+            new DeferredManagedBreakpoint(filePath, line, methodToken, ilOffset, bpId));
+        if (!model.ManagedFileBreakpointIds.ContainsKey(filePath))
+            model.ManagedFileBreakpointIds[filePath] = new List<int>();
+        model.ManagedFileBreakpointIds[filePath].Add(bpId);
+        _log.LogInfo(_logStore, $"  Deferred managed bp #{bpId}: method not JIT'd yet");
+        return true;
     }
 
     /// <summary>
-    /// Tries to get the native address where the IL breakpoint was set and tracks it
-    /// for managed breakpoint hit detection via EXCEPTION_BREAKPOINT events.
+    /// Gets the native code address corresponding to an IL offset using the
+    /// IL-to-native mapping from JIT-compiled code.
     /// </summary>
-    private void TrackBreakpointAddress(NativeDebuggerModel model, CorDebugFunction function, int ilOffset)
+    private ulong GetNativeAddressForILOffset(CorDebugCode nativeCode, int ilOffset)
     {
-        try
+        var mapping = nativeCode.ILToNativeMapping;
+        if (mapping != null && mapping.Length > 0)
         {
-            var nativeCode = function.NativeCode;
-            if (nativeCode == null)
-                return;
-
-            var mapping = nativeCode.ILToNativeMapping;
-            if (mapping == null || mapping.Length == 0)
-            {
-                // Use code base address as fallback.
-                model.ManagedBreakpointAddresses.Add(nativeCode.Address);
-                return;
-            }
-
-            // Find the native offset for the IL offset.
             foreach (var entry in mapping)
             {
                 if (entry.ilOffset == ilOffset)
+                    return nativeCode.Address + (ulong)entry.nativeStartOffset;
+            }
+        }
+        // Fallback: use the code base address.
+        return nativeCode.Address;
+    }
+
+    /// <summary>
+    /// Sets a code (software INT3) breakpoint at the given native address.
+    /// Returns the dbgeng breakpoint ID, or <c>null</c> on failure.
+    /// </summary>
+    private uint? SetManagedCodeBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line)
+    {
+        int hr = model.Control.AddBreakpoint(
+            Engine.DbgEng.DebugBreakpointType.Code,
+            0xFFFFFFFF, // DEBUG_ANY_ID
+            out var bp);
+        if (hr < 0)
+        {
+            _log.LogWarning(_logStore, $"  AddBreakpoint(Code) failed: hr=0x{hr:X8}");
+            return null;
+        }
+
+        bp.SetOffset(address);
+        bp.AddFlags(Engine.DbgEng.DebugBreakpointFlag.Enabled);
+        bp.GetId(out var bpId);
+
+        var key = $"{filePath}:{line}";
+        model.BreakpointIds[key] = bpId;
+        model.UserBreakpointIds.Add(bpId);
+        model.ManagedBreakpointIds.Add(bpId);
+
+        _log.LogInfo(_logStore, $"  Code bp #{bpId} set at 0x{address:X} for {key}");
+        return bpId;
+    }
+
+    public Breakpoint[] TryResolveDeferredBreakpoints(NativeDebuggerModel model)
+    {
+        if (model.DeferredManagedBreakpoints.Count == 0)
+            return [];
+
+        _log.LogInfo(_logStore, $"TryResolveDeferredBreakpoints: {model.DeferredManagedBreakpoints.Count} deferred");
+
+        var resolved = new List<Breakpoint>();
+        var bound = new List<DeferredManagedBreakpoint>();
+
+        foreach (var deferred in model.DeferredManagedBreakpoints)
+        {
+            try
+            {
+                // Use dbgeng's GetOffsetByLine — works after JIT publishes the symbol.
+                int hr = model.Symbols.GetOffsetByLine(
+                    (uint)deferred.Line, deferred.FilePath, out var nativeAddress);
+
+                if (hr < 0 || nativeAddress == 0)
+                    continue;
+
+                _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: resolved to 0x{nativeAddress:X}");
+
+                var hwBpId = SetManagedCodeBreakpoint(model, nativeAddress, deferred.FilePath, deferred.Line);
+                if (hwBpId != null)
                 {
-                    var addr = nativeCode.Address + (ulong)entry.nativeStartOffset;
-                    model.ManagedBreakpointAddresses.Add(addr);
-                    _log.LogInfo(_logStore, $"  Tracked managed bp address: 0x{addr:X}");
-                    return;
+                    bound.Add(deferred);
+                    resolved.Add(new Breakpoint
+                    {
+                        Id = deferred.BpId,
+                        Verified = true,
+                        Line = deferred.Line,
+                        Source = new Source
+                        {
+                            Name = Path.GetFileName(deferred.FilePath),
+                            Path = deferred.FilePath,
+                        },
+                    });
+                    _log.LogInfo(_logStore, $"  Resolved deferred bp #{deferred.BpId} -> hw bp #{hwBpId} at 0x{nativeAddress:X}");
+                }
+                else
+                {
+                    bound.Add(deferred);
+                    resolved.Add(new Breakpoint
+                    {
+                        Id = deferred.BpId,
+                        Verified = false,
+                        Line = deferred.Line,
+                        Source = new Source
+                        {
+                            Name = Path.GetFileName(deferred.FilePath),
+                            Path = deferred.FilePath,
+                        },
+                        Message = "Failed to set managed breakpoint",
+                    });
                 }
             }
+            catch (Exception ex)
+            {
+                _log.LogInfo(_logStore, $"  Deferred resolution failed for bp #{deferred.BpId}: {ex.Message}");
+            }
+        }
 
-            // Fallback: track the base address.
-            model.ManagedBreakpointAddresses.Add(nativeCode.Address);
-        }
-        catch (Exception ex)
-        {
-            _log.LogInfo(_logStore, $"  Could not track managed bp address: {ex.Message}");
-        }
+        foreach (var r in bound)
+            model.DeferredManagedBreakpoints.Remove(r);
+
+        return resolved.ToArray();
     }
 
     private Breakpoint[] TryBindPendingBreakpoints(NativeDebuggerModel model)
@@ -366,9 +457,23 @@ internal sealed class ManagedDebuggerService(
         {
             foreach (var id in existingIds)
             {
-                if (model.CorManagedBreakpoints.TryGetValue(id, out var bp))
+                // Remove hardware breakpoints set by the managed debugger.
+                var key = model.BreakpointIds.FirstOrDefault(kv => kv.Value == (uint)id
+                    || kv.Key.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase));
+                if (key.Key != null && model.BreakpointIds.TryGetValue(key.Key, out var hwId))
                 {
-                    try { bp.Activate(false); } catch { }
+                    int hr = model.Control.GetBreakpointById(hwId, out var hwBp);
+                    if (hr >= 0)
+                        model.Control.RemoveBreakpoint(hwBp);
+                    model.UserBreakpointIds.Remove(hwId);
+                    model.ManagedBreakpointIds.Remove(hwId);
+                    model.BreakpointIds.Remove(key.Key);
+                }
+
+                // Also deactivate any ICorDebug breakpoints (legacy path).
+                if (model.CorManagedBreakpoints.TryGetValue(id, out var corBp))
+                {
+                    try { corBp.Activate(false); } catch { }
                     model.CorManagedBreakpoints.Remove(id);
                 }
             }
@@ -378,8 +483,8 @@ internal sealed class ManagedDebuggerService(
         model.PendingILBreakpoints.RemoveAll(p =>
             p.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
 
-        // Note: we don't clear ManagedBreakpointAddresses here because old addresses
-        // are harmless (they'll just be false positives for hit detection).
+        model.DeferredManagedBreakpoints.RemoveAll(d =>
+            d.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
     }
 
     private void EnumerateModules(NativeDebuggerModel model)
@@ -414,9 +519,10 @@ internal sealed class ManagedDebuggerService(
                     foreach (var module in assembly.Modules)
                     {
                         var baseAddr = (long)module.BaseAddress;
-                        if (model.CorModules.ContainsKey(baseAddr))
-                            continue;
+                        var isNew = !model.CorModules.ContainsKey(baseAddr);
 
+                        // Always update: after FLUSH_ALL old CorDebugModule objects
+                        // are neutered, so we must store the fresh reference.
                         var name = module.Name;
                         var pdbPath = name != null ? Path.ChangeExtension(name, ".pdb") : null;
                         model.CorModules[baseAddr] = new ManagedModule
@@ -425,7 +531,8 @@ internal sealed class ManagedDebuggerService(
                             Path = name,
                             PdbPath = pdbPath != null && File.Exists(pdbPath) ? pdbPath : null,
                         };
-                        _log.LogInfo(_logStore, $"  ICorDebug module: {name} (pdb={pdbPath != null && File.Exists(pdbPath)})");
+                        if (isNew)
+                            _log.LogInfo(_logStore, $"  ICorDebug module: {name} (pdb={pdbPath != null && File.Exists(pdbPath)})");
                     }
                 }
             }

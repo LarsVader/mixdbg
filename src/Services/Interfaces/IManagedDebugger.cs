@@ -42,4 +42,13 @@ public interface IManagedDebugger
     /// breakpoints against newly loaded assemblies.
     /// </summary>
     Breakpoint[] OnModuleLoad(NativeDebuggerModel model);
+
+    /// <summary>
+    /// Attempts to resolve deferred managed breakpoints by checking whether
+    /// <c>GetFunctionFromToken(token).NativeCode</c> is now available (after
+    /// JIT compilation). Resolved breakpoints are set as hardware breakpoints
+    /// (<c>ba e1</c>) at the native code address.
+    /// </summary>
+    /// <returns>DAP breakpoint objects for each successfully resolved breakpoint.</returns>
+    Breakpoint[] TryResolveDeferredBreakpoints(NativeDebuggerModel model);
 }

@@ -22,6 +22,14 @@ public sealed class EventCallbacks : IDebugEventCallbacks
     public event Action? OnClrNotification;
 
     /// <summary>
+    /// When set to <c>true</c> by the <see cref="OnClrNotification"/> handler,
+    /// the next CLR notification exception returns BREAK instead of GO_HANDLED,
+    /// causing <c>WaitForEvent</c> to return so deferred breakpoints can be resolved.
+    /// Reset to <c>false</c> after use.
+    /// </summary>
+    internal bool ClrNotificationShouldBreak;
+
+    /// <summary>
     /// Fired on EXCEPTION_BREAKPOINT (0x80000003) first-chance exceptions.
     /// The parameter is the exception address — used to detect managed breakpoint
     /// hits from ICorDebug IL breakpoints (which patch code with <c>int3</c>).
@@ -62,10 +70,16 @@ public sealed class EventCallbacks : IDebugEventCallbacks
             : 0;
 
         // CLR notification exceptions (e0444143) are internal CLR events.
-        // Let them pass through without breaking.
+        // When deferred managed breakpoints exist, break so the engine loop
+        // can check if the JIT compiled the target method.
         if (exceptionCode == 0xe0444143)
         {
             OnClrNotification?.Invoke();
+            if (ClrNotificationShouldBreak)
+            {
+                ClrNotificationShouldBreak = false;
+                return StatusBreak;
+            }
             return StatusGoHandled;
         }
 

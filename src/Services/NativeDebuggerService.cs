@@ -328,6 +328,11 @@ internal sealed class NativeDebuggerService(
                 if (model.LaunchCwd != null)
                     model.Symbols.SetSourcePath(model.LaunchCwd);
 
+                // Disable tiered compilation and ReadyToRun so JIT produces stable
+                // native addresses for hardware breakpoints on managed methods.
+                Environment.SetEnvironmentVariable("DOTNET_TieredCompilation", "0");
+                Environment.SetEnvironmentVariable("DOTNET_ReadyToRun", "0");
+
                 var cmdLine = model.LaunchProgram!;
                 if (model.LaunchArgs is { Length: > 0 })
                     cmdLine += " " + string.Join(" ", model.LaunchArgs);
@@ -384,6 +389,28 @@ internal sealed class NativeDebuggerService(
                     _log.LogInfo(_logStore, "Pre-configDone: processing commands until resume");
                     ProcessCommandsUntilResume(model);
                     continue;
+                }
+
+                // Try to resolve deferred managed breakpoints (JIT may have compiled them).
+                if (model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
+                {
+                    try
+                    {
+                        var resolved = _managedDebugger.TryResolveDeferredBreakpoints(model);
+                        foreach (var bp in resolved)
+                        {
+                            _log.LogInfo(_logStore, $"Deferred managed bp resolved: id={bp.Id} verified={bp.Verified}");
+                            _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
+                            {
+                                Reason = "changed",
+                                Breakpoint = bp,
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogInfo(_logStore, $"TryResolveDeferredBreakpoints failed: {ex.Message}");
+                    }
                 }
 
                 // After configurationDone: determine stop reason.
@@ -492,7 +519,44 @@ internal sealed class NativeDebuggerService(
             }
             model.PendingManagedBreakpoints.Clear();
             _log.LogInfo(_logStore, "Managed debugging initialized (ICorDebug V4)");
+
+            // Start polling for deferred managed breakpoint resolution.
+            if (model.DeferredManagedBreakpoints.Count > 0)
+                StartDeferredBreakpointPoller(model);
         }
+    }
+
+    /// <summary>
+    /// Starts a timer that periodically interrupts the target so the engine loop
+    /// can check if deferred managed breakpoints can be resolved (via
+    /// <c>GetOffsetByLine</c> after JIT compilation). Stops automatically when
+    /// all deferred breakpoints are resolved or the session terminates.
+    /// </summary>
+    private void StartDeferredBreakpointPoller(NativeDebuggerModel model)
+    {
+        _log.LogInfo(_logStore, $"Starting deferred BP poller ({model.DeferredManagedBreakpoints.Count} deferred)");
+        var timer = new System.Threading.Timer(_ =>
+        {
+            if (model.Terminated || model.DeferredManagedBreakpoints.Count == 0)
+                return;
+            try
+            {
+                model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
+            }
+            catch { }
+        }, null, 200, 200);
+
+        // Store the timer so it can be disposed.
+        model.DisposeAction = () =>
+        {
+            timer.Dispose();
+            model.Terminated = true;
+            model.Commands.CompleteAdding();
+            model.EngineThread?.Join(3000);
+            model.Commands.Dispose();
+            model.Stopped.Dispose();
+            model.EngineReady.Dispose();
+        };
     }
 
     /// <summary>
@@ -535,8 +599,9 @@ internal sealed class NativeDebuggerService(
     {
         bp.GetId(out var id);
         model.LastHitBpId = id;
-        model.HitUserBreakpoint = model.UserBreakpointIds.Contains(id);
-        _log.LogInfo(_logStore, $"OnBreakpoint: id={id} isUser={model.HitUserBreakpoint} (native: [{string.Join(",", model.UserBreakpointIds)}])");
+        model.HitUserBreakpoint = model.UserBreakpointIds.Contains(id)
+            || model.ManagedBreakpointIds.Contains(id);
+        _log.LogInfo(_logStore, $"OnBreakpoint: id={id} isUser={model.HitUserBreakpoint} (native: [{string.Join(",", model.UserBreakpointIds)}] managed: [{string.Join(",", model.ManagedBreakpointIds)}])");
 
         // Send verified update so nvim-dap clears the "rejected" marker.
         if (model.HitUserBreakpoint)

@@ -58,6 +58,13 @@ public sealed class NativeDebuggerModel : IDisposable
     internal List<PendingManagedBreakpoint> PendingILBreakpoints { get; } = new();
 
     /// <summary>
+    /// Managed breakpoints waiting for JIT compilation. Resolved when CLR notification
+    /// exceptions (0xe0444143) fire and <c>GetFunctionFromToken(token).NativeCode</c>
+    /// becomes available.
+    /// </summary>
+    internal List<DeferredManagedBreakpoint> DeferredManagedBreakpoints { get; } = new();
+
+    /// <summary>
     /// Native addresses of active managed breakpoints (from ICorDebug IL breakpoints).
     /// Used to identify managed breakpoint hits from dbgeng EXCEPTION_BREAKPOINT events.
     /// </summary>
@@ -91,6 +98,14 @@ public sealed class NativeDebuggerModel : IDisposable
 /// A managed breakpoint waiting for its module to load via ICorDebug.
 /// </summary>
 internal record PendingManagedBreakpoint(string FilePath, int Line, int BpId);
+
+/// <summary>
+/// A managed breakpoint waiting for JIT compilation. Stored when PDB resolution
+/// succeeds but <c>GetFunctionFromToken(token).NativeCode</c> is null (method not
+/// yet JIT-compiled). Resolved on CLR notification exceptions (0xe0444143) which
+/// fire during JIT compilation.
+/// </summary>
+internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodToken, int ILOffset, int BpId);
 
 /// <summary>
 /// Tracks a loaded managed module discovered via ICorDebug enumeration.
