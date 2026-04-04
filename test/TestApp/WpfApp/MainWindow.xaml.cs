@@ -27,12 +27,14 @@ namespace WpfApp
             int firstDelay = App.AutoTestSlow ? 15 : 3;
             if (App.AutoTestDouble)
             {
+                // First call JITs the method. DAC needs ~12s to detect JIT'd code.
+                // Second call (after 15s gap) hits the hardware breakpoint.
                 ScheduleActions(
                     (firstDelay, () => OnAddClick(this, new RoutedEventArgs())),      // JIT + run (no bp yet)
-                    (3, () => OnAddClick(this, new RoutedEventArgs())),               // hw bp fires
-                    (3, () => OnMultiplyClick(this, new RoutedEventArgs())),           // JIT + run (no bp yet)
-                    (3, () => OnMultiplyClick(this, new RoutedEventArgs())),           // hw bp fires
-                    (3, () => Close()));
+                    (15, () => OnAddClick(this, new RoutedEventArgs())),              // hw bp fires
+                    (15, () => OnMultiplyClick(this, new RoutedEventArgs())),         // JIT + run (no bp yet)
+                    (15, () => OnMultiplyClick(this, new RoutedEventArgs())),         // hw bp fires
+                    (5, () => Close()));
             }
             else
             {

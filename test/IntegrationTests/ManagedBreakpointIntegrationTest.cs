@@ -56,13 +56,13 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenLaunchingWithAutoTestDouble();
         await WhenSendingConfigurationDone();
 
-        // Hit 1: OnAddClick — second call (first call JITs, hw BP set, second hits).
-        await WhenWaitingForStoppedEvent(timeout: 30);
+        // Hit 1: OnAddClick — second call (first JITs, DAC needs ~12s to detect, second hits hw BP).
+        await WhenWaitingForStoppedEvent(timeout: 40);
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
         // Hit 2: OnMultiplyClick — second call.
-        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenWaitingForStoppedEvent(timeout: 60);
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
@@ -409,8 +409,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         _repoRoot, "test", "TestApp", "WpfApp", "bin", "x64", "Debug", "net10.0-windows", "WpfApp.exe");
     private static readonly string _bpFile = Path.Combine(
         _repoRoot, "test", "TestApp", "WpfApp", "MainWindow.xaml.cs");
-    private const int _addLine = 61;
-    private const int _multiplyLine = 70;
+    private const int _addLine = 63;
+    private const int _multiplyLine = 72;
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-test-{Guid.NewGuid():N}.log");

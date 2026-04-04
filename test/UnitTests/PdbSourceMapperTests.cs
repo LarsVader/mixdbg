@@ -26,7 +26,7 @@ public sealed class PdbSourceMapperTests
         var mixedSlashPath = _sourceFile.Replace("\\test\\TestApp\\", "/test/TestApp/");
 
         using var mapper = new PdbSourceMapper();
-        var result = mapper.FindMethodAtLine(_wpfAppDll, mixedSlashPath, 49);
+        var result = mapper.FindMethodAtLine(_wpfAppDll, mixedSlashPath, 63);
 
         Assert.NotNull(result);
         Assert.Equal("WpfApp", result.Value.AssemblyName);
@@ -39,7 +39,7 @@ public sealed class PdbSourceMapperTests
         if (!File.Exists(_wpfAppDll)) return; // WpfApp not built — skip
 
         using var mapper = new PdbSourceMapper();
-        var result = mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 49);
+        var result = mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 63);
 
         Assert.NotNull(result);
         Assert.Equal("WpfApp", result.Value.AssemblyName);
