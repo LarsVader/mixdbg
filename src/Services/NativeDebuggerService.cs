@@ -85,6 +85,7 @@ internal sealed class NativeDebuggerService(
         model.Commands.Add(() =>
         {
             _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
+            RemoveTransientManagedBreakpoints(model);
             model.ConfigDone = true;
             _cachedStackTraceResult = null;
             Check(model.Control.SetExecutionStatus(DebugStatus.Go));
@@ -518,6 +519,37 @@ internal sealed class NativeDebuggerService(
     }
 
     /// <summary>
+    /// Removes all transient managed hardware breakpoints. Called on Continue/Step
+    /// to free debug registers. The profiler's enter hook will re-set them on the
+    /// next call to each breakpointed method.
+    /// </summary>
+    private void RemoveTransientManagedBreakpoints(NativeDebuggerModel model)
+    {
+        if (model.ManagedBreakpointIds.Count == 0)
+            return;
+
+        var idsToRemove = new List<uint>(model.ManagedBreakpointIds);
+        foreach (var hwBpId in idsToRemove)
+        {
+            int hr = model.Control.GetBreakpointById(hwBpId, out var hwBp);
+            if (hr >= 0)
+            {
+                model.Control.RemoveBreakpoint(hwBp);
+                _log.LogInfo(_logStore, $"Removed transient managed hw bp #{hwBpId}");
+            }
+            model.UserBreakpointIds.Remove(hwBpId);
+        }
+        model.ManagedBreakpointIds.Clear();
+
+        // Clear the key→id mappings for managed breakpoints.
+        var keysToRemove = model.BreakpointIds
+            .Where(kv => idsToRemove.Contains(kv.Value))
+            .Select(kv => kv.Key).ToList();
+        foreach (var key in keysToRemove)
+            model.BreakpointIds.Remove(key);
+    }
+
+    /// <summary>
     /// Creates a named pipe server and sets CLR profiler environment variables
     /// so the child process loads MixDbgProfiler.dll at startup.
     /// Must be called before <c>CreateProcess</c> on the engine thread.
@@ -608,7 +640,10 @@ internal sealed class NativeDebuggerService(
 
     /// <summary>
     /// Background thread loop: waits for the profiler to connect, then reads
-    /// JIT notification lines until the pipe closes or the session terminates.
+    /// notification lines until the pipe closes or the session terminates.
+    /// Protocol:
+    ///   JIT:token:address:codeSize:assembly   — method JIT'd (for stack trace map)
+    ///   ENTER:token:address:assembly           — method about to execute (set BP)
     /// </summary>
     private void ProfilerReaderLoop(NativeDebuggerModel model)
     {
@@ -629,31 +664,55 @@ internal sealed class NativeDebuggerService(
                     break;
                 }
 
-                // Parse "TOKEN:ADDRESS:SIZE:ASSEMBLY\n"
-                var parts = line.Split(':');
-                if (parts.Length < 4)
-                    continue;
+                // Parse notification line. Supports two formats:
+                // Old: TOKEN:ADDRESS:SIZE:ASSEMBLY (JIT notification, may block for watched tokens)
+                // New: JIT:TOKEN:ADDRESS:SIZE:ASSEMBLY / ENTER:TOKEN:ADDRESS:ASSEMBLY (prefixed)
+                string payload = line;
+                bool isEnterNotification = false;
 
-                if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out var token))
+                if (line.StartsWith("READY:"))
+                {
+                    _log.LogInfo(_logStore, $"ProfilerReader: profiler ready ({line.Substring(6)})");
                     continue;
-                if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var address))
+                }
+                if (line.StartsWith("JIT:"))
+                    payload = line.Substring(4);
+                else if (line.StartsWith("ENTER:"))
+                {
+                    payload = line.Substring(6);
+                    isEnterNotification = true;
+                }
+
+                var parts = payload.Split(':');
+
+                if (isEnterNotification)
+                {
+                    // ENTER:TOKEN:ADDRESS:ASSEMBLY — method about to execute, set transient BP.
+                    if (parts.Length < 3) continue;
+                    if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out var eToken)) continue;
+                    if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var eAddr)) continue;
+                    var eAsm = parts[2];
+                    model.JitNotifications.Enqueue(new JitNotification(eToken, eAddr, 0, eAsm));
+                    _log.LogInfo(_logStore,
+                        $"ProfilerReader: ENTER token=0x{eToken:X8} addr=0x{eAddr:X} asm={eAsm} — interrupting engine");
+                    try { model.Control.SetInterrupt(0); } catch { }
                     continue;
-                if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out var codeSize))
-                    continue;
+                }
+
+                // JIT notification (old or new format): TOKEN:ADDRESS:SIZE:ASSEMBLY
+                if (parts.Length < 4) continue;
+                if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out var token)) continue;
+                if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var address)) continue;
+                if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out var codeSize)) continue;
                 var assembly = parts[3];
 
-                // Store in the sorted map for stack trace resolution.
-                // Any IP in [address, address+codeSize) belongs to this method.
+                // Store in sorted map for stack trace resolution.
                 lock (model.JitMethodMap)
                 {
                     model.JitMethodMap[address] = new JitMethodInfo(token, address, codeSize, assembly);
                 }
 
-                var notification = new JitNotification(token, address, codeSize, assembly);
-                model.JitNotifications.Enqueue(notification);
-
-                // If this token matches a deferred breakpoint, wake the engine thread
-                // so it can set the hardware BP before the method executes.
+                // Check if this JIT matches a deferred breakpoint (for JIT-based blocking).
                 bool matches = false;
                 foreach (var deferred in model.DeferredManagedBreakpoints)
                 {
@@ -665,19 +724,13 @@ internal sealed class NativeDebuggerService(
                         break;
                     }
                 }
-
                 if (matches)
                 {
+                    model.JitNotifications.Enqueue(new JitNotification(token, address, codeSize, assembly));
                     _log.LogInfo(_logStore,
                         $"ProfilerReader: JIT match! token=0x{token:X8} addr=0x{address:X} asm={assembly} — interrupting engine");
-                    // DON'T signal ACK yet — engine thread will signal after setting
-                    // the hardware BP, keeping the profiler (and target thread) blocked
-                    // so the method can't execute before the BP is active.
                     try { model.Control.SetInterrupt(0); } catch { }
                 }
-                // Non-matching: profiler doesn't block (token not in watch list),
-                // so no ACK needed. The notification is still stored in JitMethodMap
-                // for stack trace resolution.
             }
         }
         catch (Exception ex) when (!model.Terminated)
@@ -812,6 +865,7 @@ internal sealed class NativeDebuggerService(
         _cachedStackTraceResult = null;
         model.Commands.Add(() =>
         {
+            RemoveTransientManagedBreakpoints(model);
             Check(model.Control.SetExecutionStatus(stepKind));
         });
     }
