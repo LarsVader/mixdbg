@@ -258,8 +258,8 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 - Command-line argument passthrough in DAP launch requests
 
 **In progress (M4):**
-- Managed breakpoints — ICorDebug V4 `CreateBreakpoint` is E_NOTIMPL on the piggybacked (inspection-only) process. Next step: hardware breakpoints with forced JIT compilation.
-- Managed stack traces — ICorDebug V4 piggybacked process can enumerate threads/frames (pending integration)
+- Managed breakpoints — hardware BPs at DAC-resolved JIT addresses work (second-call proven). First-click breakpoints need forced JIT before user interaction. Two paths under investigation: ICorDebug launch+handoff with `PrepareMethod`, or CLR profiler DLL for real-time JIT notifications. See `docs/M4V2-managed-breakpoints.md`.
+- Managed stack traces — ICorDebug V4 piggybacked process can enumerate threads/frames with source resolution via PDB
 
 **Not yet implemented:**
 - Managed variable inspection (M5)

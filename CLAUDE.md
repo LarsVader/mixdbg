@@ -166,22 +166,29 @@ Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stop
 
 ### M4: Managed Debugging — IN PROGRESS
 
-**Status:** Piggybacked ICorDebug V4 works for managed stack traces and module/function resolution. Managed breakpoints not yet working — needs hardware breakpoints + forced JIT (next step).
+**Status:** Piggybacked ICorDebug V4 works for managed stack traces and module/function resolution. Hardware breakpoints at DAC-resolved JIT addresses are proven working (second-call). First-click breakpoints need forced JIT before user interaction.
 
 **Stack traces (working):** `mscordbi!OpenVirtualProcessImpl` piggybacked on dbgeng via `DbgEngDataTarget` bridge. Module enumeration works with `ProcessStateChanged(FLUSH_ALL)`. `GetFunctionFromToken` resolves PDB tokens. Source resolution via portable PDB (`PdbSourceMapper`) for C# and dbgeng `GetLineByOffset` for C++/CLI. Stack frame merging overlays managed info onto native frames.
 
-**Managed breakpoints (not yet working):** `CreateBreakpoint` returns E_NOTIMPL on the piggybacked process (inspection-only). All approaches to get a full ICorDebug alongside dbgeng failed — see "Approaches tried and failed" below. Next step: return to hardware breakpoints (`ba e1`) with forced JIT compilation to achieve first-click breakpoints.
+**Managed breakpoints (partially working):** Hardware breakpoints at real JIT native entry points work. The pipeline: PDB → method token + assembly name → DAC (`XCLRDataProcess.GetMethodDefinitionByToken` → `EnumInstance` → `GetRepresentativeEntryAddress`) → hardware BP (`ba e1`). Proven end-to-end with `--auto-test-double` (second-call hits). First-click breakpoints blocked by DAC cache latency (~12s) — see `docs/M4V2-managed-breakpoints.md` for full investigation and two viable paths forward.
 
-**Approaches tried and failed for ICorDebug breakpoints (2026-04-04):**
-1. `OpenVirtualProcessImpl` → inspection-only, `CreateBreakpoint` = E_NOTIMPL
-2. `OpenVirtualProcess` (with `ICLRDebuggingLibraryProvider` v1) → E_FAIL (likely needs v3 for .NET 10)
-3. `CLRDebugging` via `mscoree.dll` → `CORDBG_E_UNSUPPORTED_FORWARD_COMPAT` (.NET 10 not recognized)
-4. `CoreCLRCreateCordbObject` + `DebugActiveProcess(pid, false)` → E_INVALIDARG (CLR transport inaccessible with dbgeng attached)
-5. `dbgshim.CreateVersionStringFromModule` → E_FAIL (`EnumerateCLRs` blocked by dbgeng debug port)
-6. `Microsoft.Diagnostics.NETCore.Client` → diagnostics-only (tracing/dumps), no ICorDebug or breakpoint APIs
-7. Reversed launch order (ICorDebug first, dbgeng second) → OS delivers first-chance exceptions to native debugger, bypassing ICorDebug's breakpoint handling
+**Key findings (M4V2, 2026-04-04):**
+- `CreateBreakpoint` on piggybacked process → E_NOTIMPL (inspection-only)
+- `GetOffsetByLine` for managed code → returns zero-filled placeholder addresses, not JIT'd code
+- INT3 (code) breakpoints at managed addresses → crashes process (`0x800703E6`)
+- SOS `!bpmd` → blocked (.NET 10 doesn't ship sos.dll, dbgeng SECURE policy)
+- DAC `GetRepresentativeEntryAddress` → returns REAL JIT address → hardware BPs fire
+- DAC has ~12s cache staleness (global state in `mscordaccore.dll`, `NativeLibrary.Load` returns same handle)
+- CLR notification exceptions (0xe0444143) do NOT fire for individual method JIT compilations
+- `EnumerateModules` must always refresh module refs (old ones get neutered after `FLUSH_ALL`)
+- Method tokens collide across assemblies — must filter by assembly name
+- `DOTNET_TieredCompilation=0` + `DOTNET_ReadyToRun=0` ensure stable addresses but don't force eager JIT
 
-**Fundamental constraint:** With dbgeng as native debugger, ICorDebug's `CreateBreakpoint` cannot work. The two debuggers cannot share exception handling. Viable paths: hardware breakpoints + forced JIT, or ICorDebug-only mode (no native debugging).
+**Two viable paths to first-click breakpoints:**
+1. **ICorDebug launch → force JIT → detach → attach dbgeng:** Launch with full ICorDebug, use `ICorDebugEval` to call `RuntimeHelpers.PrepareMethod` for each breakpointed method (forces JIT), detach, attach dbgeng, DAC finds addresses immediately. Stays in C#/ClrDebug.
+2. **CLR Profiler DLL:** Build a small C++ DLL implementing `ICorProfilerCallback::JITCompilationFinished`. CLR loads it via env vars, profiler notifies MixDbg via named pipe when methods are JIT'd with their native addresses. Real-time, no polling.
+
+See `docs/M4V2-managed-breakpoints.md` for full details.
 
 **Launch args:** DAP `launch` request `args` field is threaded through to `CreateProcess` command line.
 
