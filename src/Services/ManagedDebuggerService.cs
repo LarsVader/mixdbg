@@ -52,6 +52,12 @@ internal sealed class ManagedDebuggerService(
             // Enumerate currently loaded modules.
             EnumerateModules(model);
 
+            // Initialize the DAC (SOSDacInterface) for querying JIT native code addresses.
+            // Wrapped in AppDomain.UnhandledException-safe try to avoid crashing on
+            // COM interop failures with mscordaccore.dll.
+            try { TryInitializeDac(model); }
+            catch (Exception ex) { _log.LogWarning(_logStore, $"DAC init outer catch: {ex.Message}"); }
+
             model.ManagedInitialized = true;
             return true;
         }
@@ -377,12 +383,17 @@ internal sealed class ManagedDebuggerService(
             {
                 // Use dbgeng's GetOffsetByLine — works after JIT publishes the symbol.
                 int hr = model.Symbols.GetOffsetByLine(
-                    (uint)deferred.Line, deferred.FilePath, out var nativeAddress);
+                    (uint)deferred.Line, deferred.FilePath, out var symbolAddress);
 
-                if (hr < 0 || nativeAddress == 0)
+                if (hr < 0 || symbolAddress == 0)
                     continue;
 
-                _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: resolved to 0x{nativeAddress:X}");
+                // GetOffsetByLine returns an address within the method but not
+                // necessarily the entry point. Use the DAC to find the real
+                // native code entry point.
+                var nativeAddress = ResolveNativeEntryPoint(model, symbolAddress);
+
+                _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: symbol=0x{symbolAddress:X} entry=0x{nativeAddress:X}");
 
                 var hwBpId = SetManagedCodeBreakpoint(model, nativeAddress, deferred.FilePath, deferred.Line);
                 if (hwBpId != null)
@@ -549,6 +560,111 @@ internal sealed class ManagedDebuggerService(
         catch (Exception ex)
         {
             _log.LogInfo(_logStore, $"  Module enumeration error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Initializes the DAC (<c>SOSDacInterface</c>) by calling <c>CLRDataCreateInstance</c>
+    /// from mscordaccore.dll. The DAC provides <c>GetMethodDescPtrFromIP</c> and
+    /// <c>GetMethodDescData</c> for finding real JIT native code addresses.
+    /// </summary>
+    private void TryInitializeDac(NativeDebuggerModel model)
+    {
+        try
+        {
+            var runtimeDir = Path.GetDirectoryName(model.CoreClrPath)!;
+            var dacPath = Path.Combine(runtimeDir, "mscordaccore.dll");
+
+            _log.LogInfo(_logStore, "DAC: Loading mscordaccore.dll...");
+            var hDac = System.Runtime.InteropServices.NativeLibrary.Load(dacPath);
+            var pCreateInstance = System.Runtime.InteropServices.NativeLibrary.GetExport(hDac, "CLRDataCreateInstance");
+            _log.LogInfo(_logStore, $"DAC: CLRDataCreateInstance export at 0x{pCreateInstance:X}");
+
+            var clrDataTarget = new DbgEngClrDataTarget(
+                model.DataSpaces, model.Advanced, model.SysObjects);
+            clrDataTarget.AddModuleBase(model.CoreClrPath!, model.CoreClrBaseAddress);
+
+            var comWrappers = new System.Runtime.InteropServices.Marshalling.StrategyBasedComWrappers();
+
+            _log.LogInfo(_logStore, "DAC: Creating ICLRDataTarget CCW...");
+            IntPtr pDataTarget = comWrappers.GetOrCreateComInterfaceForObject(
+                clrDataTarget, CreateComInterfaceFlags.None);
+            _log.LogInfo(_logStore, $"DAC: CCW created at 0x{pDataTarget:X}");
+            try
+            {
+                // Call CLRDataCreateInstance to get IXCLRDataProcess/SOSDacInterface.
+                var riid = typeof(ClrDebug.ISOSDacInterface).GUID;
+                _log.LogInfo(_logStore, $"DAC: Calling CLRDataCreateInstance(riid={riid})...");
+                IntPtr ppInstance = IntPtr.Zero;
+
+                unsafe
+                {
+                    var fn = (delegate* unmanaged[Stdcall]<Guid*, IntPtr, IntPtr*, int>)pCreateInstance;
+                    int hr = fn(&riid, pDataTarget, &ppInstance);
+                    _log.LogInfo(_logStore, $"DAC: CLRDataCreateInstance returned hr=0x{hr:X8} ppInstance=0x{ppInstance:X}");
+
+                    if (hr < 0)
+                        return;
+                }
+
+                _log.LogInfo(_logStore, "DAC: Wrapping COM instance...");
+                var raw = (ClrDebug.ISOSDacInterface)comWrappers.GetOrCreateObjectForComInstance(
+                    ppInstance, CreateObjectFlags.None);
+                Marshal.Release(ppInstance);
+                model.SosDac = new ClrDebug.SOSDacInterface(raw);
+                _log.LogInfo(_logStore, "SOSDacInterface initialized");
+            }
+            finally
+            {
+                Marshal.Release(pDataTarget);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(_logStore, $"DAC initialization failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Given an address within a managed method (from <c>GetOffsetByLine</c>), uses the
+    /// DAC to find the real native code entry point via <c>GetMethodDescPtrFromIP</c> +
+    /// <c>GetMethodDescData</c>. Falls back to the original address if the DAC is not
+    /// available or the lookup fails.
+    /// </summary>
+    private ulong ResolveNativeEntryPoint(NativeDebuggerModel model, ulong symbolAddress)
+    {
+        if (model.SosDac == null)
+            return symbolAddress;
+
+        try
+        {
+            var mdResult = model.SosDac.TryGetMethodDescPtrFromIP((ClrDebug.CLRDATA_ADDRESS)symbolAddress, out var methodDesc);
+            if (mdResult != ClrDebug.HRESULT.S_OK)
+            {
+                _log.LogInfo(_logStore, $"  GetMethodDescPtrFromIP(0x{symbolAddress:X}) failed: {mdResult}");
+                return symbolAddress;
+            }
+
+            var dataResult = model.SosDac.TryGetMethodDescData(methodDesc, 0, out var data);
+            if (dataResult != ClrDebug.HRESULT.S_OK)
+            {
+                _log.LogInfo(_logStore, $"  GetMethodDescData(0x{(ulong)methodDesc:X}) failed: {dataResult}");
+                return symbolAddress;
+            }
+
+            var entryPoint = (ulong)data.data.NativeCodeAddr;
+            if (entryPoint != 0 && data.data.bHasNativeCode)
+            {
+                _log.LogInfo(_logStore, $"  DAC: MethodDesc=0x{(ulong)methodDesc:X} NativeCodeAddr=0x{entryPoint:X} (symbol was 0x{symbolAddress:X})");
+                return entryPoint;
+            }
+
+            return symbolAddress;
+        }
+        catch (Exception ex)
+        {
+            _log.LogInfo(_logStore, $"  DAC lookup failed: {ex.Message}");
+            return symbolAddress;
         }
     }
 
