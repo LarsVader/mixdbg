@@ -52,9 +52,9 @@ internal sealed class ManagedDebuggerService(
             // Enumerate currently loaded modules.
             EnumerateModules(model);
 
-            // TODO: DAC (SOSDacInterface) init disabled — CLRDataCreateInstance crashes.
-            // try { TryInitializeDac(model); }
-            // catch (Exception ex) { _log.LogWarning(_logStore, $"DAC init outer catch: {ex.Message}"); }
+            // Initialize the DAC (SOSDacInterface) for querying JIT native code addresses.
+            try { TryInitializeDac(model); }
+            catch (Exception ex) { _log.LogWarning(_logStore, $"DAC init outer catch: {ex.Message}"); }
 
             model.ManagedInitialized = true;
             return true;
@@ -273,7 +273,9 @@ internal sealed class ManagedDebuggerService(
             var diskResult = FindMethodFromDiskPdb(filePath, line);
             if (diskResult != null)
             {
-                _log.LogInfo(_logStore, $"  Found method via disk PDB: {diskResult.Value.MethodName} in {diskResult.Value.AssemblyName} — but module not in ICorDebug yet");
+                methodToken = diskResult.Value.MethodToken;
+                ilOffset = diskResult.Value.ILOffset;
+                _log.LogInfo(_logStore, $"  Found method via disk PDB: {diskResult.Value.MethodName} token=0x{methodToken:X8} in {diskResult.Value.AssemblyName} — but module not in ICorDebug yet");
                 foundInPdb = true;
             }
         }
@@ -372,6 +374,10 @@ internal sealed class ManagedDebuggerService(
 
         _log.LogInfo(_logStore, $"TryResolveDeferredBreakpoints: {model.DeferredManagedBreakpoints.Count} deferred");
 
+        // Flush the DAC cache so it sees the latest JIT state.
+        try { model.CorProcess?.ProcessStateChanged(ClrDebug.CorDebugStateChange.FLUSH_ALL); }
+        catch { }
+
         var resolved = new List<Breakpoint>();
         var bound = new List<DeferredManagedBreakpoint>();
 
@@ -379,24 +385,12 @@ internal sealed class ManagedDebuggerService(
         {
             try
             {
-                // Use dbgeng's GetOffsetByLine — works after JIT publishes the symbol.
-                int hr = model.Symbols.GetOffsetByLine(
-                    (uint)deferred.Line, deferred.FilePath, out var symbolAddress);
-
-                if (hr < 0 || symbolAddress == 0)
+                // Use the DAC (XCLRDataProcess) to find the real JIT native entry point.
+                var nativeAddress = ResolveViaXclrData(model, deferred.MethodToken);
+                if (nativeAddress == 0)
                     continue;
 
-                // GetOffsetByLine may return an address with a displacement from
-                // the method entry (e.g. IL offset 1 → native offset +N). Subtract
-                // the displacement to get the exact entry point for the hardware BP.
-                IntPtr nameBuf = Marshal.AllocHGlobal(512);
-                int nameHr = model.Symbols.GetNameByOffset(symbolAddress, nameBuf, 512, out _, out var displacement);
-                var symName = nameHr >= 0 ? Marshal.PtrToStringAnsi(nameBuf) : "(unknown)";
-                Marshal.FreeHGlobal(nameBuf);
-
-                var nativeAddress = displacement > 0 ? symbolAddress - displacement : symbolAddress;
-
-                _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: symbol=0x{symbolAddress:X} name={symName}+0x{displacement:x} entry=0x{nativeAddress:X}");
+                _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{nativeAddress:X}");
 
                 var hwBpId = SetManagedCodeBreakpoint(model, nativeAddress, deferred.FilePath, deferred.Line);
                 if (hwBpId != null)
@@ -580,52 +574,92 @@ internal sealed class ManagedDebuggerService(
 
             _log.LogInfo(_logStore, "DAC: Loading mscordaccore.dll...");
             var hDac = System.Runtime.InteropServices.NativeLibrary.Load(dacPath);
-            var pCreateInstance = System.Runtime.InteropServices.NativeLibrary.GetExport(hDac, "CLRDataCreateInstance");
-            _log.LogInfo(_logStore, $"DAC: CLRDataCreateInstance export at 0x{pCreateInstance:X}");
 
             var clrDataTarget = new DbgEngClrDataTarget(
                 model.DataSpaces, model.Advanced, model.SysObjects);
             clrDataTarget.AddModuleBase(model.CoreClrPath!, model.CoreClrBaseAddress);
 
-            var comWrappers = new System.Runtime.InteropServices.Marshalling.StrategyBasedComWrappers();
-
-            _log.LogInfo(_logStore, "DAC: Creating ICLRDataTarget CCW...");
-            IntPtr pDataTarget = comWrappers.GetOrCreateComInterfaceForObject(
-                clrDataTarget, CreateComInterfaceFlags.None);
-            _log.LogInfo(_logStore, $"DAC: CCW created at 0x{pDataTarget:X}");
-            try
-            {
-                // Call CLRDataCreateInstance to get IXCLRDataProcess/SOSDacInterface.
-                var riid = typeof(ClrDebug.ISOSDacInterface).GUID;
-                _log.LogInfo(_logStore, $"DAC: Calling CLRDataCreateInstance(riid={riid})...");
-                IntPtr ppInstance = IntPtr.Zero;
-
-                unsafe
-                {
-                    var fn = (delegate* unmanaged[Stdcall]<Guid*, IntPtr, IntPtr*, int>)pCreateInstance;
-                    int hr = fn(&riid, pDataTarget, &ppInstance);
-                    _log.LogInfo(_logStore, $"DAC: CLRDataCreateInstance returned hr=0x{hr:X8} ppInstance=0x{ppInstance:X}");
-
-                    if (hr < 0)
-                        return;
-                }
-
-                _log.LogInfo(_logStore, "DAC: Wrapping COM instance...");
-                var raw = (ClrDebug.ISOSDacInterface)comWrappers.GetOrCreateObjectForComInstance(
-                    ppInstance, CreateObjectFlags.None);
-                Marshal.Release(ppInstance);
-                model.SosDac = new ClrDebug.SOSDacInterface(raw);
-                _log.LogInfo(_logStore, "SOSDacInterface initialized");
-            }
-            finally
-            {
-                Marshal.Release(pDataTarget);
-            }
+            _log.LogInfo(_logStore, "DAC: Calling CLRDataCreateInstance via ClrDebug Extensions...");
+            var interfaces = ClrDebug.Extensions.CLRDataCreateInstance(hDac, clrDataTarget);
+            model.SosDac = interfaces.SOSDacInterface;
+            model.XclrProcess = interfaces.XCLRDataProcess;
+            _log.LogInfo(_logStore, "SOSDacInterface + XCLRDataProcess initialized");
         }
         catch (Exception ex)
         {
             _log.LogWarning(_logStore, $"DAC initialization failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Uses the DAC's XCLRData interfaces to find the real JIT native code entry point
+    /// for a method token. Enumerates modules to find the matching one, then gets the
+    /// method definition by token and checks if it has a JIT'd instance.
+    /// Returns 0 if the method is not yet JIT'd or the lookup fails.
+    /// </summary>
+    private ulong ResolveViaXclrData(NativeDebuggerModel model, int methodToken)
+    {
+        _log.LogInfo(_logStore, $"  ResolveViaXclrData: token=0x{methodToken:X8} xclrProcess={model.XclrProcess != null}");
+
+        if (model.XclrProcess == null)
+            return 0;
+
+        try
+        {
+            // Enumerate XCLR modules to find the one containing our method.
+            _log.LogInfo(_logStore, "  XCLRData: StartEnumModules...");
+            var enumHandle = model.XclrProcess.StartEnumModules();
+            try
+            {
+                while (true)
+                {
+                    var moduleResult = model.XclrProcess.TryEnumModule(ref enumHandle, out var xModule);
+                    if (moduleResult != ClrDebug.HRESULT.S_OK)
+                        break;
+
+                    try
+                    {
+                        var methodDef = xModule.GetMethodDefinitionByToken((ClrDebug.mdMethodDef)methodToken);
+                        _log.LogInfo(_logStore, $"  XCLRData: found method def for token 0x{methodToken:X8}");
+
+                        // Check if this method has a JIT'd instance.
+                        var instHandle = methodDef.StartEnumInstances(null!);
+                        try
+                        {
+                            var instResult = methodDef.TryEnumInstance(ref instHandle, out var methodInst);
+                            _log.LogInfo(_logStore, $"  XCLRData: EnumInstance result={instResult}");
+                            if (instResult == ClrDebug.HRESULT.S_OK)
+                            {
+                                var entryResult = methodInst.TryGetRepresentativeEntryAddress(out var entryAddr);
+                                _log.LogInfo(_logStore, $"  XCLRData: GetRepresentativeEntryAddress result={entryResult} addr=0x{(ulong)entryAddr:X}");
+                                if (entryResult == ClrDebug.HRESULT.S_OK && (ulong)entryAddr != 0)
+                                {
+                                    return (ulong)entryAddr;
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            methodDef.EndEnumInstances(instHandle);
+                        }
+                    }
+                    catch
+                    {
+                        // Token not found in this module — try next.
+                    }
+                }
+            }
+            finally
+            {
+                model.XclrProcess.EndEnumModules(enumHandle);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogInfo(_logStore, $"  XCLRData lookup failed for token 0x{methodToken:X8}: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -692,7 +726,7 @@ internal sealed class ManagedDebuggerService(
     /// project. Walks up from the source directory looking for a .csproj, then
     /// scans bin/ subdirectories for a matching PDB.
     /// </summary>
-    private (string AssemblyName, string MethodName, int ILOffset)? FindMethodFromDiskPdb(
+    private (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? FindMethodFromDiskPdb(
         string sourceFile, int line)
     {
         var dir = Path.GetDirectoryName(sourceFile);
@@ -730,7 +764,7 @@ internal sealed class ManagedDebuggerService(
                 using var mapper = new PdbSourceMapper();
                 var result = mapper.FindMethodAtLine(assemblyPath, sourceFile, line);
                 if (result != null)
-                    return (result.Value.AssemblyName, result.Value.MethodName, result.Value.ILOffset);
+                    return (result.Value.AssemblyName, result.Value.MethodName, result.Value.MethodToken, result.Value.ILOffset);
             }
         }
 

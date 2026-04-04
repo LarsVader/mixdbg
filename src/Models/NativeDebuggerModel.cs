@@ -51,6 +51,7 @@ public sealed class NativeDebuggerModel : IDisposable
     internal volatile bool ManagedInitialized;
     internal volatile bool SosLoaded;
     internal ClrDebug.SOSDacInterface? SosDac { get; set; }
+    internal ClrDebug.XCLRDataProcess? XclrProcess { get; set; }
     internal string? CoreClrPath { get; set; }
     internal ulong CoreClrBaseAddress { get; set; }
     internal CorDebugProcess? CorProcess { get; set; }
