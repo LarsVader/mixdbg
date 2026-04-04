@@ -49,6 +49,7 @@ public sealed class NativeDebuggerModel : IDisposable
     // ICorDebug V4 state — piggybacked on the dbgeng session via OpenVirtualProcess.
     internal volatile bool ClrLoaded;
     internal volatile bool ManagedInitialized;
+    internal volatile bool SosLoaded;
     internal string? CoreClrPath { get; set; }
     internal ulong CoreClrBaseAddress { get; set; }
     internal CorDebugProcess? CorProcess { get; set; }

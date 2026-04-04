@@ -243,7 +243,7 @@ internal sealed class ManagedDebuggerService(
     /// </summary>
     private bool TryBindBreakpoint(NativeDebuggerModel model, string filePath, int line, int bpId)
     {
-        // First check if PDB resolution finds the method in any loaded module.
+        // Check if PDB resolution finds the method in any loaded module.
         bool foundInPdb = false;
         int methodToken = 0;
         int ilOffset = 0;
@@ -324,18 +324,27 @@ internal sealed class ManagedDebuggerService(
     }
 
     /// <summary>
-    /// Sets a code (software INT3) breakpoint at the given native address.
+    /// Sets a hardware execution breakpoint (<c>ba e1</c>) at the given native address.
+    /// Uses CPU debug registers — no code patching, so safe for managed code.
     /// Returns the dbgeng breakpoint ID, or <c>null</c> on failure.
     /// </summary>
     private uint? SetManagedCodeBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line)
     {
         int hr = model.Control.AddBreakpoint(
-            Engine.DbgEng.DebugBreakpointType.Code,
+            Engine.DbgEng.DebugBreakpointType.Data,
             0xFFFFFFFF, // DEBUG_ANY_ID
             out var bp);
         if (hr < 0)
         {
-            _log.LogWarning(_logStore, $"  AddBreakpoint(Code) failed: hr=0x{hr:X8}");
+            _log.LogWarning(_logStore, $"  AddBreakpoint(Data) failed: hr=0x{hr:X8}");
+            return null;
+        }
+
+        hr = bp.SetDataParameters(1, Engine.DbgEng.DebugBreakAccess.Execute);
+        if (hr < 0)
+        {
+            _log.LogWarning(_logStore, $"  SetDataParameters failed: hr=0x{hr:X8}");
+            model.Control.RemoveBreakpoint(bp);
             return null;
         }
 
@@ -348,7 +357,7 @@ internal sealed class ManagedDebuggerService(
         model.UserBreakpointIds.Add(bpId);
         model.ManagedBreakpointIds.Add(bpId);
 
-        _log.LogInfo(_logStore, $"  Code bp #{bpId} set at 0x{address:X} for {key}");
+        _log.LogInfo(_logStore, $"  Hardware bp #{bpId} set at 0x{address:X} for {key}");
         return bpId;
     }
 
