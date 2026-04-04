@@ -52,11 +52,9 @@ internal sealed class ManagedDebuggerService(
             // Enumerate currently loaded modules.
             EnumerateModules(model);
 
-            // Initialize the DAC (SOSDacInterface) for querying JIT native code addresses.
-            // Wrapped in AppDomain.UnhandledException-safe try to avoid crashing on
-            // COM interop failures with mscordaccore.dll.
-            try { TryInitializeDac(model); }
-            catch (Exception ex) { _log.LogWarning(_logStore, $"DAC init outer catch: {ex.Message}"); }
+            // TODO: DAC (SOSDacInterface) init disabled — CLRDataCreateInstance crashes.
+            // try { TryInitializeDac(model); }
+            // catch (Exception ex) { _log.LogWarning(_logStore, $"DAC init outer catch: {ex.Message}"); }
 
             model.ManagedInitialized = true;
             return true;
@@ -388,12 +386,17 @@ internal sealed class ManagedDebuggerService(
                 if (hr < 0 || symbolAddress == 0)
                     continue;
 
-                // GetOffsetByLine returns an address within the method but not
-                // necessarily the entry point. Use the DAC to find the real
-                // native code entry point.
-                var nativeAddress = ResolveNativeEntryPoint(model, symbolAddress);
+                // GetOffsetByLine may return an address with a displacement from
+                // the method entry (e.g. IL offset 1 → native offset +N). Subtract
+                // the displacement to get the exact entry point for the hardware BP.
+                IntPtr nameBuf = Marshal.AllocHGlobal(512);
+                int nameHr = model.Symbols.GetNameByOffset(symbolAddress, nameBuf, 512, out _, out var displacement);
+                var symName = nameHr >= 0 ? Marshal.PtrToStringAnsi(nameBuf) : "(unknown)";
+                Marshal.FreeHGlobal(nameBuf);
 
-                _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: symbol=0x{symbolAddress:X} entry=0x{nativeAddress:X}");
+                var nativeAddress = displacement > 0 ? symbolAddress - displacement : symbolAddress;
+
+                _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: symbol=0x{symbolAddress:X} name={symName}+0x{displacement:x} entry=0x{nativeAddress:X}");
 
                 var hwBpId = SetManagedCodeBreakpoint(model, nativeAddress, deferred.FilePath, deferred.Line);
                 if (hwBpId != null)

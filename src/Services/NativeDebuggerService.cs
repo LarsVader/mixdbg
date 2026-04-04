@@ -544,7 +544,7 @@ internal sealed class NativeDebuggerService(
                 model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
             }
             catch { }
-        }, null, 200, 200);
+        }, null, 2000, 2000);
 
         // Store the timer so it can be disposed.
         model.DisposeAction = () =>
