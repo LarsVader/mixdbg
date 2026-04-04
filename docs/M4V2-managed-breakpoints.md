@@ -49,13 +49,13 @@ WpfApp!Method.#C: 0000 add byte ptr [rax],al  (all zeros — empty buffer)
 
 **Result:** This works! The DAC returns the correct JIT'd code address (in the `0x7FF7...` range), and hardware BPs at that address fire correctly.
 
-**BUT:** The DAC has a ~12 second cache staleness issue. After a method is JIT'd, the DAC doesn't detect the JIT'd code for ~12 seconds despite being recreated each poll. This means:
-- **Second-call breakpoints work reliably** (method JIT'd on first call, BP set before second call)
-- **First-call breakpoints are unreliable** (BP must be set between JIT and first instruction, but DAC detection is too slow)
+**BUT:** `StartEnumInstances` consistently returns `S_FALSE` (no JIT instances) even after methods have been called and JIT'd. Tested with 32 polls over 62 seconds in a real nvim session — never resolves. The few "successful" runs in integration tests were likely false positives or race conditions.
 
-### Why the DAC is Slow
+### Why the DAC Can't See JIT Instances
 
-`mscordaccore.dll` is loaded once via `NativeLibrary.Load`. Subsequent loads return the **same DLL handle** (already loaded). The DAC has **global state inside the DLL** that caches the CLR's data structures. Our first poll populates this cache with "method not JIT'd". Even when we create a new `XCLRDataProcess` via `CLRDataCreateInstance`, the underlying DLL reuses its cached global state. The cache takes ~12 seconds to become stale/refresh.
+The DAC created via `CLRDataCreateInstance` with our `DbgEngClrDataTarget` can enumerate modules and find method definitions by token, but **cannot detect JIT compilation instances**. `StartEnumInstances` always returns `S_FALSE`. This appears to be a fundamental limitation of the DAC when created from an external data target — it can read static metadata (modules, method defs) but not dynamic runtime state (JIT compilation results).
+
+This makes the DAC approach a dead end for detecting JIT'd native code addresses. The DAC pipeline (module → method def → instance → entry address) works in theory but the "instance" step fails in practice.
 
 ### Other Findings
 
