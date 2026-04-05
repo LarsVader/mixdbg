@@ -366,6 +366,7 @@ internal sealed class ManagedDebuggerService(
         model.BreakpointIds[key] = bpId;
         model.UserBreakpointIds.Add(bpId);
         model.ManagedBreakpointIds.Add(bpId);
+        model.ManagedBreakpointAddresses.Add(address);
 
         _log.LogInfo(_logStore, $"  Hardware bp #{bpId} set at 0x{address:X} for {key}");
         return bpId;
@@ -465,7 +466,22 @@ internal sealed class ManagedDebuggerService(
                         $"  JIT notification matched deferred bp #{deferred.BpId}: " +
                         $"token=0x{jit.MethodToken:X8} addr=0x{jit.NativeAddress:X} asm={jit.AssemblyName}");
 
+                    // Store the resolved address for reuse by ENTER hooks on subsequent calls.
+                    var bpKey = $"{jit.AssemblyName}:{jit.MethodToken:X8}";
+                    model.ResolvedBpAddresses[bpKey] = (jit.NativeAddress, deferred.FilePath, deferred.Line);
+
+                    if (model.ProfilerHooksActive)
+                    {
+                        // With hooks: don't set hardware BP here — the ENTER path will
+                        // set a transient BP using this resolved address. Don't signal ACK
+                        // either — the ENTER handler does that.
+                        _log.LogInfo(_logStore, $"  Hooks active: stored address, ENTER will set BP");
+                        continue;
+                    }
+
+                    // Without hooks: set hardware BP now and signal ACK.
                     var hwBpId = SetManagedCodeBreakpoint(model, jit.NativeAddress, deferred.FilePath, deferred.Line);
+
                     bound.Add(deferred);
                     resolved.Add(new Breakpoint
                     {

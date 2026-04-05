@@ -109,11 +109,34 @@ public:
     }
 
     // Slot 20: GetModuleInfo(ModuleID, LPCBYTE*, ULONG, ULONG*, WCHAR*, AssemblyID*)
-    // Returns the file path and assembly ID for a module.
     HRESULT GetModuleInfo(ModuleID moduleId, LPCBYTE* ppBaseAddr, ULONG cchName,
                           ULONG* pcchName, WCHAR* szName, AssemblyID* pAssemblyId) {
         typedef HRESULT(STDMETHODCALLTYPE* Fn)(void*, ModuleID, LPCBYTE*, ULONG, ULONG*, WCHAR*, AssemblyID*);
         return reinterpret_cast<Fn>(m_vtbl[20])(m_pInfo, moduleId, ppBaseAddr, cchName, pcchName, szName, pAssemblyId);
+    }
+
+    // COR_DEBUG_IL_TO_NATIVE_MAP structure (3 x ULONG32)
+    struct ILNativeMap { ULONG32 ilOffset; ULONG32 nativeStartOffset; ULONG32 nativeEndOffset; };
+
+    // Slot 35: GetILToNativeMapping(FunctionID, ULONG32, ULONG32*, ILNativeMap[])
+    // Returns the native offset for the first IL instruction (method body start).
+    ULONG32 GetMethodBodyOffset(FunctionID funcId) {
+        typedef HRESULT(STDMETHODCALLTYPE* Fn)(void*, FunctionID, ULONG32, ULONG32*, void*);
+        ILNativeMap maps[64];
+        ULONG32 count = 0;
+        HRESULT hr = reinterpret_cast<Fn>(m_vtbl[35])(m_pInfo, funcId, 64, &count, maps);
+        if (FAILED(hr) || count == 0) return 0;
+        // Find the entry for IL offset 0 (first real instruction).
+        for (ULONG32 i = 0; i < count && i < 64; i++) {
+            if (maps[i].ilOffset == 0)
+                return maps[i].nativeStartOffset;
+        }
+        // Fallback: return the first non-negative IL offset's native start.
+        for (ULONG32 i = 0; i < count && i < 64; i++) {
+            if ((int)maps[i].ilOffset >= 0)
+                return maps[i].nativeStartOffset;
+        }
+        return 0;
     }
 };
 
@@ -142,6 +165,7 @@ class MixDbgProfiler : public IUnknown {
     ProfilerInfo* m_pInfo;
     HANDLE m_hPipe;
     HANDLE m_hAckEvent;  // Signaled by MixDbg after processing a notification.
+    HANDLE m_hRehookEvent; // Signaled by MixDbg on Continue — re-enables enter/leave hooks.
     CRITICAL_SECTION m_pipeLock;
 
     // Exact (assembly, token) pairs that have breakpoints — only block JIT for these.
@@ -223,7 +247,6 @@ public:
         auto* info = FindWatchedFunction(funcId);
         if (!info || m_hPipe == INVALID_HANDLE_VALUE || !m_pInfo) return;
 
-        // Get the CURRENT native code address (available now, post-JIT).
         UINT_PTR codeAddr = info->codeStart;
         if (codeAddr == 0) {
             LPCBYTE start = nullptr; ULONG size = 0;
@@ -232,21 +255,32 @@ public:
         }
         if (codeAddr == 0) return;
 
-        // Include OS thread ID so MixDbg can report the correct thread in DAP stopped event.
-        DWORD osThreadId = GetCurrentThreadId();
+        // Get the native offset of the actual method body (past any hook preamble).
+        // With enter/leave hooks, the JIT may insert a stub at the entry.
+        ULONG32 bodyOffset = m_pInfo->GetMethodBodyOffset(funcId);
+        UINT_PTR bodyAddr = codeAddr + bodyOffset;
 
+        // Disable enter/leave hooks so the method body runs through the normal code path.
+        m_pInfo->SetEventMask(COR_PRF_MONITOR_JIT_COMPILATION);
+
+        DWORD osThreadId = GetCurrentThreadId();
         char line[512];
         int len = sprintf_s(line, sizeof(line), "ENTER:%08X:%016llX:%08X:%s\n",
-            (unsigned int)info->token, (unsigned long long)codeAddr, osThreadId, info->assembly);
+            (unsigned int)info->token, (unsigned long long)bodyAddr, osThreadId, info->assembly);
         if (len > 0) {
             WriteToPipe(line, len);
+            // Block until MixDbg sets the hardware BP.
             if (m_hAckEvent) WaitForSingleObject(m_hAckEvent, 500);
         }
+
+        // Do NOT re-enable hooks here — the method body must run without hook
+        // trampolines so the hardware BP fires. Hooks are re-enabled by the
+        // rehook watcher thread when MixDbg signals after the user continues.
     }
 
 public:
     MixDbgProfiler() : m_refCount(1), m_pInfo(nullptr),
-        m_hPipe(INVALID_HANDLE_VALUE), m_hAckEvent(nullptr), m_watchCount(0) {
+        m_hPipe(INVALID_HANDLE_VALUE), m_hAckEvent(nullptr), m_hRehookEvent(nullptr), m_watchCount(0) {
         memset(m_watchEntries, 0, sizeof(m_watchEntries));
         InitializeCriticalSection(&m_pipeLock);
         InitializeCriticalSection(&m_funcLock);
@@ -256,8 +290,8 @@ public:
         delete m_pInfo;
         if (m_hPipe != INVALID_HANDLE_VALUE)
             CloseHandle(m_hPipe);
-        if (m_hAckEvent)
-            CloseHandle(m_hAckEvent);
+        if (m_hAckEvent) CloseHandle(m_hAckEvent);
+        if (m_hRehookEvent) CloseHandle(m_hRehookEvent);
         DeleteCriticalSection(&m_pipeLock);
         DeleteCriticalSection(&m_funcLock);
     }
@@ -331,6 +365,25 @@ public:
         len = GetEnvironmentVariableW(L"MIXDBG_ACK_EVENT", ackEventName, 256);
         if (len > 0 && len < 256)
             m_hAckEvent = OpenEventW(SYNCHRONIZE, FALSE, ackEventName);
+
+        // REHOOK event — signaled by MixDbg on Continue to re-enable enter/leave hooks.
+        WCHAR rehookName[256] = {};
+        len = GetEnvironmentVariableW(L"MIXDBG_REHOOK_EVENT", rehookName, 256);
+        if (len > 0 && len < 256) {
+            m_hRehookEvent = OpenEventW(SYNCHRONIZE, FALSE, rehookName);
+            if (m_hRehookEvent) {
+                // Watcher thread: waits for REHOOK signal, re-enables enter/leave hooks.
+                CreateThread(nullptr, 0, [](LPVOID param) -> DWORD {
+                    auto* self = (MixDbgProfiler*)param;
+                    while (self->m_hRehookEvent && self->m_hPipe != INVALID_HANDLE_VALUE) {
+                        if (WaitForSingleObject(self->m_hRehookEvent, 1000) == WAIT_OBJECT_0)
+                            self->m_pInfo->SetEventMask(
+                                COR_PRF_MONITOR_JIT_COMPILATION | COR_PRF_MONITOR_ENTERLEAVE);
+                    }
+                    return 0;
+                }, this, 0, nullptr);
+            }
+        }
 
         // Parse "ASSEMBLY:TOKEN,ASSEMBLY:TOKEN,..." — exact methods to block on.
         // Only these methods wait for MixDbg to set the hardware BP before executing.

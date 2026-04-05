@@ -84,10 +84,17 @@ public sealed class NativeDebuggerModel : IDisposable
     internal volatile bool ProfilerHooksActive; // True when profiler uses ENTER: notifications (enter/leave hooks).
     internal volatile bool PendingEnterBreakpoint; // True when an ENTER notification matched — treat next stop as breakpoint.
     internal uint EnterBreakpointThreadId; // OS thread ID of the thread frozen in the profiler's enter hook.
-    internal ulong EnterBreakpointAddress; // Native code address of the method being entered.
     internal int EnterBreakpointToken; // Method token of the method being entered.
+    internal ulong EnterBreakpointAddress; // BP address (method body start, past hook preamble).
     internal string? EnterBreakpointAssembly; // Assembly name of the method being entered.
+
+    /// <summary>
+    /// Maps (assembly:token) to the resolved hardware BP address from the first JIT.
+    /// Reused by ENTER hooks on subsequent calls to set transient BPs at the same address.
+    /// </summary>
+    internal Dictionary<string, (ulong Address, string FilePath, int Line)> ResolvedBpAddresses { get; } = new();
     internal EventWaitHandle? ProfilerAckEvent { get; set; }
+    internal EventWaitHandle? ProfilerRehookEvent { get; set; }
 
     /// <summary>
     /// Sorted map of all JIT-compiled methods reported by the profiler, keyed by native

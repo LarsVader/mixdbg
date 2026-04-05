@@ -35,7 +35,9 @@ internal sealed class NativeDebuggerService(
             model.Commands.CompleteAdding();
             model.EngineThread?.Join(3000);
             model.ProfilerAckEvent?.Set(); // Unblock profiler if waiting.
+            model.ProfilerRehookEvent?.Set(); // Unblock rehook watcher.
             model.ProfilerAckEvent?.Dispose();
+            model.ProfilerRehookEvent?.Dispose();
             model.ProfilerPipeReader?.Dispose();
             model.ProfilerPipe?.Dispose();
             model.ProfilerReaderThread?.Join(1000);
@@ -49,6 +51,7 @@ internal sealed class NativeDebuggerService(
             Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", null);
             Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", null);
             Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", null);
+            Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", null);
             Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", null);
         };
         return model;
@@ -86,8 +89,8 @@ internal sealed class NativeDebuggerService(
         {
             _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
             RemoveTransientManagedBreakpoints(model);
-            // Signal ACK to unblock the profiler's enter hook (if active).
-            model.ProfilerAckEvent?.Set();
+            // Re-enable enter/leave hooks in the profiler for the next method call.
+            model.ProfilerRehookEvent?.Set();
             model.ConfigDone = true;
             _cachedStackTraceResult = null;
             Check(model.Control.SetExecutionStatus(DebugStatus.Go));
@@ -422,10 +425,9 @@ internal sealed class NativeDebuggerService(
                 }
 
                 // Process JIT notifications from the CLR profiler pipe.
-                // With hooks active: enter hooks handle breakpoints, skip JIT-based BP setup.
-                // Without hooks: JIT notifications trigger hardware BP setup (fallback).
-                if (!model.ProfilerHooksActive &&
-                    model.DeferredManagedBreakpoints.Count > 0 && !model.JitNotifications.IsEmpty)
+                // JIT notifications: set hardware BP at exact line on first JIT.
+                // Works with both hooks-active and fallback modes.
+                if (model.DeferredManagedBreakpoints.Count > 0 && !model.JitNotifications.IsEmpty)
                 {
                     try
                     {
@@ -476,18 +478,34 @@ internal sealed class NativeDebuggerService(
                 // With enter/leave hooks: ENTER freezes the thread before the method body.
                 // Set a transient hardware BP at the exact breakpointed LINE, then resume.
                 // The method runs and hits the BP at the correct source location.
-                // With enter/leave hooks: ENTER notifications freeze the target thread
-                // in the profiler's enter hook. This IS the breakpoint hit — the method
-                // is about to execute. Report as a breakpoint stop with a synthesized frame.
+                // With enter hooks: the profiler disabled hooks and is blocking.
+                // Set transient hardware BP at the resolved line address, ACK,
+                // and auto-continue. The method runs without hooks → BP fires at the line.
+                // The profiler re-enables hooks after ACK.
                 if (model.ProfilerHooksActive && model.PendingEnterBreakpoint)
                 {
                     model.PendingEnterBreakpoint = false;
-                    // Switch dbgeng to the thread frozen in the profiler's enter hook.
-                    int thr = model.SysObjects.GetThreadIdBySystemId(
-                        model.EnterBreakpointThreadId, out var dbgThreadId);
-                    if (thr >= 0)
-                        model.SysObjects.SetCurrentThreadId(dbgThreadId);
-                    reason = "breakpoint";
+                    // Use the body address from the ENTER notification (includes IL-to-native
+                    // offset, past any hook preamble). Find matching deferred BP for file:line.
+                    var addr = model.EnterBreakpointAddress;
+                    foreach (var deferred in model.DeferredManagedBreakpoints)
+                    {
+                        if (deferred.MethodToken == model.EnterBreakpointToken &&
+                            deferred.AssemblyName != null &&
+                            deferred.AssemblyName.Equals(model.EnterBreakpointAssembly, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _managedDebugger.SetTransientBreakpoint(model, addr, deferred.FilePath, deferred.Line);
+                            _log.LogInfo(_logStore, $"  ENTER: transient hw BP at 0x{addr:X} for {deferred.FilePath}:{deferred.Line}");
+                            break;
+                        }
+                    }
+                    // ACK unblocks the profiler (hooks stay disabled). Method body runs
+                    // through normal code path → hardware BP fires. Rehook watcher
+                    // re-enables hooks when MixDbg signals on Continue.
+                    model.ProfilerAckEvent?.Set();
+                    model.Stopped.Reset();
+                    model.Control.SetExecutionStatus(DebugStatus.Go);
+                    continue;
                 }
 
                 if (model.HitUserBreakpoint)
@@ -542,48 +560,6 @@ internal sealed class NativeDebuggerService(
     }
 
     /// <summary>
-    /// Sets a transient hardware breakpoint at the exact breakpointed line when
-    /// a FunctionEnter notification indicates the method is about to execute.
-    /// Uses <c>GetOffsetByLine</c> (now works because the method is JIT'd) or
-    /// falls back to the method entry address from the profiler.
-    /// </summary>
-    private void SetTransientBreakpointFromEnter(NativeDebuggerModel model)
-    {
-        var token = model.EnterBreakpointToken;
-        var assembly = model.EnterBreakpointAssembly;
-        var entryAddr = model.EnterBreakpointAddress;
-
-        // Find the deferred breakpoint(s) matching this method.
-        foreach (var deferred in model.DeferredManagedBreakpoints)
-        {
-            if (deferred.MethodToken != token ||
-                deferred.AssemblyName == null ||
-                !deferred.AssemblyName.Equals(assembly, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            // Try to resolve the exact native address for the breakpointed line.
-            // GetOffsetByLine works now because the method has been JIT'd.
-            ulong bpAddress = entryAddr;
-            int hr = model.Symbols.GetOffsetByLine((uint)deferred.Line, deferred.FilePath, out var lineAddr);
-            if (hr >= 0 && lineAddr != 0)
-            {
-                bpAddress = lineAddr;
-                _log.LogInfo(_logStore,
-                    $"  ENTER: GetOffsetByLine({deferred.Line}) -> 0x{lineAddr:X}");
-            }
-            else
-            {
-                _log.LogInfo(_logStore,
-                    $"  ENTER: GetOffsetByLine failed (hr=0x{hr:X8}), using entry 0x{entryAddr:X}");
-            }
-
-            _managedDebugger.SetTransientBreakpoint(model, bpAddress, deferred.FilePath, deferred.Line);
-            _log.LogInfo(_logStore,
-                $"  Transient hw BP for {deferred.FilePath}:{deferred.Line} at 0x{bpAddress:X}");
-        }
-    }
-
-    /// <summary>
     /// Removes all transient managed hardware breakpoints. Called on Continue/Step
     /// to free debug registers. The profiler's enter hook will re-set them on the
     /// next call to each breakpointed method.
@@ -607,6 +583,7 @@ internal sealed class NativeDebuggerService(
             model.UserBreakpointIds.Remove(hwBpId);
         }
         model.ManagedBreakpointIds.Clear();
+        model.ManagedBreakpointAddresses.Clear();
 
         // Clear the key→id mappings for managed breakpoints.
         var keysToRemove = model.BreakpointIds
@@ -680,6 +657,12 @@ internal sealed class NativeDebuggerService(
         Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", profilerPath);
         Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", $@"\\.\pipe\{pipeName}");
         Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", ackEventName);
+
+        // REHOOK event — signaled on Continue to re-enable enter/leave hooks in the profiler.
+        var rehookEventName = $"MixDbgProfilerRehook-{pipeName}";
+        model.ProfilerRehookEvent = new EventWaitHandle(false, EventResetMode.AutoReset, rehookEventName);
+        Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", rehookEventName);
+
         if (watchTokens != null)
             Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", watchTokens);
 
@@ -744,18 +727,33 @@ internal sealed class NativeDebuggerService(
                 }
                 if (line.StartsWith("JIT:"))
                 {
-                    // JIT: prefixed — profiler has enter hooks active. Store in method map only.
+                    // JIT: prefixed — profiler has enter hooks active.
                     var jitParts = line.Substring(4).Split(':');
                     if (jitParts.Length >= 4 &&
                         int.TryParse(jitParts[0], System.Globalization.NumberStyles.HexNumber, null, out var jToken) &&
                         ulong.TryParse(jitParts[1], System.Globalization.NumberStyles.HexNumber, null, out var jAddr) &&
                         uint.TryParse(jitParts[2], System.Globalization.NumberStyles.HexNumber, null, out var jSize))
                     {
+                        var jAsm = jitParts[3];
                         lock (model.JitMethodMap)
-                            model.JitMethodMap[jAddr] = new JitMethodInfo(jToken, jAddr, jSize, jitParts[3]);
+                            model.JitMethodMap[jAddr] = new JitMethodInfo(jToken, jAddr, jSize, jAsm);
+
+                        // Also enqueue for first-JIT BP matching (sets hw BP at exact line).
+                        bool jitMatches = false;
+                        foreach (var d in model.DeferredManagedBreakpoints)
+                        {
+                            if (d.MethodToken == jToken && d.AssemblyName != null &&
+                                d.AssemblyName.Equals(jAsm, StringComparison.OrdinalIgnoreCase))
+                            { jitMatches = true; break; }
+                        }
+                        if (jitMatches)
+                        {
+                            model.JitNotifications.Enqueue(new JitNotification(jToken, jAddr, jSize, jAsm));
+                            try { model.Control.SetInterrupt(0); } catch { }
+                        }
                     }
                     model.ProfilerHooksActive = true;
-                    continue; // Don't fall through to old-format BP matching.
+                    continue;
                 }
                 if (line.StartsWith("ENTER:"))
                 {
@@ -780,8 +778,8 @@ internal sealed class NativeDebuggerService(
                     {
                         model.PendingEnterBreakpoint = true;
                         model.EnterBreakpointThreadId = eTid;
-                        model.EnterBreakpointAddress = eAddr;
                         model.EnterBreakpointToken = eToken;
+                        model.EnterBreakpointAddress = eAddr;
                         model.EnterBreakpointAssembly = eAsm;
                         _log.LogInfo(_logStore,
                             $"ProfilerReader: ENTER token=0x{eToken:X8} addr=0x{eAddr:X} tid={eTid} asm={eAsm} — interrupting engine");
@@ -1181,30 +1179,6 @@ internal sealed class NativeDebuggerService(
         // breaking CreateRuntime for deferred breakpoint resolution.
         if (_cachedStackTraceResult != null)
             return _cachedStackTraceResult;
-
-        // For enter hook breakpoints: the thread is frozen inside the profiler's
-        // enter hook, so the native stack shows CLR/kernel internals.
-        // Synthesize the top frame from the ENTER notification data.
-        if (model.ProfilerHooksActive && model.EnterBreakpointAddress != 0)
-        {
-            var profilerFrame = _managedDebugger.ResolveFrameFromProfilerData(
-                model, model.EnterBreakpointAddress);
-            if (profilerFrame != null)
-            {
-                var synth = new StackFrame
-                {
-                    Id = 1,
-                    Name = profilerFrame.Value.Name,
-                    Source = profilerFrame.Value.Source,
-                    Line = profilerFrame.Value.Line,
-                    Column = 0,
-                };
-                _log.LogInfo(_logStore, $"  Synthesized enter-hook frame: {synth.Name} at {synth.Source?.Path}:{synth.Line}");
-                _cachedStackTraceResult = [synth];
-                model.EnterBreakpointAddress = 0;
-                return _cachedStackTraceResult;
-            }
-        }
 
         if (maxFrames <= 0) maxFrames = 50;
         int frameSize = Marshal.SizeOf<DEBUG_STACK_FRAME>();

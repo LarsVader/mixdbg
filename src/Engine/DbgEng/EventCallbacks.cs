@@ -83,12 +83,12 @@ public sealed class EventCallbacks : IDebugEventCallbacks
             return StatusGoHandled;
         }
 
-        // EXCEPTION_BREAKPOINT (0x80000003) — may be a managed breakpoint hit
-        // from ICorDebug IL breakpoints (int3 patches). Read the exception address
-        // and notify listeners for managed breakpoint detection.
-        if (exceptionCode == 0x80000003 && Exception != IntPtr.Zero)
+        // EXCEPTION_BREAKPOINT (0x80000003) or EXCEPTION_SINGLE_STEP (0x80000004).
+        // 0x80000003: may be a managed IL breakpoint hit (int3 patches).
+        // 0x80000004: hardware execution breakpoint (ba e1) — fires as single-step on x64.
+        if ((exceptionCode == 0x80000003 || exceptionCode == 0x80000004) && Exception != IntPtr.Zero)
         {
-            // EXCEPTION_RECORD64.ExceptionAddress is at offset 16 (after code+flags+record).
+            // EXCEPTION_RECORD64.ExceptionAddress is at offset 16.
             ulong exceptionAddress = (ulong)Marshal.ReadInt64(Exception, 16);
             OnExceptionBreakpoint?.Invoke(exceptionAddress);
         }
