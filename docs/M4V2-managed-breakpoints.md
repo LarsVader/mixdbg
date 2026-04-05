@@ -150,3 +150,22 @@ The pipeline is proven end-to-end but has the 12s DAC latency that prevents firs
 - All other callbacks return `S_OK` (no-op)
 
 Both options are viable. Option A stays in C# with existing dependencies. Option B is more robust (real-time notifications, no debugger handoff) but requires a native C++ DLL.
+
+## Final Solution: CLR Profiler with FunctionEnter Hooks (Implemented, 2026-04-05)
+
+Option B was implemented and then extended with `FunctionEnter`/`FunctionLeave` hooks for unlimited breakpoints at exact source lines:
+
+1. **Profiler DLL** (`MixDbgProfiler.dll`): ICorProfilerCallback2 + x64 MASM assembly stubs for register-preserving FunctionEnter/Leave hooks
+2. **FunctionIDMapper** selectively enables hooks only for breakpointed methods (from `MIXDBG_WATCH_TOKENS` env var) — zero overhead for all others
+3. **JITCompilationFinished**: sends `JIT:token:address:size:assembly[:IL-map]` with IL-to-native mapping for watched methods
+4. **FunctionEnter** (on every call to watched methods): disables hooks via `SetEventMask` → sends `ENTER:token:address:threadId:assembly` → blocks on ACK event
+5. **MixDbg**: uses IL-to-native mapping to compute exact native address for the breakpointed line → sets transient hardware BP → signals ACK → method runs without hooks → BP fires at exact line
+6. **On Continue**: MixDbg removes transient BP, signals REHOOK event → profiler's watcher thread re-enables hooks for the next call
+
+**Key discoveries during implementation:**
+- Hardware BPs at method entry don't fire when enter/leave hooks are active (CLR redirects through hook trampolines)
+- Fix: profiler disables hooks before blocking (`SetEventMask` without ENTERLEAVE), re-enables via REHOOK event after Continue
+- Hardware execution BPs (`ba e1`) fire as `EXCEPTION_SINGLE_STEP` (0x80000004) on x64, not through the Breakpoint callback
+- x64 MASM stubs must preserve all volatile registers (rax, rcx, rdx, r8-r11, xmm0-5) with correct 16-byte stack alignment
+- `GetILToNativeMapping` provides the offset past any hook preamble for exact-line BPs
+- Reverse IL mapping (native IP → IL offset → PDB line) enables accurate stack trace line numbers

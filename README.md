@@ -256,8 +256,8 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 - Managed module/function resolution via ICorDebug V4 piggybacked on dbgeng (`OpenVirtualProcessImpl` + `DbgEngDataTarget` bridge)
 - PDB-based source mapping for C# via `System.Reflection.Metadata`
 - Command-line argument passthrough in DAP launch requests
-- **First-click managed breakpoints** via CLR Profiler DLL (`MixDbgProfiler.dll`) — JIT notifications over named pipe → hardware breakpoints at real native addresses, with blocking ACK handshake to guarantee BP is set before method executes
-- **Managed stack traces** via profiler JIT method map — binary search maps native IPs to method tokens, PDB resolves source file:line
+- **Unlimited managed breakpoints at exact source lines** via CLR Profiler DLL (`MixDbgProfiler.dll`) — FunctionEnter hooks detect each call to breakpointed methods, profiler temporarily disables hooks and blocks while MixDbg sets a transient hardware BP at the exact line address (via IL-to-native mapping), method runs and hits BP. No debug register limit — BPs are set/removed per call.
+- **Managed stack traces** via profiler JIT method map + IL-to-native mapping — binary search maps native IPs to method tokens, reverse IL mapping resolves exact source file:line
 
 **Not yet implemented:**
 - Managed variable inspection (M5)
