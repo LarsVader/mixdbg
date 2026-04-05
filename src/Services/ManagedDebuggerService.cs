@@ -466,10 +466,6 @@ internal sealed class ManagedDebuggerService(
                         $"  JIT notification matched deferred bp #{deferred.BpId}: " +
                         $"token=0x{jit.MethodToken:X8} addr=0x{jit.NativeAddress:X} asm={jit.AssemblyName}");
 
-                    // Store the resolved address for reuse by ENTER hooks on subsequent calls.
-                    var bpKey = $"{jit.AssemblyName}:{jit.MethodToken:X8}";
-                    model.ResolvedBpAddresses[bpKey] = (jit.NativeAddress, deferred.FilePath, deferred.Line);
-
                     if (model.ProfilerHooksActive)
                     {
                         // With hooks: don't set hardware BP here — the ENTER path will
@@ -570,8 +566,21 @@ internal sealed class ManagedDebuggerService(
             {
                 using var mapper = new PdbSourceMapper();
 
-                // Get source location (use IL offset 0 for approximate first line).
-                var srcLoc = mapper.GetSourceLocation(assemblyPath, method.MethodToken, 0);
+                // Compute IL offset from native IP using the IL-to-native mapping.
+                int ilOffset = 0;
+                var bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
+                if (model.JitMethodMappings.TryGetValue(bpKey, out var methodMapping))
+                {
+                    uint nativeOffset = (uint)(instructionPointer - methodMapping.CodeStart);
+                    // Find the largest IL offset whose native start ≤ our offset.
+                    foreach (var (il, nat) in methodMapping.ILToNativeMap)
+                    {
+                        if ((uint)nat <= nativeOffset)
+                            ilOffset = il;
+                    }
+                }
+
+                var srcLoc = mapper.GetSourceLocation(assemblyPath, method.MethodToken, ilOffset);
                 if (srcLoc != null)
                 {
                     source = new Source

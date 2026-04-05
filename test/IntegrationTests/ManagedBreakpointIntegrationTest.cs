@@ -108,6 +108,48 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
+    [Fact]
+    public async Task ManagedBreakpoint_WhenBreakpointInsideMethodBody_StopsAtExactLine()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set breakpoints INSIDE the if-block (line 65 = ManagedCalculator.Add call,
+        // line 74 = ManagedCalculator.Multiply call) — NOT at method entry.
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _bpFile, name = "MainWindow.xaml.cs" },
+            breakpoints = new[] { new { line = _addBodyLine }, new { line = _multiplyBodyLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Hit 1: should stop at line 65 (inside OnAddClick), NOT at line 61/63.
+        await WhenWaitingForStoppedEvent(timeout: 20);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 2: should stop at line 74 (inside OnMultiplyClick).
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(hitIndex: 0, _addBodyLine);
+        ThenBreakpointWasHit(hitIndex: 1);
+        ThenStackTraceHasSource(hitIndex: 1, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(hitIndex: 1, _multiplyBodyLine);
+        ThenNoLogErrors();
+    }
+
     #region Given
 
     private void GivenMixDbgAndWpfAppExist()
@@ -326,7 +368,9 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
                     var frames = resp["body"]?["stackFrames"]?.AsArray();
                     var firstFrame = frames?.FirstOrDefault()?.AsObject();
                     var sourcePath = firstFrame?["source"]?["path"]?.GetValue<string>();
+                    var sourceLine = firstFrame?["line"]?.GetValue<int>() ?? 0;
                     _stackTraceSourcePaths.Add(sourcePath);
+                    _stackTraceLines.Add(sourceLine);
                     _responses.Remove(resp);
                     return;
                 }
@@ -334,6 +378,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
             await Task.Delay(200);
         }
         _stackTraceSourcePaths.Add(null);
+        _stackTraceLines.Add(0);
     }
 
     private async Task WhenWaitingAndConsumingStackTraceResponse(int timeout)
@@ -386,6 +431,13 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         Assert.Contains(expectedFileName, _stackTraceSourcePaths[hitIndex]!);
     }
 
+    private void ThenStackTraceStoppedAtLine(int hitIndex, int expectedLine)
+    {
+        Assert.True(hitIndex < _stackTraceLines.Count,
+            $"Expected stack trace #{hitIndex} but only got {_stackTraceLines.Count}");
+        Assert.Equal(expectedLine, _stackTraceLines[hitIndex]);
+    }
+
     private void ThenNoLogErrors()
     {
         if (!File.Exists(_sessionLogPath))
@@ -411,6 +463,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         _repoRoot, "test", "TestApp", "WpfApp", "MainWindow.xaml.cs");
     private const int _addLine = 63;
     private const int _multiplyLine = 72;
+    private const int _addBodyLine = 65;       // int result = ManagedCalculator.Add(a, b);
+    private const int _multiplyBodyLine = 74;  // int result = ManagedCalculator.Multiply(a, b);
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-test-{Guid.NewGuid():N}.log");
@@ -423,6 +477,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     private readonly List<JsonObject> _events = new();
     private readonly List<string?> _stoppedReasons = new();
     private readonly List<string?> _stackTraceSourcePaths = new();
+    private readonly List<int> _stackTraceLines = new();
     private int _nextSeq = 10;
 
     public Task InitializeAsync() => Task.CompletedTask;

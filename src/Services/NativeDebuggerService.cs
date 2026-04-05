@@ -485,15 +485,23 @@ internal sealed class NativeDebuggerService(
                 if (model.ProfilerHooksActive && model.PendingEnterBreakpoint)
                 {
                     model.PendingEnterBreakpoint = false;
-                    // Use the body address from the ENTER notification (includes IL-to-native
-                    // offset, past any hook preamble). Find matching deferred BP for file:line.
-                    var addr = model.EnterBreakpointAddress;
+                    // Find the matching deferred BP and compute exact native address
+                    // from the IL-to-native mapping (resolves breakpoint line → native offset).
+                    var bpKey = $"{model.EnterBreakpointAssembly}:{model.EnterBreakpointToken:X8}";
                     foreach (var deferred in model.DeferredManagedBreakpoints)
                     {
                         if (deferred.MethodToken == model.EnterBreakpointToken &&
                             deferred.AssemblyName != null &&
                             deferred.AssemblyName.Equals(model.EnterBreakpointAssembly, StringComparison.OrdinalIgnoreCase))
                         {
+                            // Use IL-to-native mapping to get the exact address for the BP line.
+                            ulong addr = model.EnterBreakpointAddress; // fallback: body entry
+                            if (model.JitMethodMappings.TryGetValue(bpKey, out var mapping))
+                            {
+                                addr = mapping.GetNativeAddress(deferred.ILOffset);
+                                _log.LogInfo(_logStore,
+                                    $"  ENTER: IL offset {deferred.ILOffset} -> native 0x{addr:X}");
+                            }
                             _managedDebugger.SetTransientBreakpoint(model, addr, deferred.FilePath, deferred.Line);
                             _log.LogInfo(_logStore, $"  ENTER: transient hw BP at 0x{addr:X} for {deferred.FilePath}:{deferred.Line}");
                             break;
@@ -728,6 +736,7 @@ internal sealed class NativeDebuggerService(
                 if (line.StartsWith("JIT:"))
                 {
                     // JIT: prefixed — profiler has enter hooks active.
+                    // Format: JIT:TOKEN:ADDRESS:SIZE:ASSEMBLY[:IL0=N0,IL1=N1,...]
                     var jitParts = line.Substring(4).Split(':');
                     if (jitParts.Length >= 4 &&
                         int.TryParse(jitParts[0], System.Globalization.NumberStyles.HexNumber, null, out var jToken) &&
@@ -738,18 +747,30 @@ internal sealed class NativeDebuggerService(
                         lock (model.JitMethodMap)
                             model.JitMethodMap[jAddr] = new JitMethodInfo(jToken, jAddr, jSize, jAsm);
 
-                        // Also enqueue for first-JIT BP matching (sets hw BP at exact line).
-                        bool jitMatches = false;
-                        foreach (var d in model.DeferredManagedBreakpoints)
+                        // Parse IL-to-native mapping if present (5th field).
+                        if (jitParts.Length >= 5 && jitParts[4].Length > 0)
                         {
-                            if (d.MethodToken == jToken && d.AssemblyName != null &&
-                                d.AssemblyName.Equals(jAsm, StringComparison.OrdinalIgnoreCase))
-                            { jitMatches = true; break; }
-                        }
-                        if (jitMatches)
-                        {
-                            model.JitNotifications.Enqueue(new JitNotification(jToken, jAddr, jSize, jAsm));
-                            try { model.Control.SetInterrupt(0); } catch { }
+                            var mapEntries = new List<(int ILOffset, int NativeOffset)>();
+                            foreach (var entry in jitParts[4].Split(','))
+                            {
+                                var eqParts = entry.Split('=');
+                                if (eqParts.Length == 2 &&
+                                    int.TryParse(eqParts[0], System.Globalization.NumberStyles.HexNumber, null, out var il) &&
+                                    int.TryParse(eqParts[1], System.Globalization.NumberStyles.HexNumber, null, out var nat))
+                                {
+                                    mapEntries.Add((il, nat));
+                                }
+                            }
+                            if (mapEntries.Count > 0)
+                            {
+                                var key = $"{jAsm}:{jToken:X8}";
+                                model.JitMethodMappings[key] = new JitMethodMapping
+                                {
+                                    CodeStart = jAddr,
+                                    ILToNativeMap = mapEntries,
+                                };
+                                _log.LogInfo(_logStore, $"ProfilerReader: stored IL map for {key} ({mapEntries.Count} entries)");
+                            }
                         }
                     }
                     model.ProfilerHooksActive = true;

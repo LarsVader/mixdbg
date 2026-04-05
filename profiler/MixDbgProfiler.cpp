@@ -57,6 +57,9 @@ static const GUID IID_ICorProfilerCallback2 =
 static const GUID IID_ICorProfilerInfo =
     { 0x28B5557D, 0x3F3F, 0x48B4, { 0x90, 0xB2, 0x5F, 0x9E, 0xEA, 0x2F, 0x6C, 0x48 } };
 
+// COR_DEBUG_IL_TO_NATIVE_MAP structure (3 x ULONG32)
+struct ILNativeMap { ULONG32 ilOffset; ULONG32 nativeStartOffset; ULONG32 nativeEndOffset; };
+
 // ============================================================================
 // ICorProfilerInfo vtable wrapper
 //
@@ -115,23 +118,21 @@ public:
         return reinterpret_cast<Fn>(m_vtbl[20])(m_pInfo, moduleId, ppBaseAddr, cchName, pcchName, szName, pAssemblyId);
     }
 
-    // COR_DEBUG_IL_TO_NATIVE_MAP structure (3 x ULONG32)
-    struct ILNativeMap { ULONG32 ilOffset; ULONG32 nativeStartOffset; ULONG32 nativeEndOffset; };
-
     // Slot 35: GetILToNativeMapping(FunctionID, ULONG32, ULONG32*, ILNativeMap[])
+    HRESULT GetILToNativeMapping(FunctionID funcId, ULONG32 cMap, ULONG32* pcMap, void* map) {
+        typedef HRESULT(STDMETHODCALLTYPE* Fn)(void*, FunctionID, ULONG32, ULONG32*, void*);
+        return reinterpret_cast<Fn>(m_vtbl[35])(m_pInfo, funcId, cMap, pcMap, map);
+    }
+
     // Returns the native offset for the first IL instruction (method body start).
     ULONG32 GetMethodBodyOffset(FunctionID funcId) {
-        typedef HRESULT(STDMETHODCALLTYPE* Fn)(void*, FunctionID, ULONG32, ULONG32*, void*);
         ILNativeMap maps[64];
         ULONG32 count = 0;
-        HRESULT hr = reinterpret_cast<Fn>(m_vtbl[35])(m_pInfo, funcId, 64, &count, maps);
-        if (FAILED(hr) || count == 0) return 0;
-        // Find the entry for IL offset 0 (first real instruction).
+        if (FAILED(GetILToNativeMapping(funcId, 64, &count, maps)) || count == 0) return 0;
         for (ULONG32 i = 0; i < count && i < 64; i++) {
             if (maps[i].ilOffset == 0)
                 return maps[i].nativeStartOffset;
         }
-        // Fallback: return the first non-negative IL offset's native start.
         for (ULONG32 i = 0; i < count && i < 64; i++) {
             if ((int)maps[i].ilOffset >= 0)
                 return maps[i].nativeStartOffset;
@@ -519,16 +520,37 @@ public:
         char asmUtf8[256] = {};
         WideCharToMultiByte(CP_UTF8, 0, assemblyName, -1, asmUtf8, 256, nullptr, nullptr);
 
-        char line[512];
+        char line[4096]; // Large enough for IL-to-native mapping entries.
         int lineLen;
 
         if (m_hooksActive) {
-            // With enter/leave hooks: send prefixed JIT notification (no blocking).
-            // Enter hooks handle breakpoint timing — JIT notifications are for stack traces only.
-            lineLen = sprintf_s(line, sizeof(line), "JIT:%08X:%016llX:%08X:%s\n",
+            // With enter/leave hooks: send prefixed JIT notification.
+            // For watched methods, include IL-to-native mapping so MixDbg can set
+            // hardware BPs at exact source lines (not just method entry).
+            lineLen = sprintf_s(line, sizeof(line), "JIT:%08X:%016llX:%08X:%s",
                 (unsigned int)token, (unsigned long long)(UINT_PTR)codeStart,
                 (unsigned int)codeSize, asmUtf8);
-            if (lineLen > 0) WriteToPipe(line, lineLen);
+
+            if (lineLen > 0 && IsWatchedMethod(asmUtf8, token)) {
+                // Append IL-to-native mapping for exact-line BP resolution: :IL0=N0,IL1=N1,...
+                ILNativeMap maps[128];
+                ULONG32 mapCount = 0;
+                if (SUCCEEDED(m_pInfo->GetILToNativeMapping(functionId, 128, &mapCount, maps)) && mapCount > 0) {
+                    lineLen += sprintf_s(line + lineLen, sizeof(line) - lineLen, ":");
+                    for (ULONG32 i = 0; i < mapCount && i < 128; i++) {
+                        if ((int)maps[i].ilOffset < 0) continue; // skip prolog/epilog markers
+                        if (lineLen > 1 && line[lineLen-1] != ':')
+                            lineLen += sprintf_s(line + lineLen, sizeof(line) - lineLen, ",");
+                        lineLen += sprintf_s(line + lineLen, sizeof(line) - lineLen,
+                            "%X=%X", maps[i].ilOffset, maps[i].nativeStartOffset);
+                    }
+                }
+            }
+
+            if (lineLen > 0) {
+                lineLen += sprintf_s(line + lineLen, sizeof(line) - lineLen, "\n");
+                WriteToPipe(line, lineLen);
+            }
         } else {
             // Without hooks: use old format with blocking for watched methods.
             lineLen = sprintf_s(line, sizeof(line), "%08X:%016llX:%08X:%s\n",

@@ -89,10 +89,11 @@ public sealed class NativeDebuggerModel : IDisposable
     internal string? EnterBreakpointAssembly; // Assembly name of the method being entered.
 
     /// <summary>
-    /// Maps (assembly:token) to the resolved hardware BP address from the first JIT.
-    /// Reused by ENTER hooks on subsequent calls to set transient BPs at the same address.
+    /// Maps (assembly:token) to the code start address and IL-to-native offset mapping
+    /// from the profiler's JIT notification. Used by ENTER hooks to compute the exact
+    /// native address for a breakpointed line.
     /// </summary>
-    internal Dictionary<string, (ulong Address, string FilePath, int Line)> ResolvedBpAddresses { get; } = new();
+    internal Dictionary<string, JitMethodMapping> JitMethodMappings { get; } = new();
     internal EventWaitHandle? ProfilerAckEvent { get; set; }
     internal EventWaitHandle? ProfilerRehookEvent { get; set; }
 
@@ -154,6 +155,32 @@ internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodT
 /// of the freshly JIT-compiled method.
 /// </summary>
 internal record JitNotification(int MethodToken, ulong NativeAddress, uint CodeSize, string AssemblyName);
+
+/// <summary>
+/// IL-to-native offset mapping for a JIT'd method. Used to compute exact native
+/// addresses for breakpoints at specific source lines.
+/// </summary>
+internal sealed class JitMethodMapping
+{
+    public required ulong CodeStart { get; init; }
+    public required List<(int ILOffset, int NativeOffset)> ILToNativeMap { get; init; }
+
+    /// <summary>
+    /// Finds the native address for a given IL offset by searching the mapping.
+    /// Returns the code start + native offset, or the code start if no match.
+    /// </summary>
+    public ulong GetNativeAddress(int ilOffset)
+    {
+        // Find the mapping entry with the largest IL offset ≤ the requested one.
+        int bestNativeOffset = 0;
+        foreach (var (il, native) in ILToNativeMap)
+        {
+            if (il <= ilOffset)
+                bestNativeOffset = native;
+        }
+        return CodeStart + (ulong)bestNativeOffset;
+    }
+}
 
 /// <summary>
 /// Entry in the JIT method map. Stores enough information to resolve a native
