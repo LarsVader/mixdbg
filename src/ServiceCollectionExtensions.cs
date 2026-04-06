@@ -16,6 +16,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDapDispatcher, DapDispatcherService>();
         services.AddSingleton<INativeDebugger, NativeDebuggerService>();
         services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();
+        services.AddSingleton<IProfilerPipeService, ProfilerPipeService>();
 
         // State models (singletons created by services)
         services.AddSingleton(sp =>

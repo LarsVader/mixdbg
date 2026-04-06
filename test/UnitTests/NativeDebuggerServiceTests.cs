@@ -1176,7 +1176,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     {
         _transport = new DapServerModel(Stream.Null, Stream.Null);
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
-        _testee = new NativeDebuggerService(_server, _transport, _log, _logStore, _sourceFiles, _managedDebugger);
+        _testee = new NativeDebuggerService(_server, _transport, _log, _logStore, _sourceFiles, _managedDebugger, Substitute.For<IProfilerPipeService>());
         _model = new NativeDebuggerModel
         {
             Client = _client,

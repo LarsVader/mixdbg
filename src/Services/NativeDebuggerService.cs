@@ -1,4 +1,3 @@
-using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using MixDbg.Models.Dap;
 using MixDbg.Engine.DbgEng;
@@ -17,7 +16,8 @@ internal sealed class NativeDebuggerService(
     ILoggingService log,
     LogStore logStore,
     ISourceFileService sourceFiles,
-    IManagedDebugger managedDebugger) : INativeDebugger
+    IManagedDebugger managedDebugger,
+    IProfilerPipeService profilerPipe) : INativeDebugger
 {
     private readonly IDapServer _server = server;
     private readonly DapServerModel _transport = transport;
@@ -25,6 +25,7 @@ internal sealed class NativeDebuggerService(
     private readonly LogStore _logStore = logStore;
     private readonly ISourceFileService _sourceFiles = sourceFiles;
     private readonly IManagedDebugger _managedDebugger = managedDebugger;
+    private readonly IProfilerPipeService _profilerPipe = profilerPipe;
 
     public NativeDebuggerModel CreateModel()
     {
@@ -362,7 +363,7 @@ internal sealed class NativeDebuggerService(
                 Environment.SetEnvironmentVariable("DOTNET_ReadyToRun", "0");
 
                 // Set up CLR profiler for real-time JIT notifications.
-                SetupProfilerPipe(model);
+                _profilerPipe.SetupProfilerPipe(model);
 
                 var cmdLine = model.LaunchProgram!;
                 if (model.LaunchArgs is { Length: > 0 })
@@ -375,7 +376,7 @@ internal sealed class NativeDebuggerService(
                 _log.LogInfo(_logStore, "Launch: CreateProcess succeeded");
 
                 // Start reading profiler notifications in the background.
-                StartProfilerReader(model);
+                _profilerPipe.StartProfilerReader(model);
             }
 
             // Signal the main thread that init is done.
@@ -608,294 +609,6 @@ internal sealed class NativeDebuggerService(
             .Select(kv => kv.Key).ToList();
         foreach (var key in keysToRemove)
             model.BreakpointIds.Remove(key);
-    }
-
-    /// <summary>
-    /// Creates a named pipe server and sets CLR profiler environment variables
-    /// so the child process loads MixDbgProfiler.dll at startup.
-    /// Must be called before <c>CreateProcess</c> on the engine thread.
-    /// </summary>
-    private void SetupProfilerPipe(NativeDebuggerModel model)
-    {
-        // Find MixDbgProfiler.dll next to MixDbg.exe.
-        var exeDir = AppContext.BaseDirectory;
-        var profilerPath = Path.Combine(exeDir, "MixDbgProfiler.dll");
-
-        // Also check profiler/x64/Debug/ relative to the repo root (dev builds).
-        // Exe is at src/bin/Debug/net10.0/win-x64/ — 5 levels up to repo root.
-        if (!File.Exists(profilerPath))
-        {
-            var repoRoot = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "..", ".."));
-            var devPath = Path.Combine(repoRoot, "profiler", "x64", "Debug", "MixDbgProfiler.dll");
-            if (File.Exists(devPath))
-                profilerPath = devPath;
-        }
-
-        if (!File.Exists(profilerPath))
-        {
-            _log.LogWarning(_logStore, $"MixDbgProfiler.dll not found at {profilerPath} — JIT notifications disabled");
-            return;
-        }
-
-        // Create a named pipe for the profiler to connect to.
-        var pipeName = $"MixDbgProfiler-{Environment.ProcessId}-{Guid.NewGuid():N}";
-        model.ProfilerPipeName = pipeName;
-        model.ProfilerPipe = new NamedPipeServerStream(
-            pipeName,
-            PipeDirection.In,
-            1, // max connections
-            PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous,
-            65536, // inBufferSize
-            0);    // outBufferSize
-
-        // Create a named event for ACK signaling. The profiler blocks on this event
-        // after writing a JIT notification, ensuring the hardware breakpoint is set
-        // before the method body executes (first-click breakpoints).
-        var ackEventName = $"MixDbgProfilerAck-{pipeName}";
-        model.ProfilerAckEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ackEventName);
-
-        // Resolve exact method tokens from pending breakpoints so the profiler only
-        // blocks for breakpointed methods (skips all other JITs including framework).
-        string? watchTokens = null;
-        if (model.ProfilerBreakpointHints.Count > 0)
-        {
-            var tokens = _managedDebugger.ResolveTokensFromBreakpoints(model.ProfilerBreakpointHints);
-            if (tokens.Count > 0)
-            {
-                watchTokens = string.Join(",", tokens.Select(t => $"{t.Assembly}:{t.Token:X8}"));
-                _log.LogInfo(_logStore, $"Profiler watch tokens: {watchTokens}");
-            }
-        }
-
-        // Set CLR profiling env vars — child process inherits them.
-        Environment.SetEnvironmentVariable("CORECLR_ENABLE_PROFILING", "1");
-        Environment.SetEnvironmentVariable("CORECLR_PROFILER", "{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}");
-        Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", profilerPath);
-        Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", $@"\\.\pipe\{pipeName}");
-        Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", ackEventName);
-
-        // REHOOK event — signaled on Continue to re-enable enter/leave hooks in the profiler.
-        var rehookEventName = $"MixDbgProfilerRehook-{pipeName}";
-        model.ProfilerRehookEvent = new EventWaitHandle(false, EventResetMode.AutoReset, rehookEventName);
-        Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", rehookEventName);
-
-        if (watchTokens != null)
-            Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", watchTokens);
-
-        // Resolve C++/CLI assembly names for assembly-level watching.
-        // FunctionIDMapper is called once per method (result cached by CLR), so we
-        // can't add watches dynamically. Instead, set an env var at pre-launch time
-        // so the profiler hooks ALL methods from these assemblies.
-        if (model.ProfilerBreakpointHints.Count > 0)
-        {
-            var watchAssemblies = _managedDebugger.ResolveWatchAssemblies(model.ProfilerBreakpointHints);
-            if (watchAssemblies.Count > 0)
-            {
-                var asmList = string.Join(",", watchAssemblies);
-                Environment.SetEnvironmentVariable("MIXDBG_WATCH_ASSEMBLIES", asmList);
-                _log.LogInfo(_logStore, $"Profiler watch assemblies: {asmList}");
-            }
-        }
-
-        _log.LogInfo(_logStore, $"Profiler pipe created: {pipeName}, DLL: {profilerPath}");
-    }
-
-    /// <summary>
-    /// Starts a background thread that reads JIT notifications from the profiler pipe.
-    /// Each notification is parsed and added to <c>model.JitNotifications</c>.
-    /// When a notification matches a deferred breakpoint, <c>SetInterrupt</c> is called
-    /// to wake the engine thread so it can set the hardware breakpoint.
-    /// </summary>
-    private void StartProfilerReader(NativeDebuggerModel model)
-    {
-        if (model.ProfilerPipe == null)
-            return;
-
-        model.ProfilerReaderThread = new Thread(() => ProfilerReaderLoop(model))
-        {
-            Name = "profiler-reader",
-            IsBackground = true,
-        };
-        model.ProfilerReaderThread.Start();
-    }
-
-    /// <summary>
-    /// Background thread loop: waits for the profiler to connect, then reads
-    /// notification lines until the pipe closes or the session terminates.
-    /// Protocol:
-    ///   JIT:token:address:codeSize:assembly   — method JIT'd (for stack trace map)
-    ///   ENTER:token:address:assembly           — method about to execute (set BP)
-    /// </summary>
-    private void ProfilerReaderLoop(NativeDebuggerModel model)
-    {
-        try
-        {
-            _log.LogInfo(_logStore, "ProfilerReader: waiting for profiler to connect...");
-            model.ProfilerPipe!.WaitForConnection();
-            model.ProfilerConnected = true;
-            model.ProfilerPipeReader = new StreamReader(model.ProfilerPipe, System.Text.Encoding.UTF8);
-            _log.LogInfo(_logStore, "ProfilerReader: profiler connected");
-
-            while (!model.Terminated)
-            {
-                var line = model.ProfilerPipeReader.ReadLine();
-                if (line == null)
-                {
-                    _log.LogInfo(_logStore, "ProfilerReader: pipe closed (EOF)");
-                    break;
-                }
-
-                // Parse notification line. Supports two formats:
-                // Old: TOKEN:ADDRESS:SIZE:ASSEMBLY (JIT notification, may block for watched tokens)
-                // New: JIT:TOKEN:ADDRESS:SIZE:ASSEMBLY / ENTER:TOKEN:ADDRESS:ASSEMBLY (prefixed)
-                string payload = line;
-                bool isEnterNotification = false;
-
-                if (line.StartsWith("READY:"))
-                {
-                    _log.LogInfo(_logStore, $"ProfilerReader: profiler ready ({line.Substring(6)})");
-                    continue;
-                }
-                if (line.StartsWith("JIT:"))
-                {
-                    // JIT: prefixed — profiler has enter hooks active.
-                    // Format: JIT:TOKEN:ADDRESS:SIZE:ASSEMBLY[:IL0=N0,IL1=N1,...]
-                    var jitParts = line.Substring(4).Split(':');
-                    if (jitParts.Length >= 4 &&
-                        int.TryParse(jitParts[0], System.Globalization.NumberStyles.HexNumber, null, out var jToken) &&
-                        ulong.TryParse(jitParts[1], System.Globalization.NumberStyles.HexNumber, null, out var jAddr) &&
-                        uint.TryParse(jitParts[2], System.Globalization.NumberStyles.HexNumber, null, out var jSize))
-                    {
-                        var jAsm = jitParts[3];
-                        lock (model.JitMethodMap)
-                            model.JitMethodMap[jAddr] = new JitMethodInfo(jToken, jAddr, jSize, jAsm);
-
-                        // Parse IL-to-native mapping if present (5th field).
-                        if (jitParts.Length >= 5 && jitParts[4].Length > 0)
-                        {
-                            var mapEntries = new List<(int ILOffset, int NativeOffset)>();
-                            foreach (var entry in jitParts[4].Split(','))
-                            {
-                                var eqParts = entry.Split('=');
-                                if (eqParts.Length == 2 &&
-                                    int.TryParse(eqParts[0], System.Globalization.NumberStyles.HexNumber, null, out var il) &&
-                                    int.TryParse(eqParts[1], System.Globalization.NumberStyles.HexNumber, null, out var nat))
-                                {
-                                    mapEntries.Add((il, nat));
-                                }
-                            }
-                            if (mapEntries.Count > 0)
-                            {
-                                var key = $"{jAsm}:{jToken:X8}";
-                                model.JitMethodMappings[key] = new JitMethodMapping
-                                {
-                                    CodeStart = jAddr,
-                                    ILToNativeMap = mapEntries,
-                                };
-                                _log.LogInfo(_logStore, $"ProfilerReader: stored IL map for {key} ({mapEntries.Count} entries)");
-                            }
-                        }
-                        // Check if this JIT matches a deferred breakpoint (e.g. C++/CLI).
-                        // Deferred BPs with matching token+assembly need the JIT'd address to set hw BPs.
-                        bool jitMatches = false;
-                        foreach (var deferred in model.DeferredManagedBreakpoints)
-                        {
-                            if (deferred.MethodToken == jToken &&
-                                deferred.AssemblyName != null &&
-                                deferred.AssemblyName.Equals(jAsm, StringComparison.OrdinalIgnoreCase))
-                            {
-                                jitMatches = true;
-                                break;
-                            }
-                        }
-                        if (jitMatches)
-                        {
-                            model.JitNotifications.Enqueue(new JitNotification(jToken, jAddr, jSize, jAsm));
-                            _log.LogInfo(_logStore,
-                                $"ProfilerReader: JIT: match! token=0x{jToken:X8} addr=0x{jAddr:X} asm={jAsm} — interrupting engine");
-                            try { model.Control.SetInterrupt(0); } catch { }
-                        }
-                    }
-                    model.ProfilerHooksActive = true;
-                    continue;
-                }
-                if (line.StartsWith("ENTER:"))
-                {
-                    payload = line.Substring(6);
-                    isEnterNotification = true;
-                }
-
-                var parts = payload.Split(':');
-
-                if (isEnterNotification)
-                {
-                    // ENTER:TOKEN:ADDRESS:THREADID:ASSEMBLY — method frozen in enter hook.
-                    // No hardware BP needed — just signal the engine to report a breakpoint stop.
-                    if (parts.Length < 4) continue;
-                    if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out var eToken)) continue;
-                    if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var eAddr)) continue;
-                    if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out var eTid)) continue;
-                    var eAsm = parts[3];
-                    // Don't queue another ENTER breakpoint if one is already pending
-                    // (prevents duplicate stops from repeated calls before user continues).
-                    if (!model.PendingEnterBreakpoint)
-                    {
-                        model.PendingEnterBreakpoint = true;
-                        model.EnterBreakpointThreadId = eTid;
-                        model.EnterBreakpointToken = eToken;
-                        model.EnterBreakpointAddress = eAddr;
-                        model.EnterBreakpointAssembly = eAsm;
-                        _log.LogInfo(_logStore,
-                            $"ProfilerReader: ENTER token=0x{eToken:X8} addr=0x{eAddr:X} tid={eTid} asm={eAsm} — interrupting engine");
-                        try { model.Control.SetInterrupt(0); } catch { }
-                    }
-                    else
-                    {
-                        // Already have a pending BP — ACK immediately so profiler doesn't block.
-                        model.ProfilerAckEvent?.Set();
-                    }
-                    continue;
-                }
-
-                // JIT notification (old or new format): TOKEN:ADDRESS:SIZE:ASSEMBLY
-                if (parts.Length < 4) continue;
-                if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out var token)) continue;
-                if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var address)) continue;
-                if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out var codeSize)) continue;
-                var assembly = parts[3];
-
-                // Store in sorted map for stack trace resolution.
-                lock (model.JitMethodMap)
-                {
-                    model.JitMethodMap[address] = new JitMethodInfo(token, address, codeSize, assembly);
-                }
-
-                // Check if this JIT matches a deferred breakpoint (for JIT-based blocking).
-                bool matches = false;
-                foreach (var deferred in model.DeferredManagedBreakpoints)
-                {
-                    if (deferred.MethodToken == token &&
-                        deferred.AssemblyName != null &&
-                        deferred.AssemblyName.Equals(assembly, StringComparison.OrdinalIgnoreCase))
-                    {
-                        matches = true;
-                        break;
-                    }
-                }
-                if (matches)
-                {
-                    model.JitNotifications.Enqueue(new JitNotification(token, address, codeSize, assembly));
-                    _log.LogInfo(_logStore,
-                        $"ProfilerReader: JIT match! token=0x{token:X8} addr=0x{address:X} asm={assembly} — interrupting engine");
-                    try { model.Control.SetInterrupt(0); } catch { }
-                }
-            }
-        }
-        catch (Exception ex) when (!model.Terminated)
-        {
-            _log.LogInfo(_logStore, $"ProfilerReader: error: {ex.Message}");
-        }
     }
 
     private void ProcessCommandsUntilResume(NativeDebuggerModel model)
