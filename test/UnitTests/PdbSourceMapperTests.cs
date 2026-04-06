@@ -25,7 +25,7 @@ public sealed class PdbSourceMapperTests
         // nvim-dap on Windows sends paths with mixed slashes: D:\foo\bar/baz/file.cs
         var mixedSlashPath = _sourceFile.Replace("\\test\\TestApp\\", "/test/TestApp/");
 
-        using var mapper = new PdbSourceMapper();
+        using var mapper = new PdbSourceMapperService();
         var result = mapper.FindMethodAtLine(_wpfAppDll, mixedSlashPath, 63);
 
         Assert.NotNull(result);
@@ -38,7 +38,7 @@ public sealed class PdbSourceMapperTests
     {
         if (!File.Exists(_wpfAppDll)) return; // WpfApp not built — skip
 
-        using var mapper = new PdbSourceMapper();
+        using var mapper = new PdbSourceMapperService();
         var result = mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 63);
 
         Assert.NotNull(result);

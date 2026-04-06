@@ -34,9 +34,50 @@ Adapter registered in `C:\Users\LarsVader\AppData\Local\nvim\lua\plugins\debug\n
 
 ```
 src/
-  MixDbg.csproj                  # Production project
+  MixDbg.csproj                  # Main project (exe) — DAP protocol, handlers, orchestration
+  MixDbg.EngineWrappers/         # Class library — all external COM interop (dbgeng, ICorDebug, PDB)
+    MixDbg.EngineWrappers.csproj # References ClrDebug NuGet; all internal types enforced by assembly boundary
+    Engine/
+      DbgEng/
+        Constants/               # Internal: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, etc.
+        Interfaces/              # Internal: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, etc.
+        EventCallbacks.cs        # Internal: IDebugEventCallbacks implementation
+        OutputCapture.cs         # Internal: IDebugOutputCallbacks implementation
+      CorDebug/
+        DbgEngDataTarget.cs      # Internal: ICorDebugMutableDataTarget bridge
+        DbgEngClrDataTarget.cs   # Internal: ICLRDataTarget bridge for DAC
+        DbgShimBootstrap.cs      # Internal: ICorDebug bootstrap via dbgshim.dll
+        ManagedCallbackHandler.cs # Internal: ICorDebug managed callback wrapper
+        UnmanagedCallbackHandler.cs # Internal: ICorDebug unmanaged callback wrapper
+        RuntimeLibraryProvider.cs # Internal: finds mscordbi.dll next to coreclr.dll
+      Sos/
+        PdbSourceMapperService.cs # Internal: reads portable PDBs, implements IPdbSourceMapper
+        SosOutputParser.cs       # Internal: parses SOS command output
+    Models/
+      DbgEngWrapperModel.cs      # Public: dbgeng COM wrapper state (COM refs internal), engine events
+      CorDebugWrapperModel.cs    # Public: ICorDebug V4 wrapper state (ClrDebug refs internal)
+      VariableStore.cs           # Internal: variablesReference → symbol group mapping
+      EngineExecutionStatus.cs   # Public enum: Go, StepOver, StepInto, Break, etc.
+      EngineEventInfo.cs         # Public record: last debug event info
+      NativeStackFrame.cs        # Public record struct: instruction pointer
+      VariableInfo.cs            # Public record struct: resolved variable data
+      ManagedModuleInfo.cs       # Public record: loaded managed module info
+      ManagedFrameInfo.cs        # Public record: managed stack frame info
+      LogEntry.cs                # Public: immutable log record
+      LogStore.cs                # Public: mutable log state
+    Services/
+      DbgEngWrapperService.cs    # Internal: implements IDbgEngWrapper
+      CorDebugWrapperService.cs  # Internal: implements ICorDebugWrapper
+      Logging/
+        LoggingService.cs        # Internal: implements ILoggingService
+      Interfaces/
+        IDbgEngWrapper.cs        # Public: stateless dbgeng COM wrapper interface
+        ICorDebugWrapper.cs      # Public: stateless ICorDebug V4 wrapper interface
+        ILoggingService.cs       # Public: logging interface
+        IPdbSourceMapper.cs      # Public: PDB source resolution interface
+    ServiceCollectionExtensions.cs # AddEngineWrappers() — registers all engine services
   Program.cs                     # Entry point — DI composition root
-  ServiceCollectionExtensions.cs # AddMixDbgCore() — registers all services + models
+  ServiceCollectionExtensions.cs # AddMixDbgCore() — registers DAP + orchestration services
   Models/
     DapMessages/                 # DAP protocol types (namespace MixDbg.Models.Dap), one file per type
       Protocol/                  # ProtocolMessage, RequestMessage, ResponseMessage, EventMessage, Source, DisconnectException, EmptyArguments
@@ -47,50 +88,23 @@ src/
       Inspection/                # StackTrace*, Scopes*, Variables*, Variable, StackFrame, Scope, Evaluate*
       Threads/                   # ThreadsResponseBody, DapThread
       Events/                    # StoppedEventBody, OutputEventBody, BreakpointEventBody, Terminated/InitializedEventBody
-  Engine/
-    DbgEng/
-      Constants/                 # One file per type: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, DebugBreakpoint*, DebugBreakAccess, DebugEvent, DebugEnd, DebugExecute, DebugOutCtl, SymOpt, DebugScopeGroup, DEBUG_STACK_FRAME, DEBUG_SYMBOL_PARAMETERS, DebugSymbolFlags
-      Interfaces/                # One file per COM interface: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, IDebugSymbolGroup2, IDebugSystemObjects, IDebugAdvanced, IDebugEventCallbacks, IDebugOutputCallbacks
-      EventCallbacks.cs          # IDebugEventCallbacks implementation — return values control WaitForEvent behavior
-      OutputCapture.cs           # IDebugOutputCallbacks implementation — captures SOS command text output
-    CorDebug/
-      DbgEngDataTarget.cs        # ICorDebugMutableDataTarget bridge — reads/writes via dbgeng for OpenVirtualProcess
-      RuntimeLibraryProvider.cs  # ICLRDebuggingLibraryProvider — finds mscordbi.dll next to coreclr.dll
-    Sos/
-      PdbSourceMapper.cs         # Reads portable PDBs to map (method token, IL offset) → (source file, line)
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
-    DbgEngWrapperModel.cs        # dbgeng COM wrapper state: COM interfaces (internal), engine events, variable store, cached stack frames
-    CorDebugWrapperModel.cs      # ICorDebug V4 wrapper state: CorDebugProcess, DAC interfaces, module cache (all internal)
     NativeDebuggerModel.cs       # Engine state: DbgEngWrapperModel + CorDebugWrapperModel refs, threads, flags, breakpoint tracking
-    VariableStore.cs             # Maps variablesReference handles to VariableContainer (symbol group + index range), owned by DbgEngWrapperModel
-    ManagedModuleInfo.cs         # Public record: loaded managed module info (path, PDB path, base address)
-    ManagedFrameInfo.cs          # Public record: managed stack frame (name, source file, line, IL offset)
-    EngineExecutionStatus.cs     # Public enum: Go, StepOver, StepInto, Break, etc. — replaces internal DebugStatus constants
-    EngineEventInfo.cs           # Public record for last debug event info
-    NativeStackFrame.cs          # Public record struct with InstructionOffset — replaces internal DEBUG_STACK_FRAME
-    VariableInfo.cs              # Public record struct for resolved variable data from symbol groups
-    LogEntry.cs                  # Immutable log record (timestamp, level, sender, message)
-    LogStore.cs                  # Mutable log state: entries list, lock, file path
   Services/
     Interfaces/
       IDapServer.cs              # Stateless DAP transport — all methods take DapServerModel
       IDapDispatcher.cs          # Stateless request dispatcher — Run() dispatches to handler services
       IDapHandlerService.cs      # Handler interface: Command + Execute(JsonElement?)
       IDapMessage.cs             # Marker interface for DAP response types
-      IDbgEngWrapper.cs          # Stateless dbgeng COM wrapper — all COM calls encapsulated here, takes DbgEngWrapperModel
-      ICorDebugWrapper.cs        # Stateless ICorDebug V4 wrapper — runtime init, modules, stack traces, DAC ops, takes CorDebugWrapperModel
       INativeDebugger.cs         # Stateless debug orchestration — engine thread, DAP events, takes NativeDebuggerModel
-      ILoggingService.cs         # LogInfo/LogWarning/LogError with [CallerFilePath] — all take LogStore
       ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
-      IManagedDebugger.cs        # Stateless managed debugging — ICorDebug V4, BP orchestration, frame merging
+      IManagedDebugger.cs        # Stateless managed debugging — BP orchestration, frame merging
       IProfilerPipeService.cs    # Profiler pipe setup and reader thread
     DapServerService.cs          # IDapServer: Content-Length framed JSON-RPC transport
     DapDispatcherService.cs      # IDapDispatcher: command routing via DI-resolved handler services
-    DbgEngWrapperService.cs      # IDbgEngWrapper: all dbgeng COM interop — lifecycle, breakpoints, symbols, stack, variables, threads
-    CorDebugWrapperService.cs    # ICorDebugWrapper: all ICorDebug V4 interop — runtime init, module enumeration, stack traces, DAC operations
-    NativeDebuggerService.cs     # INativeDebugger: engine thread orchestration, DAP event emission, delegates COM calls to IDbgEngWrapper
-    ManagedDebuggerService.cs    # IManagedDebugger: managed BP lifecycle, profiler interaction, transient BPs, frame merging — delegates ICorDebug to ICorDebugWrapper
+    NativeDebuggerService.cs     # INativeDebugger: engine thread orchestration, DAP event emission
+    ManagedDebuggerService.cs    # IManagedDebugger: managed BP lifecycle, profiler interaction, frame merging
     ProfilerPipeService.cs       # IProfilerPipeService: named pipe to CLR profiler, JIT/ENTER notification parsing
     LoggingService.cs            # ILoggingService: file + in-memory logger, [CallerFilePath] sender
     SourceFileService.cs         # ISourceFileService: native vs managed/CLI file detection

@@ -2,7 +2,6 @@ using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using MixDbg.Models.Dap;
-using MixDbg.Engine.Sos;
 using MixDbg.Models;
 
 namespace MixDbg.Services;
@@ -20,7 +19,8 @@ internal sealed class ManagedDebuggerService(
     IDapServer server,
     DapServerModel transport,
     IDbgEngWrapper dbgEngWrapper,
-    ICorDebugWrapper corDebugWrapper) : IManagedDebugger
+    ICorDebugWrapper corDebugWrapper,
+    IPdbSourceMapper pdbSourceMapper) : IManagedDebugger
 {
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
@@ -29,6 +29,7 @@ internal sealed class ManagedDebuggerService(
     private readonly DapServerModel _transport = transport;
     private readonly IDbgEngWrapper _dbgEng = dbgEngWrapper;
     private readonly ICorDebugWrapper _corDebug = corDebugWrapper;
+    private readonly IPdbSourceMapper _pdbMapper = pdbSourceMapper;
 
     public bool IsInitialized(NativeDebuggerModel model) => model.ManagedInitialized;
 
@@ -154,21 +155,18 @@ internal sealed class ManagedDebuggerService(
         int methodToken = 0;
         int ilOffset = 0;
         string? assemblyName = null;
-        using (var mapper = new PdbSourceMapper())
+        foreach (var loaded in _corDebug.GetModules(model.CorWrapper))
         {
-            foreach (var loaded in _corDebug.GetModules(model.CorWrapper))
+            if (loaded.PdbPath == null || loaded.Path == null)
+                continue;
+            var result = _pdbMapper.FindMethodAtLine(loaded.Path, filePath, line);
+            if (result != null)
             {
-                if (loaded.PdbPath == null || loaded.Path == null)
-                    continue;
-                var result = mapper.FindMethodAtLine(loaded.Path, filePath, line);
-                if (result != null)
-                {
-                    (_, _, methodToken, ilOffset) = result.Value;
-                    assemblyName = Path.GetFileNameWithoutExtension(loaded.Path);
-                    _log.LogInfo(_logStore, $"  Resolved {filePath}:{line} -> token=0x{methodToken:X8} IL={ilOffset} in {assemblyName}");
-                    foundInPdb = true;
-                    break;
-                }
+                (_, _, methodToken, ilOffset) = result.Value;
+                assemblyName = Path.GetFileNameWithoutExtension(loaded.Path);
+                _log.LogInfo(_logStore, $"  Resolved {filePath}:{line} -> token=0x{methodToken:X8} IL={ilOffset} in {assemblyName}");
+                foundInPdb = true;
+                break;
             }
         }
 
@@ -206,8 +204,7 @@ internal sealed class ManagedDebuggerService(
                         _log.LogInfo(_logStore, $"  C++/CLI: ilAddr=0x{ilAddr:X} base=0x{moduleBase.Value:X} rva=0x{rva:X} asm={assemblyName} dll={dllPath}");
                         if (dllPath != null)
                         {
-                            using var mapper = new PdbSourceMapper();
-                            var token = mapper.FindTokenByRva(dllPath, rva);
+                                                        var token = _pdbMapper.FindTokenByRva(dllPath, rva);
                             if (token != null)
                             {
                                 methodToken = token.Value;
@@ -492,8 +489,7 @@ internal sealed class ManagedDebuggerService(
         {
             try
             {
-                using var mapper = new PdbSourceMapper();
-
+                
                 // Compute IL offset from native IP using the IL-to-native mapping.
                 int ilOffset = 0;
                 var bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
@@ -508,7 +504,7 @@ internal sealed class ManagedDebuggerService(
                     }
                 }
 
-                var srcLoc = mapper.GetSourceLocation(assemblyPath, method.MethodToken, ilOffset);
+                var srcLoc = _pdbMapper.GetSourceLocation(assemblyPath, method.MethodToken, ilOffset);
                 if (srcLoc != null)
                 {
                     source = new Source
@@ -520,7 +516,7 @@ internal sealed class ManagedDebuggerService(
                 }
 
                 // Try to get a better method name from PDB metadata.
-                var methodInfo = mapper.GetMethodName(assemblyPath, method.MethodToken);
+                var methodInfo = _pdbMapper.GetMethodName(assemblyPath, method.MethodToken);
                 if (methodInfo != null)
                     methodName = methodInfo;
 
@@ -686,8 +682,7 @@ internal sealed class ManagedDebuggerService(
                 if (!File.Exists(assemblyPath))
                     continue;
 
-                using var mapper = new PdbSourceMapper();
-                var result = mapper.FindMethodAtLine(assemblyPath, sourceFile, line);
+                                var result = _pdbMapper.FindMethodAtLine(assemblyPath, sourceFile, line);
                 if (result != null)
                     return (result.Value.AssemblyName, result.Value.MethodName, result.Value.MethodToken, result.Value.ILOffset);
             }

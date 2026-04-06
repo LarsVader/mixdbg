@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MixDbg.csproj" />
+    <ProjectReference Include="..\..\src\MixDbg.EngineWrappers\MixDbg.EngineWrappers.csproj" />
   </ItemGroup>
 
 </Project>
