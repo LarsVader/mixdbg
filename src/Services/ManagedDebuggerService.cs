@@ -4,7 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using ClrDebug;
-using MixDbg.Dap;
+using MixDbg.Models.Dap;
 using MixDbg.Engine.CorDebug;
 using MixDbg.Engine.Sos;
 using MixDbg.Models;

@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using MixDbg.Dap;
+using MixDbg.Models.Dap;
 using MixDbg.Models;
 
 namespace MixDbg.Services;

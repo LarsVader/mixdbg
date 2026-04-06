@@ -1,6 +1,6 @@
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
-using MixDbg.Dap;
+using MixDbg.Models.Dap;
 using MixDbg.Engine.DbgEng;
 using MixDbg.Engine.CorDebug;
 using MixDbg.Models;

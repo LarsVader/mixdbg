@@ -1,5 +1,5 @@
 using ClrDebug;
-using MixDbg.Dap;
+using MixDbg.Models.Dap;
 using MixDbg.Engine.Clr;
 using MixDbg.Engine.Sos;
 using MixDbg.Models;

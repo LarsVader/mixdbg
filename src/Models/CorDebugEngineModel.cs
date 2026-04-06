@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using ClrDebug;
-using MixDbg.Dap;
+using MixDbg.Models.Dap;
 using MixDbg.Engine.Clr;
 
 namespace MixDbg.Models;

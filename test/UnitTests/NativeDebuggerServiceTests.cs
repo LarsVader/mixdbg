@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using MixDbg.Dap;
+using MixDbg.Models.Dap;
 using MixDbg.Engine.DbgEng;
 using MixDbg.Models;
 using MixDbg.Services;

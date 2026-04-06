@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using MixDbg.Dap;
+using MixDbg.Models.Dap;
 using MixDbg.Models;
 using MixDbg.Services;
 using MixDbg.Services.Interfaces;

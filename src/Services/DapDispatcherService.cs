@@ -1,5 +1,5 @@
 using System.Text.Json;
-using MixDbg.Dap;
+using MixDbg.Models.Dap;
 using MixDbg.Models;
 using MixDbg.Services.Interfaces;
 
@@ -11,18 +11,13 @@ namespace MixDbg.Services;
 /// </summary>
 internal sealed class DapDispatcherService(
 	IEnumerable<IDapHandlerService> handlers,
-    IDapServer server,
-    DapServerModel transport,
-    ILoggingService log,
-    LogStore logStore) : IDapDispatcher
+    IDapServer _server,
+    DapServerModel _transport,
+    ILoggingService _log,
+    LogStore _logStore) : IDapDispatcher
 {
 	private readonly Dictionary<string, IDapHandlerService> _handlers
 		= handlers.ToDictionary(s => s.Command, s => s);
-
-    private readonly IDapServer _server = server;
-    private readonly DapServerModel _transport = transport;
-    private readonly ILoggingService _log = log;
-    private readonly LogStore _logStore = logStore;
 
     public void Run()
     {

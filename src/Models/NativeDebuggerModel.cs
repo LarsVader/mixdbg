@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
 using ClrDebug;
-using MixDbg.Dap;
+using MixDbg.Models.Dap;
 using MixDbg.Engine.DbgEng;
 
 namespace MixDbg.Models;
