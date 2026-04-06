@@ -73,11 +73,13 @@ src/
       INativeDebugger.cs         # Stateless dbgeng wrapper — all methods take NativeDebuggerModel
       ILoggingService.cs         # LogInfo/LogWarning/LogError with [CallerFilePath] — all take LogStore
       ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
-      IManagedDebugger.cs        # Stateless managed debugging — ClrMD + SOS, all methods take NativeDebuggerModel
+      IManagedDebugger.cs        # Stateless managed debugging — ICorDebug V4, BP orchestration, frame merging
+      IProfilerPipeService.cs    # Profiler pipe setup and reader thread
     DapServerService.cs          # IDapServer: Content-Length framed JSON-RPC transport
     DapDispatcherService.cs      # IDapDispatcher: command routing via DI-resolved handler services
     NativeDebuggerService.cs     # INativeDebugger: dbgeng COM wrapper, engine thread, breakpoints
-    ManagedDebuggerService.cs    # IManagedDebugger: ICorDebug V4 via OpenVirtualProcess — IL breakpoints + managed stack traces
+    ManagedDebuggerService.cs    # IManagedDebugger: ICorDebug V4, managed BP lifecycle, transient BPs, frame merging
+    ProfilerPipeService.cs       # IProfilerPipeService: named pipe to CLR profiler, JIT/ENTER notification parsing
     LoggingService.cs            # ILoggingService: file + in-memory logger, [CallerFilePath] sender
     SourceFileService.cs         # ISourceFileService: native vs managed/CLI file detection
     Handlers/
