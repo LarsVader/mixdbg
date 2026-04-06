@@ -3,6 +3,7 @@ using System.Text.Json;
 using MixDbg.Dap;
 using MixDbg.Models;
 using MixDbg.Services;
+using MixDbg.Services.Interfaces;
 using NSubstitute;
 
 namespace MixDbg.Tests;
@@ -10,25 +11,9 @@ namespace MixDbg.Tests;
 public sealed class DapDispatcherServiceTests
 {
     [Fact]
-    public void CreateModel_WhenCalled_ReturnsModelWithEmptyHandlers()
-    {
-        WhenCreatingModel();
-
-        ThenModelHandlersAreEmpty();
-    }
-
-    [Fact]
-    public void Register_WhenCalled_AddsHandler()
-    {
-        GivenAHandler("test", _ => null);
-
-        ThenHandlerExistsFor("test");
-    }
-
-    [Fact]
     public void Run_WhenHandlerRegistered_InvokesHandlerAndSendsResponse()
     {
-        GivenAHandler("doStuff", _ => new { result = 42 });
+        GivenAHandler("doStuff", _ => new TestResponse());
         GivenServerReturnsRequests(MakeRequest("doStuff", 1));
 
         WhenRunning();
@@ -79,41 +64,24 @@ public sealed class DapDispatcherServiceTests
     }
 
     [Fact]
-    public void RegisterTyped_WhenCalled_DeserializesArguments()
+    public void Run_WhenVoidHandler_SendsResponseWithNullBody()
     {
-        GivenATypedHandler();
-        GivenServerReturnsRequests(MakeRequestWithArgs("launch", 1,
-            new LaunchRequestArguments { Program = "test.exe" }));
+        GivenAHandler("launch", _ => null);
+        GivenServerReturnsRequests(MakeRequest("launch", 1));
 
         WhenRunning();
 
-        ThenTypedHandlerReceivedProgram("test.exe");
-    }
-
-    [Fact]
-    public void DeserializeArgs_WhenNoArguments_ReturnsDefault()
-    {
-        GivenARequestWithNoArguments();
-
-        WhenDeserializingArgs();
-
-        ThenDeserializedArgsIsDefault();
+        ThenResponseWasSentWithNullBody("launch");
     }
 
     #region Given
 
-    private void GivenAHandler(string command, Func<RequestMessage, object?> handler)
+    private void GivenAHandler(string command, Func<JsonElement?, IDapMessage?> execute)
     {
-        _testee.Register(_dispatcherModel, command, handler);
-    }
-
-    private void GivenATypedHandler()
-    {
-        _testee.Register<LaunchRequestArguments>(_dispatcherModel, "launch", args =>
-        {
-            _capturedProgram = args.Program;
-            return null;
-        });
+        var handler = Substitute.For<IDapHandlerService>();
+        handler.Command.Returns(command);
+        handler.Execute(Arg.Any<JsonElement?>()).Returns(ci => execute(ci.ArgAt<JsonElement?>(0)));
+        _handlers.Add(handler);
     }
 
     private void GivenServerReturnsRequests(params RequestMessage[] requests)
@@ -127,43 +95,19 @@ public sealed class DapDispatcherServiceTests
         _server.ReadRequest(_transport).Returns((RequestMessage?)null);
     }
 
-    private void GivenARequestWithNoArguments()
-    {
-        _requestForDeserialize = new RequestMessage { Seq = 1, Command = "test" };
-    }
-
     #endregion
 
     #region When
 
-    private void WhenCreatingModel()
-    {
-        _createdModel = _testee.CreateModel();
-    }
-
     private void WhenRunning()
     {
-        _testee.Run(_dispatcherModel);
-    }
-
-    private void WhenDeserializingArgs()
-    {
-        _deserializedArgs = DapDispatcherService.DeserializeArgs<LaunchRequestArguments>(_requestForDeserialize!);
+        var testee = new DapDispatcherService(_handlers, _server, _transport, _log, _logStore);
+        testee.Run();
     }
 
     #endregion
 
     #region Then
-
-    private void ThenModelHandlersAreEmpty()
-    {
-        Assert.Empty(_createdModel!.Handlers);
-    }
-
-    private void ThenHandlerExistsFor(string command)
-    {
-        Assert.True(_dispatcherModel.Handlers.ContainsKey(command));
-    }
 
     private void ThenResponseWasSentFor(string command)
     {
@@ -205,15 +149,12 @@ public sealed class DapDispatcherServiceTests
             Arg.Any<object?>());
     }
 
-    private void ThenTypedHandlerReceivedProgram(string expected)
+    private void ThenResponseWasSentWithNullBody(string command)
     {
-        Assert.Equal(expected, _capturedProgram);
-    }
-
-    private void ThenDeserializedArgsIsDefault()
-    {
-        Assert.NotNull(_deserializedArgs);
-        Assert.Equal("", _deserializedArgs!.Program);
+        _server.Received(1).SendResponse(
+            _transport,
+            Arg.Is<RequestMessage>(r => r.Command == command),
+            null);
     }
 
     #endregion
@@ -224,25 +165,12 @@ public sealed class DapDispatcherServiceTests
     private readonly ILoggingService _log = Substitute.For<ILoggingService>();
     private readonly DapServerModel _transport;
     private readonly LogStore _logStore;
-    private readonly DapDispatcherModel _dispatcherModel;
-    private readonly DapDispatcherService _testee;
-
-    private DapDispatcherModel? _createdModel;
-    private string? _capturedProgram;
-    private RequestMessage? _requestForDeserialize;
-    private LaunchRequestArguments? _deserializedArgs;
-
-    private static readonly JsonSerializerOptions JsonOpts = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    };
+    private readonly List<IDapHandlerService> _handlers = [];
 
     public DapDispatcherServiceTests()
     {
         _transport = new DapServerModel(Stream.Null, Stream.Null);
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
-        _testee = new DapDispatcherService(_server, _transport, _log, _logStore);
-        _dispatcherModel = _testee.CreateModel();
     }
 
     private static RequestMessage MakeRequest(string command, int seq)
@@ -250,12 +178,7 @@ public sealed class DapDispatcherServiceTests
         return new RequestMessage { Seq = seq, Command = command };
     }
 
-    private static RequestMessage MakeRequestWithArgs<T>(string command, int seq, T args)
-    {
-        var json = JsonSerializer.Serialize(args, JsonOpts);
-        var element = JsonSerializer.Deserialize<JsonElement>(json);
-        return new RequestMessage { Seq = seq, Command = command, Arguments = element };
-    }
+    private record TestResponse : IDapMessage;
 
     #endregion
 }

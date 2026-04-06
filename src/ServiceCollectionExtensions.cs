@@ -25,8 +25,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp =>
             sp.GetRequiredService<IDapServer>().CreateModel(input, output));
         services.AddSingleton(sp =>
-            sp.GetRequiredService<IDapDispatcher>().CreateModel());
-        services.AddSingleton(sp =>
             sp.GetRequiredService<IDebugSession>().CreateModel());
 
 		// Register all IDapHandlerService implementations

@@ -14,6 +14,6 @@ public class SetExceptionBreakpointsHandlerService
 
     public override void ExecuteInternal(EmptyArguments args)
     {
-		throw new NotImplementedException();
+		// Silently accepted — not yet implemented.
     }
 }

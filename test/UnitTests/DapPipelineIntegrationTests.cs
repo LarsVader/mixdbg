@@ -2,9 +2,9 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using MixDbg.Dap;
-using MixDbg.Handlers;
 using MixDbg.Models;
 using MixDbg.Services;
+using MixDbg.Services.Interfaces;
 using NSubstitute;
 
 namespace MixDbg.Tests;
@@ -494,22 +494,21 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         services.AddSingleton(sp =>
             sp.GetRequiredService<IDapServer>().CreateModel(_inputStream!, _outputStream));
         services.AddSingleton(sp =>
-            sp.GetRequiredService<IDapDispatcher>().CreateModel());
-        services.AddSingleton(sp =>
             sp.GetRequiredService<IDebugSession>().CreateModel());
+
+        // Register all handler services via assembly scanning
+        typeof(IDapHandlerService).Assembly
+            .GetTypes()
+            .Where(t => t.IsClass && !t.IsAbstract && typeof(IDapHandlerService).IsAssignableFrom(t))
+            .ToList()
+            .ForEach(t => services.AddSingleton(typeof(IDapHandlerService), t));
 
         var provider = services.BuildServiceProvider();
 
         var dispatcher = provider.GetRequiredService<IDapDispatcher>();
-        var dispatcherModel = provider.GetRequiredService<DapDispatcherModel>();
-        var session = provider.GetRequiredService<IDebugSession>();
         var sessionModel = provider.GetRequiredService<DebugSessionModel>();
 
-        InitializeHandler.Register(dispatcher, dispatcherModel, session, sessionModel);
-        LifecycleHandlers.Register(dispatcher, dispatcherModel, session, sessionModel);
-        StubHandlers.Register(dispatcher, dispatcherModel, session, sessionModel);
-
-        dispatcher.Run(dispatcherModel);
+        dispatcher.Run();
         sessionModel.Dispose();
 
         ParseOutput();

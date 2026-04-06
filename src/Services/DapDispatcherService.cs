@@ -1,6 +1,4 @@
-using System.Collections;
 using System.Text.Json;
-using System.Linq;
 using MixDbg.Dap;
 using MixDbg.Models;
 using MixDbg.Services.Interfaces;
@@ -8,49 +6,25 @@ using MixDbg.Services.Interfaces;
 namespace MixDbg.Services;
 
 /// <summary>
-/// Stateless DAP dispatcher service. All mutable state lives in
-/// <see cref="DapDispatcherModel"/>.
+/// Stateless DAP dispatcher service. Routes incoming DAP commands to
+/// registered <see cref="IDapHandlerService"/> implementations.
 /// </summary>
 internal sealed class DapDispatcherService(
-	IEnumerable<IDapHandlerService> handlersNew,
+	IEnumerable<IDapHandlerService> handlers,
     IDapServer server,
     DapServerModel transport,
     ILoggingService log,
     LogStore logStore) : IDapDispatcher
 {
-	public Dictionary<string, IDapHandlerService> HandlersNew
-		=> handlersNew.ToDictionary(
-				s => s.Command,
-				s => s);
-
-    private static readonly JsonSerializerOptions JsonOpts = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    };
+	private readonly Dictionary<string, IDapHandlerService> _handlers
+		= handlers.ToDictionary(s => s.Command, s => s);
 
     private readonly IDapServer _server = server;
     private readonly DapServerModel _transport = transport;
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
 
-    public DapDispatcherModel CreateModel()
-        => new();
-
-    public void Register(DapDispatcherModel model, string command, Func<RequestMessage, object?> handler)
-    {
-        model.Handlers[command] = handler;
-    }
-
-    public void Register<TArgs>(DapDispatcherModel model, string command, Func<TArgs, object?> handler)
-    {
-        model.Handlers[command] = req =>
-        {
-            var args = DeserializeArgs<TArgs>(req);
-            return handler(args);
-        };
-    }
-
-    public void Run(DapDispatcherModel model)
+    public void Run()
     {
         while (true)
         {
@@ -63,9 +37,10 @@ internal sealed class DapDispatcherService(
                     ? request.Arguments.Value.ToString() : "null";
                 _log.LogInfo(_logStore, $"DAP request: seq={request.Seq} cmd={request.Command} args={argsStr}");
 
-				if (HandlersNew.TryGetValue(request.Command, out IDapHandlerService? handlerNew)){
-					IDapMessage? body = handlerNew.Execute(request.Arguments);
-					if (body != null) _server.SendResponse(_transport, request, body);
+				if (_handlers.TryGetValue(request.Command, out var handler))
+				{
+					var body = handler.Execute(request.Arguments);
+					_server.SendResponse(_transport, request, body);
 					_log.LogInfo(_logStore, $"DAP response: cmd={request.Command} success=true");
 				}
 				else
@@ -73,18 +48,6 @@ internal sealed class DapDispatcherService(
                     _server.SendErrorResponse(_transport, request, $"Unknown command: {request.Command}");
                     _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} UNKNOWN");
                 }
-
-                // if (model.Handlers.TryGetValue(request.Command, out var handler))
-                // {
-                //     var body = handler(request);
-                //     _server.SendResponse(_transport, request, body);
-                //     _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} success=true");
-                // }
-                // else
-                // {
-                //     _server.SendErrorResponse(_transport, request, $"Unknown command: {request.Command}");
-                //     _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} UNKNOWN");
-                // }
             }
             catch (DisconnectException)
             {
@@ -98,14 +61,5 @@ internal sealed class DapDispatcherService(
                 _log.LogError(_logStore, $"DAP error: cmd={request.Command} err={ex.Message}");
             }
         }
-    }
-
-    internal static TArgs DeserializeArgs<TArgs>(RequestMessage request)
-    {
-        if (request.Arguments is null)
-            return Activator.CreateInstance<TArgs>();
-
-        return request.Arguments.Value.Deserialize<TArgs>(JsonOpts)
-            ?? Activator.CreateInstance<TArgs>();
     }
 }
