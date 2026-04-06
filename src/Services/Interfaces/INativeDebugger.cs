@@ -23,7 +23,7 @@ public interface INativeDebugger
     void ExecuteContinueOnEngine(NativeDebuggerModel model);
 
     /// <summary>Steps over/into by setting the execution status.</summary>
-    void ExecuteStepOnEngine(NativeDebuggerModel model, uint stepKind);
+    void ExecuteStepOnEngine(NativeDebuggerModel model, EngineExecutionStatus stepKind);
 
     /// <summary>Steps out via the dbgeng "gu" (go up) command.</summary>
     void ExecuteStepOutOnEngine(NativeDebuggerModel model);

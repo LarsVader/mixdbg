@@ -11,11 +11,13 @@ namespace MixDbg.Services;
 internal sealed class ProfilerPipeService(
     ILoggingService log,
     LogStore logStore,
-    IManagedDebugger managedDebugger) : IProfilerPipeService
+    IManagedDebugger managedDebugger,
+    IDbgEngWrapper dbgEngWrapper) : IProfilerPipeService
 {
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
     private readonly IManagedDebugger _managedDebugger = managedDebugger;
+    private readonly IDbgEngWrapper _dbgEng = dbgEngWrapper;
 
     public void SetupProfilerPipe(NativeDebuggerModel model)
     {
@@ -235,7 +237,7 @@ internal sealed class ProfilerPipeService(
             model.JitNotifications.Enqueue(new JitNotification(jToken, jAddr, jSize, jAsm));
             _log.LogInfo(_logStore,
                 $"ProfilerReader: JIT: match! token=0x{jToken:X8} addr=0x{jAddr:X} asm={jAsm} — interrupting engine");
-            try { model.Control.SetInterrupt(0); } catch { }
+            try { _dbgEng.SetInterrupt(model.Wrapper); } catch { }
         }
     }
 
@@ -259,7 +261,7 @@ internal sealed class ProfilerPipeService(
             model.EnterBreakpointAssembly = eAsm;
             _log.LogInfo(_logStore,
                 $"ProfilerReader: ENTER token=0x{eToken:X8} addr=0x{eAddr:X} tid={eTid} asm={eAsm} — interrupting engine");
-            try { model.Control.SetInterrupt(0); } catch { }
+            try { _dbgEng.SetInterrupt(model.Wrapper); } catch { }
         }
         else
         {
@@ -285,7 +287,7 @@ internal sealed class ProfilerPipeService(
             model.JitNotifications.Enqueue(new JitNotification(token, address, codeSize, assembly));
             _log.LogInfo(_logStore,
                 $"ProfilerReader: JIT match! token=0x{token:X8} addr=0x{address:X} asm={assembly} — interrupting engine");
-            try { model.Control.SetInterrupt(0); } catch { }
+            try { _dbgEng.SetInterrupt(model.Wrapper); } catch { }
         }
     }
 

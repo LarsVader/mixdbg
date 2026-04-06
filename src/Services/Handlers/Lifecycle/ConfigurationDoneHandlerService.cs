@@ -42,7 +42,6 @@ public class ConfigurationDoneHandlerService(
 			sessionModel.PendingBreakpoints.Clear();
 
 			log.LogInfo(logStore, "Continue queued");
-			model.Variables.Clear();
 			model.CachedStackTraceResult = null;
 			model.Commands.Add(() => nativeDebugger.ExecuteContinueOnEngine(model));
 			sessionModel.State = SessionState.Running;

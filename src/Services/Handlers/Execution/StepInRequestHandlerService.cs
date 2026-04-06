@@ -1,4 +1,3 @@
-using MixDbg.Engine.DbgEng;
 using MixDbg.Models.Dap;
 using MixDbg.Models;
 
@@ -21,9 +20,8 @@ public class StepInRequestHandlerService(
 		if (sessionModel.Engine is NativeDebuggerModel model)
 		{
 			model.Stepping = true;
-			model.Variables.Clear();
 			model.CachedStackTraceResult = null;
-			model.Commands.Add(() => nativeDebugger.ExecuteStepOnEngine(model, DebugStatus.StepInto));
+			model.Commands.Add(() => nativeDebugger.ExecuteStepOnEngine(model, EngineExecutionStatus.StepInto));
 		}
 		sessionModel.State = SessionState.Running;
     }

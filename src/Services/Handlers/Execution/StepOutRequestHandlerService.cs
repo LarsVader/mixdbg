@@ -19,7 +19,6 @@ public class StepOutRequestHandlerService(
     {
 		if (sessionModel.Engine is NativeDebuggerModel model)
 		{
-			model.Variables.Clear();
 			model.Commands.Add(() => nativeDebugger.ExecuteStepOutOnEngine(model));
 		}
 		sessionModel.State = SessionState.Running;

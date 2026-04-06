@@ -2,28 +2,25 @@ using System.Collections.Concurrent;
 using System.IO.Pipes;
 using ClrDebug;
 using MixDbg.Models.Dap;
-using MixDbg.Engine.DbgEng;
 
 namespace MixDbg.Models;
 
 /// <summary>
-/// Mutable state for the native debug engine. Holds dbgeng COM interface
-/// references (thread-affine to the engine thread), volatile flags for
-/// cross-thread signaling, a command queue for marshaling DAP handler
-/// calls to the engine thread, breakpoint tracking state, and ICorDebug V4
-/// references for managed debugging piggybacked on the dbgeng session.
+/// Mutable state for the native debug engine. Holds the dbgeng wrapper model
+/// (which encapsulates COM interfaces), volatile flags for cross-thread
+/// signaling, a command queue for marshaling DAP handler calls to the engine
+/// thread, breakpoint tracking state, and ICorDebug V4 references for managed
+/// debugging piggybacked on the dbgeng session.
 /// Dispose tears down the engine thread and releases all resources.
 /// </summary>
 public sealed class NativeDebuggerModel : IDisposable
 {
-    // COM interfaces — set during engine initialization on the engine thread.
-    internal IDebugClient Client { get; set; } = null!;
-    internal IDebugControl Control { get; set; } = null!;
-    internal IDebugSymbols Symbols { get; set; } = null!;
-    internal IDebugSystemObjects SysObjects { get; set; } = null!;
-    internal IDebugDataSpaces DataSpaces { get; set; } = null!;
-    internal IDebugAdvanced Advanced { get; set; } = null!;
-    internal EventCallbacks Callbacks { get; set; } = null!;
+    /// <summary>
+    /// The dbgeng COM wrapper model. Initialized during engine startup.
+    /// All dbgeng COM interaction goes through <see cref="Services.IDbgEngWrapper"/>
+    /// methods that take this model.
+    /// </summary>
+    public DbgEngWrapperModel Wrapper { get; set; } = null!;
 
     // Engine thread lifecycle.
     internal Thread? EngineThread { get; set; }
@@ -111,9 +108,7 @@ public sealed class NativeDebuggerModel : IDisposable
     /// </summary>
     internal SortedList<ulong, JitMethodInfo> JitMethodMap { get; } = new();
 
-    // Variable inspection — invalidated on continue/step.
-    internal VariableStore Variables { get; } = new();
-    internal DEBUG_STACK_FRAME[] CachedStackFrames { get; set; } = [];
+    // Stack trace cache — DAP-level result, invalidated on continue/step.
     internal StackFrame[]? CachedStackTraceResult { get; set; }
 
     // Signaled when the target is stopped and ready for commands.

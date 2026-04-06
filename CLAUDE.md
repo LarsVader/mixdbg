@@ -60,8 +60,13 @@ src/
       PdbSourceMapper.cs         # Reads portable PDBs to map (method token, IL offset) → (source file, line)
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
-    NativeDebuggerModel.cs       # Engine state: COM interfaces, threads, flags, breakpoint tracking, variable store, ICorDebug V4 refs
-    VariableStore.cs             # Maps variablesReference handles to VariableContainer (symbol group + index range), invalidated per stop
+    DbgEngWrapperModel.cs        # dbgeng COM wrapper state: COM interfaces (internal), engine events, variable store, cached stack frames
+    NativeDebuggerModel.cs       # Engine state: DbgEngWrapperModel ref, threads, flags, breakpoint tracking, ICorDebug V4 refs
+    VariableStore.cs             # Maps variablesReference handles to VariableContainer (symbol group + index range), owned by DbgEngWrapperModel
+    EngineExecutionStatus.cs     # Public enum: Go, StepOver, StepInto, Break, etc. — replaces internal DebugStatus constants
+    EngineEventInfo.cs           # Public record for last debug event info
+    NativeStackFrame.cs          # Public record struct with InstructionOffset — replaces internal DEBUG_STACK_FRAME
+    VariableInfo.cs              # Public record struct for resolved variable data from symbol groups
     LogEntry.cs                  # Immutable log record (timestamp, level, sender, message)
     LogStore.cs                  # Mutable log state: entries list, lock, file path
   Services/
@@ -70,14 +75,16 @@ src/
       IDapDispatcher.cs          # Stateless request dispatcher — Run() dispatches to handler services
       IDapHandlerService.cs      # Handler interface: Command + Execute(JsonElement?)
       IDapMessage.cs             # Marker interface for DAP response types
-      INativeDebugger.cs         # Stateless dbgeng wrapper — all methods take NativeDebuggerModel
+      IDbgEngWrapper.cs          # Stateless dbgeng COM wrapper — all COM calls encapsulated here, takes DbgEngWrapperModel
+      INativeDebugger.cs         # Stateless debug orchestration — engine thread, DAP events, takes NativeDebuggerModel
       ILoggingService.cs         # LogInfo/LogWarning/LogError with [CallerFilePath] — all take LogStore
       ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
       IManagedDebugger.cs        # Stateless managed debugging — ICorDebug V4, BP orchestration, frame merging
       IProfilerPipeService.cs    # Profiler pipe setup and reader thread
     DapServerService.cs          # IDapServer: Content-Length framed JSON-RPC transport
     DapDispatcherService.cs      # IDapDispatcher: command routing via DI-resolved handler services
-    NativeDebuggerService.cs     # INativeDebugger: dbgeng COM wrapper, engine thread, breakpoints
+    DbgEngWrapperService.cs      # IDbgEngWrapper: all dbgeng COM interop — lifecycle, breakpoints, symbols, stack, variables, threads, ICorDebug bridge
+    NativeDebuggerService.cs     # INativeDebugger: engine thread orchestration, DAP event emission, delegates COM calls to IDbgEngWrapper
     ManagedDebuggerService.cs    # IManagedDebugger: ICorDebug V4, managed BP lifecycle, transient BPs, frame merging
     ProfilerPipeService.cs       # IProfilerPipeService: named pipe to CLR profiler, JIT/ENTER notification parsing
     LoggingService.cs            # ILoggingService: file + in-memory logger, [CallerFilePath] sender
@@ -110,6 +117,8 @@ test/
 
 **DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Services are stateless singletons; all mutable state lives in model objects registered as singletons. DAP request handling uses `IDapHandlerService` implementations auto-discovered via assembly scanning — each handler extends `DapHandlerServiceBase<TResponse, TArgs>` or `DapVoidHandlerServiceBase<TArgs>` and contains its own session logic (no separate session orchestrator layer). `NativeDebuggerModel` is created per-session (one per Launch/Attach) by `INativeDebugger.CreateModel()`, stored in `DebugSessionModel.Engine`.
 
+**DbgEng COM isolation**: All dbgeng COM interop is encapsulated behind `IDbgEngWrapper` / `DbgEngWrapperService`. COM interface types (`IDebugClient`, `IDebugControl`, etc.) are `internal` to the `Engine.DbgEng` namespace and stored on `DbgEngWrapperModel` (also `internal` properties). The rest of the codebase uses only the wrapper's public API: `EngineExecutionStatus`, `NativeStackFrame`, `VariableInfo`, `EngineEventInfo`. Engine callback events (breakpoint hit, module load, etc.) are exposed as C# events on `DbgEngWrapperModel`. `NativeDebuggerModel` holds a `DbgEngWrapperModel Wrapper` property. `ManagedDebuggerService` and `ProfilerPipeService` also use `IDbgEngWrapper` for their COM needs (breakpoints, symbols, bridge creation, SetInterrupt).
+
 Three threads, one command queue:
 
 - **Main thread**: reads DAP requests from stdin, dispatches to handlers. Handlers own the dispatching to the engine thread: fire-and-forget via `model.Commands.Add(() => ...)`, or synchronous via `model.QueueEngineQuery(() => ...)` which queues a command + `TaskCompletionSource` and blocks until the engine thread executes it.
@@ -120,6 +129,9 @@ Three threads, one command queue:
 
 ### dbgeng COM Interop
 
+All dbgeng COM interaction is encapsulated in `DbgEngWrapperService` (implements `IDbgEngWrapper`). No COM types leak outside the wrapper boundary (`Engine/DbgEng/`, `DbgEngWrapperModel`, `DbgEngWrapperService`, `VariableStore`). The rest of the codebase uses `EngineExecutionStatus`, `NativeStackFrame`, `VariableInfo`, and `EngineEventInfo` instead.
+
+Internal implementation details (inside the wrapper):
 - Uses `[ComImport]` + `_VtblGap` for vtable layout. All vtable positions verified against `C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um/dbgeng.h`.
 - **All string output buffers use `IntPtr` + `Marshal.PtrToStringAnsi`** — NOT `StringBuilder` (defaults to UTF-16 on .NET, dbgeng writes ANSI).
 - **`GetStackTrace` frames array uses `IntPtr` + `Marshal.PtrToStructure`** — COM array marshaling with `[PreserveSig]` doesn't copy data back.
@@ -127,6 +139,7 @@ Three threads, one command queue:
 
 ### DEBUG_STATUS Constants (dbgeng.h)
 
+Exposed as `EngineExecutionStatus` enum (public). Internal dbgeng values:
 ```
 NO_CHANGE = 0    GO = 1    GO_HANDLED = 2    GO_NOT_HANDLED = 3
 STEP_OVER = 4    STEP_INTO = 5    BREAK = 6    NO_DEBUGGEE = 7

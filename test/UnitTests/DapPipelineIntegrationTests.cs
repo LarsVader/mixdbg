@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using MixDbg.Engine.DbgEng;
 using MixDbg.Models.Dap;
 using MixDbg.Models;
 using MixDbg.Services;
@@ -555,12 +554,12 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void ThenNativeDebuggerStepOverWasCalled()
     {
-        _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), DebugStatus.StepOver);
+        _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepOver);
     }
 
     private void ThenNativeDebuggerStepIntoWasCalled()
     {
-        _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), DebugStatus.StepInto);
+        _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepInto);
     }
 
     private void ThenNativeDebuggerStepOutWasCalled()
@@ -686,7 +685,10 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     public DapPipelineIntegrationTests()
     {
-        _engine.CreateModel().Returns(_ => new NativeDebuggerModel());
+        _engine.CreateModel().Returns(_ => new NativeDebuggerModel
+        {
+            Wrapper = new DbgEngWrapperModel(),
+        });
         _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
             .Do(ci =>
             {

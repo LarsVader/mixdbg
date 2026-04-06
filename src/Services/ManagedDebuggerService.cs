@@ -5,7 +5,6 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using ClrDebug;
 using MixDbg.Models.Dap;
-using MixDbg.Engine.CorDebug;
 using MixDbg.Engine.Sos;
 using MixDbg.Models;
 
@@ -22,13 +21,15 @@ internal sealed class ManagedDebuggerService(
     LogStore logStore,
     ISourceFileService sourceFiles,
     IDapServer server,
-    DapServerModel transport) : IManagedDebugger
+    DapServerModel transport,
+    IDbgEngWrapper dbgEngWrapper) : IManagedDebugger
 {
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
     private readonly ISourceFileService _sourceFiles = sourceFiles;
     private readonly IDapServer _server = server;
     private readonly DapServerModel _transport = transport;
+    private readonly IDbgEngWrapper _dbgEng = dbgEngWrapper;
     private IntPtr _dacHandle;
 
     public bool IsInitialized(NativeDebuggerModel model) => model.ManagedInitialized;
@@ -49,7 +50,7 @@ internal sealed class ManagedDebuggerService(
             _log.LogInfo(_logStore, $"Initializing ICorDebug V4 via OpenVirtualProcessImpl (coreclr={model.CoreClrPath}, base=0x{model.CoreClrBaseAddress:X})");
 
             // Create the data target bridge that lets ICorDebug read/write through dbgeng.
-            var dataTarget = new DbgEngDataTarget(model.DataSpaces, model.Advanced, model.SysObjects);
+            var dataTarget = _dbgEng.CreateDataTarget(model.Wrapper);
 
             // Call mscordbi!OpenVirtualProcessImpl directly — the .NET 10 mscordbi.dll
             // doesn't export DllGetClassObject, and mscoree.dll's CLRCreateInstance
@@ -99,7 +100,7 @@ internal sealed class ManagedDebuggerService(
         try
         {
             // Find the CLR thread matching the current dbgeng event thread.
-            model.SysObjects.GetCurrentThreadSystemId(out var currentOsId);
+            var currentOsId = _dbgEng.GetCurrentThreadSystemId(model.Wrapper);
 
             CorDebugThread? clrThread = null;
             foreach (var thread in model.CorProcess.Threads)
@@ -303,16 +304,16 @@ internal sealed class ManagedDebuggerService(
             if (_sourceFiles.IsCliFile(filePath))
             {
                 _log.LogInfo(_logStore, $"  C++/CLI file detected: {filePath}");
-                int cliHr = model.Symbols.GetOffsetByLine((uint)line, filePath, out var ilAddr);
-                if (cliHr >= 0 && ilAddr != 0)
+                var (ilAddr, cliResolved) = _dbgEng.GetOffsetByLine(model.Wrapper, (uint)line, filePath);
+                if (cliResolved && ilAddr != 0)
                 {
-                    int modHr = model.Symbols.GetModuleByOffset(ilAddr, 0, out _, out var moduleBase);
-                    if (modHr >= 0 && moduleBase != 0)
+                    var moduleBase = _dbgEng.GetModuleByOffset(model.Wrapper, ilAddr);
+                    if (moduleBase != null && moduleBase.Value != 0)
                     {
-                        int rva = (int)(ilAddr - moduleBase);
+                        int rva = (int)(ilAddr - moduleBase.Value);
                         assemblyName = ResolveCliAssemblyName(filePath);
                         var dllPath = FindCliAssemblyDll(filePath, assemblyName);
-                        _log.LogInfo(_logStore, $"  C++/CLI: ilAddr=0x{ilAddr:X} base=0x{moduleBase:X} rva=0x{rva:X} asm={assemblyName} dll={dllPath}");
+                        _log.LogInfo(_logStore, $"  C++/CLI: ilAddr=0x{ilAddr:X} base=0x{moduleBase.Value:X} rva=0x{rva:X} asm={assemblyName} dll={dllPath}");
                         if (dllPath != null)
                         {
                             using var mapper = new PdbSourceMapper();
@@ -333,12 +334,12 @@ internal sealed class ManagedDebuggerService(
                     }
                     else
                     {
-                        _log.LogWarning(_logStore, $"  C++/CLI: GetModuleByOffset failed: hr=0x{modHr:X8}");
+                        _log.LogWarning(_logStore, $"  C++/CLI: GetModuleByOffset returned null");
                     }
                 }
                 else
                 {
-                    _log.LogInfo(_logStore, $"  C++/CLI: GetOffsetByLine({line}) failed: hr=0x{cliHr:X8}");
+                    _log.LogInfo(_logStore, $"  C++/CLI: GetOffsetByLine({line}) failed");
                 }
                 if (!foundInPdb)
                     return false; // Module not loaded yet — stays as PendingManagedBreakpoint.
@@ -353,8 +354,10 @@ internal sealed class ManagedDebuggerService(
         // Skip for C++/CLI: GetOffsetByLine returns the IL section address (not JIT'd code).
         // C++/CLI methods must go through the deferred + JIT notification path.
         ulong offset = 0;
-        int hr = isCliMethod ? -1 : model.Symbols.GetOffsetByLine((uint)line, filePath, out offset);
-        if (hr >= 0 && offset != 0)
+        bool offsetResolved = false;
+        if (!isCliMethod)
+            (offset, offsetResolved) = _dbgEng.GetOffsetByLine(model.Wrapper, (uint)line, filePath);
+        if (offsetResolved && offset != 0)
         {
             _log.LogInfo(_logStore, $"  GetOffsetByLine({line}) -> 0x{offset:X} — setting hardware breakpoint");
             var hwBpId = SetManagedCodeBreakpoint(model, offset, filePath, line);
@@ -405,27 +408,12 @@ internal sealed class ManagedDebuggerService(
     /// </summary>
     private uint? SetManagedCodeBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line)
     {
-        int hr = model.Control.AddBreakpoint(
-            Engine.DbgEng.DebugBreakpointType.Data,
-            0xFFFFFFFF, // DEBUG_ANY_ID
-            out var bp);
-        if (hr < 0)
+        var (bpId, success) = _dbgEng.AddHardwareBreakpoint(model.Wrapper, address, 1);
+        if (!success)
         {
-            _log.LogWarning(_logStore, $"  AddBreakpoint(Data) failed: hr=0x{hr:X8}");
+            _log.LogWarning(_logStore, $"  AddHardwareBreakpoint failed at 0x{address:X}");
             return null;
         }
-
-        hr = bp.SetDataParameters(1, Engine.DbgEng.DebugBreakAccess.Execute);
-        if (hr < 0)
-        {
-            _log.LogWarning(_logStore, $"  SetDataParameters failed: hr=0x{hr:X8}");
-            model.Control.RemoveBreakpoint(bp);
-            return null;
-        }
-
-        bp.SetOffset(address);
-        bp.AddFlags(Engine.DbgEng.DebugBreakpointFlag.Enabled);
-        bp.GetId(out var bpId);
 
         var key = $"{filePath}:{line}";
         model.BreakpointIds[key] = bpId;
@@ -768,9 +756,7 @@ internal sealed class ManagedDebuggerService(
                     || kv.Key.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase));
                 if (key.Key != null && model.BreakpointIds.TryGetValue(key.Key, out var hwId))
                 {
-                    int hr = model.Control.GetBreakpointById(hwId, out var hwBp);
-                    if (hr >= 0)
-                        model.Control.RemoveBreakpoint(hwBp);
+                    _dbgEng.RemoveBreakpoint(model.Wrapper, hwId);
                     model.UserBreakpointIds.Remove(hwId);
                     model.ManagedBreakpointIds.Remove(hwId);
                     model.BreakpointIds.Remove(key.Key);
@@ -868,9 +854,8 @@ internal sealed class ManagedDebuggerService(
                 _dacHandle = System.Runtime.InteropServices.NativeLibrary.Load(dacPath);
             }
 
-            var clrDataTarget = new DbgEngClrDataTarget(
-                model.DataSpaces, model.Advanced, model.SysObjects);
-            clrDataTarget.AddModuleBase(model.CoreClrPath!, model.CoreClrBaseAddress);
+            var clrDataTarget = _dbgEng.CreateClrDataTarget(
+                model.Wrapper, model.CoreClrPath!, model.CoreClrBaseAddress);
 
             var interfaces = ClrDebug.Extensions.CLRDataCreateInstance(_dacHandle, clrDataTarget);
             model.SosDac = interfaces.SOSDacInterface;
@@ -1188,7 +1173,7 @@ internal sealed class ManagedDebuggerService(
     /// <c>CORDBG_E_UNSUPPORTED_FORWARD_COMPAT</c> for modern runtimes.
     /// </summary>
     private static unsafe CorDebugProcess OpenVirtualProcessImpl(
-        string coreClrPath, ulong coreClrBase, DbgEngDataTarget dataTarget,
+        string coreClrPath, ulong coreClrBase, ICorDebugMutableDataTarget dataTarget,
         ILoggingService log, LogStore logStore, out CLR_DEBUGGING_VERSION clrVersion)
     {
         clrVersion = default;
@@ -1314,12 +1299,8 @@ internal sealed class ManagedDebuggerService(
         var idsToRemove = new List<uint>(model.ManagedBreakpointIds);
         foreach (var hwBpId in idsToRemove)
         {
-            int hr = model.Control.GetBreakpointById(hwBpId, out var hwBp);
-            if (hr >= 0)
-            {
-                model.Control.RemoveBreakpoint(hwBp);
+            if (_dbgEng.RemoveBreakpoint(model.Wrapper, hwBpId))
                 _log.LogInfo(_logStore, $"Removed transient managed hw bp #{hwBpId}");
-            }
             model.UserBreakpointIds.Remove(hwBpId);
         }
         model.ManagedBreakpointIds.Clear();
@@ -1383,7 +1364,7 @@ internal sealed class ManagedDebuggerService(
                 return;
             try
             {
-                model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
+                _dbgEng.SetInterrupt(model.Wrapper);
             }
             catch { }
         }, null, 2000, 2000);

@@ -1,4 +1,3 @@
-using MixDbg.Engine.DbgEng;
 using MixDbg.Models.Dap;
 using MixDbg.Models;
 using MixDbg.Services;
@@ -18,18 +17,6 @@ public sealed class ContinueRequestHandlerServiceTests
 
         Assert.True(_engineModel.Commands.Count > 0);
         Assert.Equal(SessionState.Running, _session.State);
-    }
-
-    [Fact]
-    public void Execute_WhenEngineExists_ClearsVariables()
-    {
-        _session.Engine = _engineModel;
-        var group = Substitute.For<IDebugSymbolGroup2>();
-        _engineModel.Variables.Allocate(group, 0, 1);
-
-        _testee.ExecuteInternal(new ContinueArguments());
-
-        Assert.Null(_engineModel.Variables.Get(1));
     }
 
     [Fact]
@@ -68,18 +55,6 @@ public sealed class NextRequestHandlerServiceTests
         Assert.Equal(SessionState.Running, _session.State);
     }
 
-    [Fact]
-    public void Execute_WhenEngineExists_ClearsVariables()
-    {
-        _session.Engine = _engineModel;
-        var group = Substitute.For<IDebugSymbolGroup2>();
-        _engineModel.Variables.Allocate(group, 0, 1);
-
-        _testee.ExecuteInternal(new StepArguments());
-
-        Assert.Null(_engineModel.Variables.Get(1));
-    }
-
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();
@@ -105,18 +80,6 @@ public sealed class StepInRequestHandlerServiceTests
         Assert.Equal(SessionState.Running, _session.State);
     }
 
-    [Fact]
-    public void Execute_WhenEngineExists_ClearsVariables()
-    {
-        _session.Engine = _engineModel;
-        var group = Substitute.For<IDebugSymbolGroup2>();
-        _engineModel.Variables.Allocate(group, 0, 1);
-
-        _testee.ExecuteInternal(new StepArguments());
-
-        Assert.Null(_engineModel.Variables.Get(1));
-    }
-
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();
@@ -139,18 +102,6 @@ public sealed class StepOutRequestHandlerServiceTests
 
         Assert.True(_engineModel.Commands.Count > 0);
         Assert.Equal(SessionState.Running, _session.State);
-    }
-
-    [Fact]
-    public void Execute_WhenEngineExists_ClearsVariables()
-    {
-        _session.Engine = _engineModel;
-        var group = Substitute.For<IDebugSymbolGroup2>();
-        _engineModel.Variables.Allocate(group, 0, 1);
-
-        _testee.ExecuteInternal(new StepArguments());
-
-        Assert.Null(_engineModel.Variables.Get(1));
     }
 
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();

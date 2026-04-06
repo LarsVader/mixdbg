@@ -1,6 +1,4 @@
-using System.Runtime.InteropServices;
 using MixDbg.Models.Dap;
-using MixDbg.Engine.DbgEng;
 using MixDbg.Models;
 using MixDbg.Services;
 using NSubstitute;
@@ -44,7 +42,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     {
         WhenExecutingContinueOnEngine();
 
-        ThenSetExecutionStatusWasCalledWith(DebugStatus.Go);
+        ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus.Go);
     }
 
     [Fact]
@@ -55,6 +53,14 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         WhenExecutingContinueOnEngine();
 
         Assert.Null(_model.CachedStackTraceResult);
+    }
+
+    [Fact]
+    public void ExecuteContinueOnEngine_WhenCalled_ClearsVariables()
+    {
+        WhenExecutingContinueOnEngine();
+
+        _wrapper.Received(1).ClearVariables(_model.Wrapper);
     }
 
     // ── Break ──────────────────────────────────────────────
@@ -80,27 +86,43 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     [Fact]
     public void ExecuteStepOnEngine_WhenStepOver_CallsSetExecutionStatusStepOver()
     {
-        WhenExecutingStepOnEngine(DebugStatus.StepOver);
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
 
-        ThenSetExecutionStatusWasCalledWith(DebugStatus.StepOver);
+        ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus.StepOver);
     }
 
     [Fact]
     public void ExecuteStepOnEngine_WhenStepInto_CallsSetExecutionStatusStepInto()
     {
-        WhenExecutingStepOnEngine(DebugStatus.StepInto);
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepInto);
 
-        ThenSetExecutionStatusWasCalledWith(DebugStatus.StepInto);
+        ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus.StepInto);
+    }
+
+    [Fact]
+    public void ExecuteStepOnEngine_WhenCalled_ClearsVariables()
+    {
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
+
+        _wrapper.Received(1).ClearVariables(_model.Wrapper);
     }
 
     // ── ExecuteStepOutOnEngine ──────────────────────────────
 
     [Fact]
-    public void ExecuteStepOutOnEngine_WhenCalled_CallsExecuteGu()
+    public void ExecuteStepOutOnEngine_WhenCalled_CallsExecuteCommandGu()
     {
         WhenExecutingStepOutOnEngine();
 
-        ThenExecuteWasCalledWith("gu");
+        ThenExecuteCommandWasCalledWith("gu");
+    }
+
+    [Fact]
+    public void ExecuteStepOutOnEngine_WhenCalled_ClearsVariables()
+    {
+        WhenExecutingStepOutOnEngine();
+
+        _wrapper.Received(1).ClearVariables(_model.Wrapper);
     }
 
     // ── Terminate ──────────────────────────────────────────
@@ -114,29 +136,11 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void Terminate_WhenTargetNotExited_CallsTerminateProcesses()
+    public void Terminate_WhenTargetNotExited_CallsTerminateSession()
     {
         WhenTerminating();
 
-        ThenTerminateProcessesWasCalled();
-    }
-
-    [Fact]
-    public void Terminate_WhenTargetAlreadyExited_SkipsTerminateProcesses()
-    {
-        GivenTargetExited();
-
-        WhenTerminating();
-
-        ThenTerminateProcessesWasNotCalled();
-    }
-
-    [Fact]
-    public void Terminate_WhenCalled_CallsEndSession()
-    {
-        WhenTerminating();
-
-        ThenEndSessionWasCalledWith(DebugEnd.ActiveTerminate);
+        ThenTerminateSessionWasCalled();
     }
 
     [Fact]
@@ -158,19 +162,11 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void Detach_WhenCalled_CallsDetachProcesses()
+    public void Detach_WhenCalled_CallsDetachSession()
     {
         WhenDetaching();
 
-        ThenDetachProcessesWasCalled();
-    }
-
-    [Fact]
-    public void Detach_WhenCalled_CallsEndSession()
-    {
-        WhenDetaching();
-
-        ThenEndSessionWasCalledWith(DebugEnd.ActiveDetach);
+        ThenDetachSessionWasCalled();
     }
 
     // ── SetBreakpointsOnEngine (managed file) ──────────────
@@ -195,7 +191,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenGetOffsetByLineSucceeds(@"C:\src\main.cpp", line: 42, offset: 0x1000);
-        GivenAddBreakpointSucceeds(bpId: 5);
+        GivenAddCodeBreakpointSucceeds(bpId: 5);
         GivenGetLineByOffsetSucceeds(offset: 0x1000, resolvedLine: 42);
         GivenBreakpointRequest(@"C:\src\main.cpp", [42]);
 
@@ -208,21 +204,6 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         ThenUserBreakpointIdsContains(5);
     }
 
-    [Fact]
-    public void SetBreakpointsOnEngine_WhenOffsetResolved_SetsOffsetAndEnablesBreakpoint()
-    {
-        GivenSourceFileIsNative(@"C:\src\main.cpp");
-        GivenGetOffsetByLineSucceeds(@"C:\src\main.cpp", line: 10, offset: 0x2000);
-        GivenAddBreakpointSucceeds(bpId: 1);
-        GivenGetLineByOffsetSucceeds(offset: 0x2000, resolvedLine: 10);
-        GivenBreakpointRequest(@"C:\src\main.cpp", [10]);
-
-        WhenSettingBreakpointsOnEngine();
-
-        ThenBreakpointSetOffsetWasCalled(0x2000);
-        ThenBreakpointAddFlagsWasCalled(DebugBreakpointFlag.Enabled);
-    }
-
     // ── SetBreakpointsOnEngine (native, deferred via bu) ────
 
     [Fact]
@@ -230,7 +211,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenGetOffsetByLineFails(@"C:\src\main.cpp", line: 99);
-        GivenBuCommandSucceeds(deferredBpId: 7);
+        GivenAddDeferredBreakpointSucceeds(deferredBpId: 7);
         GivenBreakpointRequest(@"C:\src\main.cpp", [99]);
 
         WhenSettingBreakpointsOnEngine();
@@ -242,11 +223,11 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void SetBreakpointsOnEngine_WhenBuCommandFails_ReturnsUnverified()
+    public void SetBreakpointsOnEngine_WhenDeferredFails_ReturnsUnverified()
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenGetOffsetByLineFails(@"C:\src\main.cpp", line: 99);
-        GivenBuCommandFails();
+        GivenAddDeferredBreakpointFails();
         GivenBreakpointRequest(@"C:\src\main.cpp", [99]);
 
         WhenSettingBreakpointsOnEngine();
@@ -263,15 +244,14 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenExistingBreakpointForFile(@"C:\src\main.cpp", line: 10, bpId: 3);
-        GivenGetBreakpointByIdSucceeds(bpId: 3);
         GivenGetOffsetByLineSucceeds(@"C:\src\main.cpp", line: 20, offset: 0x3000);
-        GivenAddBreakpointSucceeds(bpId: 8);
+        GivenAddCodeBreakpointSucceeds(bpId: 8);
         GivenGetLineByOffsetSucceeds(offset: 0x3000, resolvedLine: 20);
         GivenBreakpointRequest(@"C:\src\main.cpp", [20]);
 
         WhenSettingBreakpointsOnEngine();
 
-        ThenRemoveBreakpointWasCalled();
+        ThenRemoveBreakpointWasCalled(3);
         ThenUserBreakpointIdsDoesNotContain(3);
         ThenUserBreakpointIdsContains(8);
     }
@@ -282,10 +262,10 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     public void SetBreakpointsOnEngine_WhenMultipleLines_ReturnsAllResults()
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
-        GivenGetOffsetByLineSucceedsForMultiple(@"C:\src\main.cpp",
+        GivenGetOffsetByLineSucceedsForAll(@"C:\src\main.cpp",
             [(10, 0x1000), (20, 0x2000), (30, 0x3000)]);
-        GivenAddBreakpointSucceedsMultiple([1, 2, 3]);
-        GivenGetLineByOffsetSucceedsForMultiple(
+        GivenAddCodeBreakpointSucceedsMultiple([1, 2, 3]);
+        GivenGetLineByOffsetSucceedsForAll(
             [(0x1000, 10), (0x2000, 20), (0x3000, 30)]);
         GivenBreakpointRequest(@"C:\src\main.cpp", [10, 20, 30]);
 
@@ -300,7 +280,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     [Fact]
     public void GetThreadsOnEngine_WhenThreadsExist_ReturnsThreadArray()
     {
-        GivenThreadsExist(engineIds: [0, 1, 2], sysIds: [1000, 1001, 1002]);
+        GivenThreadsExist([(0u, 1000u), (1u, 1001u), (2u, 1002u)]);
 
         WhenGettingThreadsOnEngine();
 
@@ -324,9 +304,9 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     // ── GetScopesOnEngine ──────────────────────────────────
 
     [Fact]
-    public void GetScopesOnEngine_WhenInvalidFrameId_ReturnsEmpty()
+    public void GetScopesOnEngine_WhenWrapperReturnsZero_ReturnsEmpty()
     {
-        GivenCachedStackFrames(0);
+        GivenSetScopeAndGetLocalsReturns(0);
 
         WhenGettingScopesOnEngine(frameId: 99);
 
@@ -334,77 +314,38 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void GetScopesOnEngine_WhenValidFrame_CallsSetScope()
+    public void GetScopesOnEngine_WhenWrapperReturnsRef_ReturnsLocalsScope()
     {
-        GivenCachedStackFrames(2);
-        GivenSetScopeSucceeds();
-        GivenGetScopeSymbolGroupSucceeds(symbolCount: 3);
-
-        WhenGettingScopesOnEngine(frameId: 1);
-
-        ThenSetScopeWasCalled();
-    }
-
-    [Fact]
-    public void GetScopesOnEngine_WhenSymbolGroupFails_ReturnsEmpty()
-    {
-        GivenCachedStackFrames(1);
-        GivenSetScopeSucceeds();
-        GivenGetScopeSymbolGroupFails();
-
-        WhenGettingScopesOnEngine(frameId: 1);
-
-        ThenScopeResultCountIs(0);
-    }
-
-    [Fact]
-    public void GetScopesOnEngine_WhenSymbolGroupHasSymbols_ReturnsLocalsScope()
-    {
-        GivenCachedStackFrames(1);
-        GivenSetScopeSucceeds();
-        GivenGetScopeSymbolGroupSucceeds(symbolCount: 5);
+        GivenSetScopeAndGetLocalsReturns(42);
 
         WhenGettingScopesOnEngine(frameId: 1);
 
         ThenScopeResultCountIs(1);
         ThenScopeAtIndexHasName(0, "Locals");
-        ThenScopeAtIndexHasPositiveVariablesReference(0);
-    }
-
-    [Fact]
-    public void GetScopesOnEngine_WhenSymbolGroupIsEmpty_ReturnsEmpty()
-    {
-        GivenCachedStackFrames(1);
-        GivenSetScopeSucceeds();
-        GivenGetScopeSymbolGroupSucceeds(symbolCount: 0);
-
-        WhenGettingScopesOnEngine(frameId: 1);
-
-        ThenScopeResultCountIs(0);
+        ThenScopeAtIndexHasVariablesReference(0, 42);
     }
 
     // ── GetVariablesOnEngine ────────────────────────────────
 
     [Fact]
-    public void GetVariablesOnEngine_WhenUnknownRef_ReturnsEmpty()
+    public void GetVariablesOnEngine_WhenWrapperReturnsEmpty_ReturnsEmpty()
     {
+        GivenGetVariablesReturns([]);
+
         WhenGettingVariablesOnEngine(variablesReference: 999);
 
         ThenVariableResultCountIs(0);
     }
 
     [Fact]
-    public void GetVariablesOnEngine_WhenValidRef_ReturnsSymbolsFromGroup()
+    public void GetVariablesOnEngine_WhenWrapperReturnsVars_ReturnsMappedVariables()
     {
-        GivenCachedStackFrames(1);
-        GivenSetScopeSucceeds();
-        GivenGetScopeSymbolGroupSucceeds(symbolCount: 2);
-        GivenSymbolGroupReturnsVariable(0, "x", "int", "42");
-        GivenSymbolGroupReturnsVariable(1, "y", "float", "3.14");
-        GivenSymbolParametersWithNoChildren(2);
+        GivenGetVariablesReturns([
+            new VariableInfo("x", "42", "int", 0),
+            new VariableInfo("y", "3.14", "float", 0),
+        ]);
 
-        WhenGettingScopesOnEngine(frameId: 1);
-        WhenGettingVariablesOnEngine(variablesReference: _scopeResults![0].VariablesReference);
+        WhenGettingVariablesOnEngine(variablesReference: 1);
 
         ThenVariableResultCountIs(2);
         ThenVariableAtIndexHasName(0, "x");
@@ -412,23 +353,6 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         ThenVariableAtIndexHasType(0, "int");
         ThenVariableAtIndexHasName(1, "y");
         ThenVariableAtIndexHasValue(1, "3.14");
-    }
-
-    [Fact]
-    public void GetVariablesOnEngine_WhenSymbolHasSubElements_AllocatesChildReference()
-    {
-        GivenCachedStackFrames(1);
-        GivenSetScopeSucceeds();
-        GivenGetScopeSymbolGroupSucceeds(symbolCount: 1);
-        GivenSymbolGroupReturnsVariable(0, "obj", "MyStruct", "{...}");
-        GivenSymbolParametersWithChildren(count: 1, subElements: 2);
-        GivenExpandSymbolSucceeds(newTotal: 3);
-
-        WhenGettingScopesOnEngine(frameId: 1);
-        WhenGettingVariablesOnEngine(variablesReference: _scopeResults![0].VariablesReference);
-
-        ThenVariableResultCountIs(1);
-        ThenVariableAtIndexHasPositiveVariablesReference(0);
     }
 
     // ── GetStoppedThreadIdOnEngine ──────────────────────────
@@ -444,11 +368,6 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     #region Given
-
-    private void GivenTargetExited()
-    {
-        _model.TargetExited = true;
-    }
 
     private void GivenSourceFileIsNative(string path)
     {
@@ -468,107 +387,67 @@ public sealed class NativeDebuggerServiceTests : IDisposable
 
     private void GivenGetOffsetByLineSucceeds(string file, int line, ulong offset)
     {
-        _symbols.GetOffsetByLine((uint)line, file, out Arg.Any<ulong>())
-            .Returns(ci =>
-            {
-                ci[2] = offset;
-                return 0;
-            });
+        _wrapper.GetOffsetByLine(_model.Wrapper, (uint)line, file)
+            .Returns((offset, true));
     }
 
-    private void GivenGetOffsetByLineSucceedsForMultiple(string file, (int line, ulong offset)[] mappings)
+    private void GivenGetOffsetByLineSucceedsForAll(string file, (int line, ulong offset)[] mappings)
     {
-        _symbols.GetOffsetByLine(Arg.Any<uint>(), file, out Arg.Any<ulong>())
+        _wrapper.GetOffsetByLine(_model.Wrapper, Arg.Any<uint>(), file)
             .Returns(ci =>
             {
-                var reqLine = (int)(uint)ci[0];
+                var reqLine = (int)(uint)ci[1];
                 var match = mappings.FirstOrDefault(m => m.line == reqLine);
-                if (match != default)
-                {
-                    ci[2] = match.offset;
-                    return 0;
-                }
-                return unchecked((int)0x80004005);
+                return match != default ? (match.offset, true) : (0UL, false);
             });
     }
 
     private void GivenGetOffsetByLineFails(string file, int line)
     {
-        _symbols.GetOffsetByLine((uint)line, file, out Arg.Any<ulong>())
-            .Returns(unchecked((int)0x80004005));
+        _wrapper.GetOffsetByLine(_model.Wrapper, (uint)line, file)
+            .Returns((0UL, false));
     }
 
-    private void GivenAddBreakpointSucceeds(uint bpId)
+    private void GivenAddCodeBreakpointSucceeds(uint bpId)
     {
-        _control.AddBreakpoint(Arg.Any<uint>(), Arg.Any<uint>(), out Arg.Any<IDebugBreakpoint>())
-            .Returns(ci =>
-            {
-                _mockBp = Substitute.For<IDebugBreakpoint>();
-                _mockBp.GetId(out Arg.Any<uint>()).Returns(c => { c[0] = bpId; return 0; });
-                ci[2] = _mockBp;
-                return 0;
-            });
+        _wrapper.AddCodeBreakpoint(_model.Wrapper, Arg.Any<ulong>())
+            .Returns((bpId, true));
     }
 
-    private void GivenAddBreakpointSucceedsMultiple(uint[] bpIds)
+    private void GivenAddCodeBreakpointSucceedsMultiple(uint[] bpIds)
     {
         var idx = 0;
-        _control.AddBreakpoint(Arg.Any<uint>(), Arg.Any<uint>(), out Arg.Any<IDebugBreakpoint>())
-            .Returns(ci =>
-            {
-                var id = bpIds[idx++];
-                var bp = Substitute.For<IDebugBreakpoint>();
-                bp.GetId(out Arg.Any<uint>()).Returns(c => { c[0] = id; return 0; });
-                _mockBps.Add(bp);
-                ci[2] = bp;
-                return 0;
-            });
+        _wrapper.AddCodeBreakpoint(_model.Wrapper, Arg.Any<ulong>())
+            .Returns(_ => (bpIds[idx++], true));
     }
 
     private void GivenGetLineByOffsetSucceeds(ulong offset, int resolvedLine)
     {
-        _symbols.GetLineByOffset(offset, out Arg.Any<uint>(),
-                Arg.Any<IntPtr>(), Arg.Any<uint>(), out Arg.Any<uint>(), out Arg.Any<ulong>())
-            .Returns(ci =>
-            {
-                ci[1] = (uint)resolvedLine;
-                return 0;
-            });
+        _wrapper.GetLineByOffset(_model.Wrapper, offset)
+            .Returns(((uint)resolvedLine, ""));
     }
 
-    private void GivenGetLineByOffsetSucceedsForMultiple((ulong offset, int line)[] mappings)
+    private void GivenGetLineByOffsetSucceedsForAll((ulong offset, int line)[] mappings)
     {
-        _symbols.GetLineByOffset(Arg.Any<ulong>(), out Arg.Any<uint>(),
-                Arg.Any<IntPtr>(), Arg.Any<uint>(), out Arg.Any<uint>(), out Arg.Any<ulong>())
+        _wrapper.GetLineByOffset(_model.Wrapper, Arg.Any<ulong>())
             .Returns(ci =>
             {
-                var reqOffset = (ulong)ci[0];
+                var reqOffset = (ulong)ci[1];
                 var match = mappings.FirstOrDefault(m => m.offset == reqOffset);
-                if (match != default)
-                {
-                    ci[1] = (uint)match.line;
-                    return 0;
-                }
-                return unchecked((int)0x80004005);
+                return match != default ? ((uint Line, string File)?)(((uint)match.line, "")) : null;
             });
     }
 
-    private void GivenBuCommandSucceeds(uint deferredBpId)
+    private void GivenAddDeferredBreakpointSucceeds(uint deferredBpId)
     {
-        _control.Execute(Arg.Any<uint>(), Arg.Is<string>(s => s.StartsWith("bu")), Arg.Any<uint>())
-            .Returns(0);
-        _control.GetNumberBreakpoints(out Arg.Any<uint>())
-            .Returns(ci => { ci[0] = 1u; return 0; });
-        var deferredBp = Substitute.For<IDebugBreakpoint>();
-        deferredBp.GetId(out Arg.Any<uint>()).Returns(ci => { ci[0] = deferredBpId; return 0; });
-        _control.GetBreakpointByIndex(0u, out Arg.Any<IDebugBreakpoint>())
-            .Returns(ci => { ci[1] = deferredBp; return 0; });
+        _wrapper.AddDeferredBreakpoint(_model.Wrapper, Arg.Any<string>(), Arg.Any<int>())
+            .Returns((deferredBpId, true));
     }
 
-    private void GivenBuCommandFails()
+    private void GivenAddDeferredBreakpointFails()
     {
-        _control.Execute(Arg.Any<uint>(), Arg.Is<string>(s => s.StartsWith("bu")), Arg.Any<uint>())
-            .Returns(unchecked((int)0x80004005));
+        _wrapper.AddDeferredBreakpoint(_model.Wrapper, Arg.Any<string>(), Arg.Any<int>())
+            .Returns((0u, false));
     }
 
     private void GivenExistingBreakpointForFile(string filePath, int line, uint bpId)
@@ -577,175 +456,31 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         _model.UserBreakpointIds.Add(bpId);
     }
 
-    private void GivenGetBreakpointByIdSucceeds(uint bpId)
+    private void GivenThreadsExist((uint engineId, uint systemId)[] threads)
     {
-        var oldBp = Substitute.For<IDebugBreakpoint>();
-        _control.GetBreakpointById(bpId, out Arg.Any<IDebugBreakpoint>())
-            .Returns(ci => { ci[1] = oldBp; return 0; });
-        _oldBreakpoint = oldBp;
-    }
-
-    private void GivenThreadsExist(uint[] engineIds, uint[] sysIds)
-    {
-        _sysObjects.GetNumberThreads(out Arg.Any<uint>())
-            .Returns(ci => { ci[0] = (uint)engineIds.Length; return 0; });
-        _sysObjects.GetThreadIdsByIndex(0, (uint)engineIds.Length,
-                Arg.Any<uint[]>(), Arg.Any<uint[]?>())
-            .Returns(ci =>
-            {
-                var ids = (uint[])ci[2];
-                var sys = (uint[]?)ci[3];
-                Array.Copy(engineIds, ids, engineIds.Length);
-                if (sys != null) Array.Copy(sysIds, sys, sysIds.Length);
-                return 0;
-            });
+        _wrapper.GetThreads(_model.Wrapper).Returns(threads);
     }
 
     private void GivenNoThreadsExist()
     {
-        _sysObjects.GetNumberThreads(out Arg.Any<uint>())
-            .Returns(ci => { ci[0] = 0u; return 0; });
+        _wrapper.GetThreads(_model.Wrapper).Returns([]);
     }
 
     private void GivenEventThreadId(uint threadId)
     {
-        _sysObjects.GetEventThread(out Arg.Any<uint>())
-            .Returns(ci => { ci[0] = threadId; return 0; });
+        _wrapper.GetEventThreadId(_model.Wrapper).Returns(threadId);
     }
 
-    private void GivenCachedStackFrames(int count)
+    private void GivenSetScopeAndGetLocalsReturns(int variablesReference)
     {
-        _model.CachedStackFrames = Enumerable.Range(0, count)
-            .Select(i => new DEBUG_STACK_FRAME { InstructionOffset = (ulong)(0x1000 + i * 0x100) })
-            .ToArray();
+        _wrapper.SetScopeAndGetLocals(_model.Wrapper, Arg.Any<int>())
+            .Returns(variablesReference);
     }
 
-    private void GivenSetScopeSucceeds()
+    private void GivenGetVariablesReturns(VariableInfo[] vars)
     {
-        _symbols.SetScope(Arg.Any<ulong>(), Arg.Any<IntPtr>(), Arg.Any<IntPtr>(), Arg.Any<uint>())
-            .Returns(0);
-    }
-
-    private void GivenGetScopeSymbolGroupSucceeds(uint symbolCount)
-    {
-        _initialSymbolCount = symbolCount;
-        _mockSymbolGroup = Substitute.For<IDebugSymbolGroup2>();
-        _mockSymbolGroup.GetNumberSymbols(out Arg.Any<uint>())
-            .Returns(ci =>
-            {
-                // After expansion, return the expanded total if set.
-                var expanded = _symbolExpanded && _expandedTotal > 0;
-                ci[0] = expanded ? _expandedTotal : _initialSymbolCount;
-                return 0;
-            });
-        _mockSymbolGroup.ExpandSymbol(Arg.Any<uint>(), true)
-            .Returns(ci =>
-            {
-                _symbolExpanded = true;
-                return 0;
-            });
-        _symbols.GetScopeSymbolGroup(
-                Arg.Any<uint>(), Arg.Any<IntPtr>(), out Arg.Any<IDebugSymbolGroup2>())
-            .Returns(ci => { ci[2] = _mockSymbolGroup; return 0; });
-    }
-
-    private void GivenGetScopeSymbolGroupFails()
-    {
-        _symbols.GetScopeSymbolGroup(
-                Arg.Any<uint>(), IntPtr.Zero, out Arg.Any<IDebugSymbolGroup2>())
-            .Returns(unchecked((int)0x80004005));
-    }
-
-    private void GivenSymbolGroupReturnsVariable(uint index, string name, string type, string value)
-    {
-        _symbolVariables[index] = (name, type, value);
-        SetupSymbolGroupVariableMocks();
-    }
-
-    private void SetupSymbolGroupVariableMocks()
-    {
-        var vars = _symbolVariables;
-        _mockSymbolGroup!.GetSymbolName(Arg.Any<uint>(), Arg.Any<IntPtr>(), Arg.Any<uint>(), out Arg.Any<uint>())
-            .Returns(ci =>
-            {
-                var idx = (uint)ci[0];
-                if (vars.TryGetValue(idx, out var v))
-                {
-                    WriteAnsiString((IntPtr)ci[1], v.Name);
-                    ci[3] = (uint)v.Name.Length + 1;
-                    return 0;
-                }
-                return unchecked((int)0x80004005);
-            });
-        _mockSymbolGroup!.GetSymbolTypeName(Arg.Any<uint>(), Arg.Any<IntPtr>(), Arg.Any<uint>(), out Arg.Any<uint>())
-            .Returns(ci =>
-            {
-                var idx = (uint)ci[0];
-                if (vars.TryGetValue(idx, out var v))
-                {
-                    WriteAnsiString((IntPtr)ci[1], v.Type);
-                    ci[3] = (uint)v.Type.Length + 1;
-                    return 0;
-                }
-                return unchecked((int)0x80004005);
-            });
-        _mockSymbolGroup!.GetSymbolValueText(Arg.Any<uint>(), Arg.Any<IntPtr>(), Arg.Any<uint>(), out Arg.Any<uint>())
-            .Returns(ci =>
-            {
-                var idx = (uint)ci[0];
-                if (vars.TryGetValue(idx, out var v))
-                {
-                    WriteAnsiString((IntPtr)ci[1], v.Value);
-                    ci[3] = (uint)v.Value.Length + 1;
-                    return 0;
-                }
-                return unchecked((int)0x80004005);
-            });
-    }
-
-    private void GivenSymbolParametersWithNoChildren(uint count)
-    {
-        _mockSymbolGroup!.GetSymbolParameters(Arg.Any<uint>(), Arg.Any<uint>(), Arg.Any<IntPtr>())
-            .Returns(ci =>
-            {
-                var cnt = (uint)ci[1];
-                var buf = (IntPtr)ci[2];
-                int size = Marshal.SizeOf<DEBUG_SYMBOL_PARAMETERS>();
-                for (int i = 0; i < (int)cnt; i++)
-                {
-                    var p = new DEBUG_SYMBOL_PARAMETERS { SubElements = 0 };
-                    Marshal.StructureToPtr(p, buf + i * size, false);
-                }
-                return 0;
-            });
-    }
-
-    private void GivenSymbolParametersWithChildren(uint count, uint subElements)
-    {
-        _mockSymbolGroup!.GetSymbolParameters(Arg.Any<uint>(), Arg.Any<uint>(), Arg.Any<IntPtr>())
-            .Returns(ci =>
-            {
-                var cnt = (uint)ci[1];
-                var buf = (IntPtr)ci[2];
-                int size = Marshal.SizeOf<DEBUG_SYMBOL_PARAMETERS>();
-                for (int i = 0; i < (int)cnt; i++)
-                {
-                    var p = new DEBUG_SYMBOL_PARAMETERS { SubElements = subElements };
-                    Marshal.StructureToPtr(p, buf + i * size, false);
-                }
-                return 0;
-            });
-    }
-
-    private void GivenExpandSymbolSucceeds(uint newTotal)
-    {
-        _expandedTotal = newTotal;
-    }
-
-    private static void WriteAnsiString(IntPtr buffer, string value)
-    {
-        var bytes = System.Text.Encoding.ASCII.GetBytes(value + '\0');
-        Marshal.Copy(bytes, 0, buffer, bytes.Length);
+        _wrapper.GetVariables(_model.Wrapper, Arg.Any<int>())
+            .Returns(vars);
     }
 
     #endregion
@@ -772,7 +507,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         _testee.Break(_model);
     }
 
-    private void WhenExecutingStepOnEngine(uint stepKind)
+    private void WhenExecutingStepOnEngine(EngineExecutionStatus stepKind)
     {
         _testee.ExecuteStepOnEngine(_model, stepKind);
     }
@@ -846,9 +581,9 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         Assert.True(_model.ConfigDone);
     }
 
-    private void ThenSetExecutionStatusWasCalledWith(uint status)
+    private void ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus status)
     {
-        _control.Received().SetExecutionStatus(status);
+        _wrapper.Received().SetExecutionStatus(_model.Wrapper, status);
     }
 
     private void ThenPauseRequestedIsTrue()
@@ -858,12 +593,12 @@ public sealed class NativeDebuggerServiceTests : IDisposable
 
     private void ThenSetInterruptWasCalled()
     {
-        _control.Received(1).SetInterrupt(0);
+        _wrapper.Received(1).SetInterrupt(_model.Wrapper);
     }
 
-    private void ThenExecuteWasCalledWith(string command)
+    private void ThenExecuteCommandWasCalledWith(string command)
     {
-        _control.Received(1).Execute(DebugOutCtl.Ignore, command, DebugExecute.NotLogged);
+        _wrapper.Received(1).ExecuteCommand(_model.Wrapper, command);
     }
 
     private void ThenModelIsTerminated()
@@ -871,24 +606,14 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         Assert.True(_model.Terminated);
     }
 
-    private void ThenTerminateProcessesWasCalled()
+    private void ThenTerminateSessionWasCalled()
     {
-        _client.Received(1).TerminateProcesses();
+        _wrapper.Received(1).TerminateSession(_model.Wrapper);
     }
 
-    private void ThenTerminateProcessesWasNotCalled()
+    private void ThenDetachSessionWasCalled()
     {
-        _client.DidNotReceive().TerminateProcesses();
-    }
-
-    private void ThenEndSessionWasCalledWith(uint flags)
-    {
-        _client.Received(1).EndSession(flags);
-    }
-
-    private void ThenDetachProcessesWasCalled()
-    {
-        _client.Received(1).DetachProcesses();
+        _wrapper.Received(1).DetachSession(_model.Wrapper);
     }
 
     private void ThenBreakpointResultCountIs(int expected)
@@ -931,19 +656,9 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         Assert.DoesNotContain(id, _model.UserBreakpointIds);
     }
 
-    private void ThenBreakpointSetOffsetWasCalled(ulong offset)
+    private void ThenRemoveBreakpointWasCalled(uint bpId)
     {
-        _mockBp!.Received(1).SetOffset(offset);
-    }
-
-    private void ThenBreakpointAddFlagsWasCalled(uint flags)
-    {
-        _mockBp!.Received(1).AddFlags(flags);
-    }
-
-    private void ThenRemoveBreakpointWasCalled()
-    {
-        _control.Received(1).RemoveBreakpoint(Arg.Any<IDebugBreakpoint>());
+        _wrapper.Received(1).RemoveBreakpoint(_model.Wrapper, bpId);
     }
 
     private void ThenThreadResultCountIs(int expected)
@@ -976,15 +691,9 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         Assert.Equal(expected, _scopeResults![index].Name);
     }
 
-    private void ThenScopeAtIndexHasPositiveVariablesReference(int index)
+    private void ThenScopeAtIndexHasVariablesReference(int index, int expected)
     {
-        Assert.True(_scopeResults![index].VariablesReference > 0);
-    }
-
-    private void ThenSetScopeWasCalled()
-    {
-        _symbols.Received(1).SetScope(
-            Arg.Any<ulong>(), Arg.Any<IntPtr>(), Arg.Any<IntPtr>(), Arg.Any<uint>());
+        Assert.Equal(expected, _scopeResults![index].VariablesReference);
     }
 
     private void ThenVariableResultCountIs(int expected)
@@ -1007,11 +716,6 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         Assert.Equal(expected, _variableResults![index].Type);
     }
 
-    private void ThenVariableAtIndexHasPositiveVariablesReference(int index)
-    {
-        Assert.True(_variableResults![index].VariablesReference > 0);
-    }
-
     #endregion
 
     #region Misc
@@ -1020,24 +724,13 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     private readonly ILoggingService _log = Substitute.For<ILoggingService>();
     private readonly ISourceFileService _sourceFiles = Substitute.For<ISourceFileService>();
     private readonly IManagedDebugger _managedDebugger = Substitute.For<IManagedDebugger>();
-    private readonly IDebugClient _client = Substitute.For<IDebugClient>();
-    private readonly IDebugControl _control = Substitute.For<IDebugControl>();
-    private readonly IDebugSymbols _symbols = Substitute.For<IDebugSymbols>();
-    private readonly IDebugSystemObjects _sysObjects = Substitute.For<IDebugSystemObjects>();
+    private readonly IDbgEngWrapper _wrapper = Substitute.For<IDbgEngWrapper>();
     private readonly DapServerModel _transport;
     private readonly LogStore _logStore;
     private readonly NativeDebuggerModel _model;
     private readonly NativeDebuggerService _testee;
 
     private NativeDebuggerModel? _createdModel;
-    private IDebugBreakpoint? _mockBp;
-    private readonly List<IDebugBreakpoint> _mockBps = [];
-    private IDebugBreakpoint? _oldBreakpoint;
-    private IDebugSymbolGroup2? _mockSymbolGroup;
-    private readonly Dictionary<uint, (string Name, string Type, string Value)> _symbolVariables = new();
-    private uint _initialSymbolCount;
-    private uint _expandedTotal;
-    private bool _symbolExpanded;
     private string? _bpFilePath;
     private SourceBreakpoint[]? _bpRequested;
     private Breakpoint[]? _bpResults;
@@ -1050,16 +743,13 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     {
         _transport = new DapServerModel(Stream.Null, Stream.Null);
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
-        _testee = new NativeDebuggerService(_server, _transport, _log, _logStore, _sourceFiles, _managedDebugger, Substitute.For<IProfilerPipeService>());
+        _testee = new NativeDebuggerService(
+            _server, _transport, _log, _logStore, _sourceFiles,
+            _managedDebugger, Substitute.For<IProfilerPipeService>(), _wrapper);
         _model = new NativeDebuggerModel
         {
-            Client = _client,
-            Control = _control,
-            Symbols = _symbols,
-            SysObjects = _sysObjects,
+            Wrapper = new DbgEngWrapperModel(),
         };
-
-        _control.SetExecutionStatus(Arg.Any<uint>()).Returns(0);
     }
 
     public void Dispose()
