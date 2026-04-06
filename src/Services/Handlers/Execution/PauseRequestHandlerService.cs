@@ -7,7 +7,7 @@ namespace MixDbg.Services.Handlers.Execution;
 /// Handles the DAP pause request.
 /// </summary>
 public class PauseRequestHandlerService(
-        IDebugSession session,
+        INativeDebugger nativeDebugger,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<EmptyArguments>
 {
@@ -17,6 +17,7 @@ public class PauseRequestHandlerService(
 
     public override void ExecuteInternal(EmptyArguments args)
     {
-		session.Pause(sessionModel);
+		if (sessionModel.Engine != null)
+			nativeDebugger.Break(sessionModel.Engine);
     }
 }

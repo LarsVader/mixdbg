@@ -7,7 +7,7 @@ namespace MixDbg.Services.Handlers.Execution;
 /// Handles the DAP next (step over) request.
 /// </summary>
 public class NextRequestHandlerService(
-        IDebugSession session,
+        INativeDebugger nativeDebugger,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<StepArguments>
 {
@@ -17,6 +17,8 @@ public class NextRequestHandlerService(
 
     public override void ExecuteInternal(StepArguments args)
     {
-		session.StepOver(sessionModel);
+		if (sessionModel.Engine != null)
+			nativeDebugger.StepOver(sessionModel.Engine);
+		sessionModel.State = SessionState.Running;
     }
 }

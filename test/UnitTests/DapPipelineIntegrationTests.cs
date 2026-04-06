@@ -481,8 +481,6 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         services.AddSingleton<ILoggingService, LoggingService>();
         services.AddSingleton<IDapServer, DapServerService>();
         services.AddSingleton<IDapDispatcher, DapDispatcherService>();
-        services.AddSingleton<IDebugSession, DebugSessionService>();
-
         // Mocked services
         services.AddSingleton<INativeDebugger>(_engine);
         services.AddSingleton(Substitute.For<IManagedDebugger>());
@@ -493,8 +491,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
             sp.GetRequiredService<ILoggingService>().CreateStore());
         services.AddSingleton(sp =>
             sp.GetRequiredService<IDapServer>().CreateModel(_inputStream!, _outputStream));
-        services.AddSingleton(sp =>
-            sp.GetRequiredService<IDebugSession>().CreateModel());
+        services.AddSingleton(new DebugSessionModel());
 
         // Register all handler services via assembly scanning
         typeof(IDapHandlerService).Assembly

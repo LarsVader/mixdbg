@@ -7,7 +7,7 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 /// Handles the DAP attach request by attaching to an existing process.
 /// </summary>
 public class AttachRequestHandlerService(
-        IDebugSession session,
+        INativeDebugger nativeDebugger,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<AttachRequestArguments>
 {
@@ -17,6 +17,17 @@ public class AttachRequestHandlerService(
 
     public override void ExecuteInternal(AttachRequestArguments args)
     {
-		session.Attach(sessionModel, args);
+		sessionModel.Engine = nativeDebugger.CreateModel();
+
+		if (args.Pid.HasValue)
+		{
+			nativeDebugger.Attach(sessionModel.Engine, (uint)args.Pid.Value, null);
+		}
+		else
+		{
+			throw new InvalidOperationException("PID is required for attach");
+		}
+
+		sessionModel.State = SessionState.Running;
     }
 }

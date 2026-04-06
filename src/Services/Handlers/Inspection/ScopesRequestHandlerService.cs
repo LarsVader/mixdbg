@@ -7,7 +7,7 @@ namespace MixDbg.Services.Handlers.Inspection;
 /// Handles the DAP scopes request by returning locals/arguments for a stack frame.
 /// </summary>
 public class ScopesRequestHandlerService(
-        IDebugSession session,
+        INativeDebugger nativeDebugger,
         DebugSessionModel sessionModel)
     : DapHandlerServiceBase<ScopesResponseBody, ScopesArguments>
 {
@@ -17,6 +17,9 @@ public class ScopesRequestHandlerService(
 
     public override ScopesResponseBody ExecuteInternal(ScopesArguments args)
     {
-		return session.GetScopes(sessionModel, args);
+		if (sessionModel.Engine == null)
+			return new ScopesResponseBody { Scopes = [] };
+
+		return new ScopesResponseBody { Scopes = nativeDebugger.GetScopes(sessionModel.Engine, args.FrameId) };
     }
 }

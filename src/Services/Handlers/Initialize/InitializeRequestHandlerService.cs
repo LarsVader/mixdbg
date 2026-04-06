@@ -3,8 +3,12 @@ using MixDbg.Models;
 
 namespace MixDbg.Services.Handlers.Initialize;
 
+/// <summary>
+/// Handles the DAP initialize handshake, sends the initialized event, and returns capabilities.
+/// </summary>
 public class InitializeRequestHandlerService(
-        IDebugSession session,
+        IDapServer server,
+        DapServerModel transport,
         DebugSessionModel sessionModel)
     : DapHandlerServiceBase<Capabilities, InitializeRequestArguments>
 {
@@ -14,6 +18,15 @@ public class InitializeRequestHandlerService(
 
     public override Capabilities ExecuteInternal(InitializeRequestArguments args)
     {
-		return session.Initialize(sessionModel, args);
+		sessionModel.State = SessionState.Initialized;
+		server.SendEvent(transport, "initialized", new InitializedEventBody());
+
+		return new Capabilities
+		{
+			SupportsConfigurationDoneRequest = true,
+			SupportsFunctionBreakpoints = false,
+			SupportsEvaluateForHovers = true,
+			SupportsTerminateRequest = true,
+		};
     }
 }

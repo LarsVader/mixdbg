@@ -7,7 +7,7 @@ namespace MixDbg.Services.Handlers.Execution;
 /// Handles the DAP stepIn request.
 /// </summary>
 public class StepInRequestHandlerService(
-        IDebugSession session,
+        INativeDebugger nativeDebugger,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<StepArguments>
 {
@@ -17,6 +17,8 @@ public class StepInRequestHandlerService(
 
     public override void ExecuteInternal(StepArguments args)
     {
-		session.StepInto(sessionModel);
+		if (sessionModel.Engine != null)
+			nativeDebugger.StepInto(sessionModel.Engine);
+		sessionModel.State = SessionState.Running;
     }
 }

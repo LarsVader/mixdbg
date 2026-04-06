@@ -14,7 +14,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISourceFileService, SourceFileService>();
         services.AddSingleton<IDapServer, DapServerService>();
         services.AddSingleton<IDapDispatcher, DapDispatcherService>();
-        services.AddSingleton<IDebugSession, DebugSessionService>();
         services.AddSingleton<INativeDebugger, NativeDebuggerService>();
         services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();
 
@@ -24,8 +23,7 @@ public static class ServiceCollectionExtensions
                             : sp.GetRequiredService<ILoggingService>().CreateStore());
         services.AddSingleton(sp =>
             sp.GetRequiredService<IDapServer>().CreateModel(input, output));
-        services.AddSingleton(sp =>
-            sp.GetRequiredService<IDebugSession>().CreateModel());
+        services.AddSingleton(new Models.DebugSessionModel());
 
 		// Register all IDapHandlerService implementations
         typeof(ServiceCollectionExtensions)

@@ -7,7 +7,7 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 /// Handles the DAP disconnect request by detaching or terminating the target.
 /// </summary>
 public class DisconnectRequestHandlerService(
-        IDebugSession session,
+        INativeDebugger nativeDebugger,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<DisconnectArguments>
 {
@@ -17,7 +17,14 @@ public class DisconnectRequestHandlerService(
 
     public override void ExecuteInternal(DisconnectArguments args)
     {
-		session.Disconnect(sessionModel, args);
+		if (sessionModel.Engine != null)
+		{
+			if (args.TerminateDebuggee == true)
+				nativeDebugger.Terminate(sessionModel.Engine);
+			else
+				nativeDebugger.Detach(sessionModel.Engine);
+		}
+		sessionModel.State = SessionState.Terminated;
 		throw new DisconnectException();
     }
 }
