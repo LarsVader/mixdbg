@@ -162,7 +162,10 @@ ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace
 - **CLR Profiler (`MixDbgProfiler.dll`)**: Native C++ DLL implementing `ICorProfilerCallback2`. CLR loads it at startup via `CORECLR_ENABLE_PROFILING` env vars. Uses two mechanisms:
   1. `JITCompilationFinished` sends `JIT:token:address:size:assembly[:IL-map]` for stack trace resolution and IL-to-native mapping
   2. `FunctionEnter` hooks (via x64 MASM stubs) fire on every call to breakpointed methods, enabling unlimited transient breakpoints
-- **Unlimited managed breakpoints via FunctionEnter hooks**: `FunctionIDMapper` selectively enables hooks only for breakpointed methods. On each call: profiler disables hooks (`SetEventMask`) → sends ENTER notification → blocks on ACK → MixDbg sets transient hardware BP at exact line address (via IL-to-native mapping) → ACK → method runs without hooks → BP fires at correct line. On Continue: MixDbg removes BP, signals REHOOK event → profiler's watcher thread re-enables hooks for the next call.
+- **Unlimited managed breakpoints via FunctionEnter hooks**: `FunctionIDMapper` selectively enables hooks for watched methods. Two watch granularities:
+  1. **Exact token watches** (`MIXDBG_WATCH_TOKENS`): C# methods — resolved from portable PDBs at pre-launch time. Only breakpointed methods are hooked.
+  2. **Assembly-level watches** (`MIXDBG_WATCH_ASSEMBLIES`): C++/CLI assemblies — resolved from vcxproj at pre-launch time. ALL methods from the assembly are hooked (can't resolve specific tokens before module loads). Non-BP method ENTERs are ACKed immediately with REHOOK to keep hooks active.
+  On each call: profiler disables hooks (`SetEventMask`) → sends ENTER notification → blocks on ACK → MixDbg sets transient hardware BP at exact line address (via IL-to-native mapping) → ACK → method runs without hooks → BP fires at correct line. On Continue: MixDbg removes BP, signals REHOOK event → profiler's watcher thread re-enables hooks for the next call.
 - **Exact-line breakpoints via IL-to-native mapping**: Profiler sends `GetILToNativeMapping` data for watched methods in JIT: notifications. MixDbg maps the deferred BP's IL offset (from PDB) to the exact native address inside the method body. Hardware BPs fire at the precise source line, not just at method entry.
 - **Managed stack traces**: Profiler's `JitMethodMap` (sorted by native address) maps any IP in JIT'd code to method token + assembly. `ResolveFrameFromProfilerData` binary-searches the map, reverse-maps native IP → IL offset via `JitMethodMappings`, then uses `PdbSourceMapper` for method name + exact source file:line.
 - **Source resolution**: C# uses portable PDBs read by `PdbSourceMapper` via `System.Reflection.Metadata`. C++/CLI uses Windows PDBs read natively by dbgeng's `GetLineByOffset`.
@@ -187,7 +190,7 @@ Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stop
 
 ### M4: Managed Debugging — DONE
 
-**Managed breakpoints (working):** Unlimited first-click breakpoints at exact source lines on C# code. Uses a hybrid CLR Profiler approach: `FunctionEnter` hooks (via x64 MASM stubs) detect each call to breakpointed methods, profiler temporarily disables hooks and blocks, MixDbg sets a transient hardware BP at the exact line address (via IL-to-native mapping from `GetILToNativeMapping`), method runs without hooks and hits the BP. On Continue, BP is removed and a REHOOK event re-enables hooks for the next call. All 4 integration tests pass (first-click, slow-user, double-click, exact-line).
+**Managed breakpoints (working):** Unlimited first-click breakpoints at exact source lines on both C# and C++/CLI code. Uses a hybrid CLR Profiler approach: `FunctionEnter` hooks (via x64 MASM stubs) detect each call to breakpointed methods, profiler temporarily disables hooks and blocks, MixDbg sets a transient hardware BP at the exact line address (via IL-to-native mapping from `GetILToNativeMapping`), method runs without hooks and hits the BP. On Continue, BP is removed and a REHOOK event re-enables hooks for the next call. C# uses exact token watches (`MIXDBG_WATCH_TOKENS`); C++/CLI uses assembly-level watches (`MIXDBG_WATCH_ASSEMBLIES`) because tokens can't be resolved before module load. All 5 integration tests pass (first-click, slow-user, double-click, exact-line, C++/CLI first-click).
 
 **Managed stack traces (working):** Profiler's `JitMethodMap` maps native IPs to method tokens + assemblies. `ResolveFrameFromProfilerData` binary-searches the map, reverse-maps native IP → IL offset via `JitMethodMappings`, then uses `PdbSourceMapper` for method name + exact source file:line. Completely replaces the broken ICorDebug piggybacked thread enumeration (`E_NOTIMPL`).
 
@@ -197,9 +200,10 @@ Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stop
 - `JITCompilationFinished` resolves `FunctionID` → method token + native address + code size + assembly name
 - Sends `JIT:TOKEN:ADDRESS:SIZE:ASSEMBLY[:IL-map]\n` text lines to MixDbg via named pipe (`MIXDBG_PIPE_NAME`)
 - `FunctionEnter` hooks (x64 MASM stubs in `EnterLeaveStubs.asm`) fire on every call to watched methods
-- `FunctionIDMapper` enables hooks only for methods in `MIXDBG_WATCH_TOKENS` (zero overhead for all others)
+- `FunctionIDMapper` enables hooks for methods matching `MIXDBG_WATCH_TOKENS` (exact) or `MIXDBG_WATCH_ASSEMBLIES` (assembly-level for C++/CLI)
 - On enter: disables hooks → sends `ENTER:TOKEN:ADDRESS:THREADID:ASSEMBLY\n` → blocks on ACK event (`MIXDBG_ACK_EVENT`) → MixDbg sets transient hardware BP → ACK → method runs → BP fires
 - On continue: MixDbg signals REHOOK event (`MIXDBG_REHOOK_EVENT`) → watcher thread re-enables hooks
+- Non-BP method ENTER (assembly-level watch): MixDbg ACKs immediately + signals REHOOK
 - Profiler CLSID: `{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}`
 - Uses `ICorProfilerInfo` vtable calls by slot index (no corprof.h header dependency)
 
