@@ -51,8 +51,8 @@ src/
         UnmanagedCallbackHandler.cs # Internal: ICorDebug unmanaged callback wrapper
         RuntimeLibraryProvider.cs # Internal: finds mscordbi.dll next to coreclr.dll
       Sos/
-        PdbSourceMapperService.cs # Internal: reads portable PDBs, implements IPdbSourceMapper
-        SosOutputParser.cs       # Internal: parses SOS command output
+        PdbSourceMapperService.cs # Internal: reads portable PDBs, implements IPdbSourceMapper (singleton)
+        SosOutputParser.cs       # Internal: parses SOS command output (unused)
     Models/
       DbgEngWrapperModel.cs      # Public: dbgeng COM wrapper state (COM refs internal), engine events
       CorDebugWrapperModel.cs    # Public: ICorDebug V4 wrapper state (ClrDebug refs internal)
@@ -62,14 +62,12 @@ src/
       NativeStackFrame.cs        # Public record struct: instruction pointer
       VariableInfo.cs            # Public record struct: resolved variable data
       ManagedModuleInfo.cs       # Public record: loaded managed module info
-      ManagedFrameInfo.cs        # Public record: managed stack frame info
+      RawManagedFrame.cs          # Public record: raw managed frame (token, module, IL offset, name)
       LogEntry.cs                # Public: immutable log record
       LogStore.cs                # Public: mutable log state
     Services/
       DbgEngWrapperService.cs    # Internal: implements IDbgEngWrapper
-      CorDebugWrapperService.cs  # Internal: implements ICorDebugWrapper
-      Logging/
-        LoggingService.cs        # Internal: implements ILoggingService
+      CorDebugWrapperService.cs  # Internal: implements ICorDebugWrapper (thin COM wrapper)
       Interfaces/
         IDbgEngWrapper.cs        # Public: stateless dbgeng COM wrapper interface
         ICorDebugWrapper.cs      # Public: stateless ICorDebug V4 wrapper interface
@@ -138,7 +136,7 @@ test/
 
 **DbgEng COM isolation**: All dbgeng COM interop is encapsulated behind `IDbgEngWrapper` / `DbgEngWrapperService`. COM interface types (`IDebugClient`, `IDebugControl`, etc.) are `internal` to the `Engine.DbgEng` namespace and stored on `DbgEngWrapperModel` (also `internal` properties). The rest of the codebase uses only the wrapper's public API: `EngineExecutionStatus`, `NativeStackFrame`, `VariableInfo`, `EngineEventInfo`. Engine callback events (breakpoint hit, module load, etc.) are exposed as C# events on `DbgEngWrapperModel`. `NativeDebuggerModel` holds a `DbgEngWrapperModel Wrapper` property. `ManagedDebuggerService` and `ProfilerPipeService` also use `IDbgEngWrapper` for their COM needs (breakpoints, symbols, SetInterrupt).
 
-**ICorDebug V4 isolation**: All ClrDebug NuGet package types (`CorDebugProcess`, `SOSDacInterface`, `XCLRDataProcess`, etc.) are encapsulated behind `ICorDebugWrapper` / `CorDebugWrapperService`. ClrDebug types are `internal` on `CorDebugWrapperModel`. The rest of the codebase uses `ManagedModuleInfo`, `ManagedFrameInfo`, and wrapper methods. `NativeDebuggerModel` holds a `CorDebugWrapperModel CorWrapper` property. `ManagedDebuggerService` delegates all ICorDebug operations (runtime init, module enumeration, stack traces, DAC resolution) to `ICorDebugWrapper`.
+**ICorDebug V4 isolation**: All ClrDebug NuGet package types (`CorDebugProcess`, `SOSDacInterface`, `XCLRDataProcess`, etc.) are encapsulated behind `ICorDebugWrapper` / `CorDebugWrapperService`. ClrDebug types are `internal` on `CorDebugWrapperModel`. The rest of the codebase uses `ManagedModuleInfo`, `RawManagedFrame`, and wrapper methods. `NativeDebuggerModel` holds a `CorDebugWrapperModel CorWrapper` property. `ManagedDebuggerService` delegates all ICorDebug operations (runtime init, module enumeration, stack traces, DAC resolution) to `ICorDebugWrapper`. The wrapper is a thin COM call layer — PDB source resolution and orchestration logic stay in `ManagedDebuggerService`.
 
 Three threads, one command queue:
 
@@ -205,8 +203,8 @@ ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace
   2. **Assembly-level watches** (`MIXDBG_WATCH_ASSEMBLIES`): C++/CLI assemblies — resolved from vcxproj at pre-launch time. ALL methods from the assembly are hooked (can't resolve specific tokens before module loads). Non-BP method ENTERs are ACKed immediately with REHOOK to keep hooks active.
   On each call: profiler disables hooks (`SetEventMask`) → sends ENTER notification → blocks on ACK → MixDbg sets transient hardware BP at exact line address (via IL-to-native mapping) → ACK → method runs without hooks → BP fires at correct line. On Continue: MixDbg removes BP, signals REHOOK event → profiler's watcher thread re-enables hooks for the next call.
 - **Exact-line breakpoints via IL-to-native mapping**: Profiler sends `GetILToNativeMapping` data for watched methods in JIT: notifications. MixDbg maps the deferred BP's IL offset (from PDB) to the exact native address inside the method body. Hardware BPs fire at the precise source line, not just at method entry.
-- **Managed stack traces**: Profiler's `JitMethodMap` (sorted by native address) maps any IP in JIT'd code to method token + assembly. `ResolveFrameFromProfilerData` binary-searches the map, reverse-maps native IP → IL offset via `JitMethodMappings`, then uses `PdbSourceMapper` for method name + exact source file:line.
-- **Source resolution**: C# uses portable PDBs read by `PdbSourceMapper` via `System.Reflection.Metadata`. C++/CLI uses Windows PDBs read natively by dbgeng's `GetLineByOffset`.
+- **Managed stack traces**: Profiler's `JitMethodMap` (sorted by native address) maps any IP in JIT'd code to method token + assembly. `ResolveFrameFromProfilerData` binary-searches the map, reverse-maps native IP → IL offset via `JitMethodMappings`, then uses `PdbSourceMapperService` for method name + exact source file:line.
+- **Source resolution**: C# uses portable PDBs read by `PdbSourceMapperService` via `System.Reflection.Metadata`. C++/CLI uses Windows PDBs read natively by dbgeng's `GetLineByOffset`.
 - **Module tracking**: `ManagedDebuggerService.EnumerateModules` walks `ICorDebugProcess.AppDomains` → assemblies → modules. Called on init and on each dbgeng LoadModule event for managed DLLs. Pending breakpoints bind when their module becomes available.
 - **CLR notification exceptions** (code `e0444143`): Returned as `GO_HANDLED` from `EventCallbacks.Exception`.
 - **Pending breakpoints**: Managed breakpoints received before CLR loads are stored in `model.PendingManagedBreakpoints` and applied after `InitializeRuntime` succeeds. Breakpoints for modules not yet in ICorDebug are stored as `PendingManagedBreakpoint` and bound on module load.
@@ -230,7 +228,7 @@ Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stop
 
 **Managed breakpoints (working):** Unlimited first-click breakpoints at exact source lines on both C# and C++/CLI code. Uses a hybrid CLR Profiler approach: `FunctionEnter` hooks (via x64 MASM stubs) detect each call to breakpointed methods, profiler temporarily disables hooks and blocks, MixDbg sets a transient hardware BP at the exact line address (via IL-to-native mapping from `GetILToNativeMapping`), method runs without hooks and hits the BP. On Continue, BP is removed and a REHOOK event re-enables hooks for the next call. C# uses exact token watches (`MIXDBG_WATCH_TOKENS`); C++/CLI uses assembly-level watches (`MIXDBG_WATCH_ASSEMBLIES`) because tokens can't be resolved before module load. All 5 integration tests pass (first-click, slow-user, double-click, exact-line, C++/CLI first-click).
 
-**Managed stack traces (working):** Profiler's `JitMethodMap` maps native IPs to method tokens + assemblies. `ResolveFrameFromProfilerData` binary-searches the map, reverse-maps native IP → IL offset via `JitMethodMappings`, then uses `PdbSourceMapper` for method name + exact source file:line. Completely replaces the broken ICorDebug piggybacked thread enumeration (`E_NOTIMPL`).
+**Managed stack traces (working):** Profiler's `JitMethodMap` maps native IPs to method tokens + assemblies. `ResolveFrameFromProfilerData` binary-searches the map, reverse-maps native IP → IL offset via `JitMethodMappings`, then uses `PdbSourceMapperService` for method name + exact source file:line. Completely replaces the broken ICorDebug piggybacked thread enumeration (`E_NOTIMPL`).
 
 **CLR Profiler (`MixDbgProfiler.dll`):**
 - Native C++ DLL implementing `ICorProfilerCallback2`
