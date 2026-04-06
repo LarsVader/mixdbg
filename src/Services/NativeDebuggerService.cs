@@ -53,6 +53,7 @@ internal sealed class NativeDebuggerService(
             Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", null);
             Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", null);
             Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", null);
+            Environment.SetEnvironmentVariable("MIXDBG_WATCH_ASSEMBLIES", null);
         };
         return model;
     }
@@ -488,6 +489,7 @@ internal sealed class NativeDebuggerService(
                     // Find the matching deferred BP and compute exact native address
                     // from the IL-to-native mapping (resolves breakpoint line → native offset).
                     var bpKey = $"{model.EnterBreakpointAssembly}:{model.EnterBreakpointToken:X8}";
+                    bool matched = false;
                     foreach (var deferred in model.DeferredManagedBreakpoints)
                     {
                         if (deferred.MethodToken == model.EnterBreakpointToken &&
@@ -504,13 +506,20 @@ internal sealed class NativeDebuggerService(
                             }
                             _managedDebugger.SetTransientBreakpoint(model, addr, deferred.FilePath, deferred.Line);
                             _log.LogInfo(_logStore, $"  ENTER: transient hw BP at 0x{addr:X} for {deferred.FilePath}:{deferred.Line}");
+                            matched = true;
                             break;
                         }
                     }
-                    // ACK unblocks the profiler (hooks stay disabled). Method body runs
-                    // through normal code path → hardware BP fires. Rehook watcher
-                    // re-enables hooks when MixDbg signals on Continue.
+                    // ACK unblocks the profiler (hooks disabled during method body).
                     model.ProfilerAckEvent?.Set();
+                    if (!matched)
+                    {
+                        // Non-BP method from assembly-level watch — re-enable hooks
+                        // immediately so the next method call also fires ENTER.
+                        _log.LogInfo(_logStore, $"  ENTER: no match for token=0x{model.EnterBreakpointToken:X8} — rehooking");
+                        model.ProfilerRehookEvent?.Set();
+                    }
+                    // Matched: hooks stay disabled until user continues (hw BP fires first).
                     model.Stopped.Reset();
                     model.Control.SetExecutionStatus(DebugStatus.Go);
                     continue;
@@ -674,6 +683,21 @@ internal sealed class NativeDebuggerService(
         if (watchTokens != null)
             Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", watchTokens);
 
+        // Resolve C++/CLI assembly names for assembly-level watching.
+        // FunctionIDMapper is called once per method (result cached by CLR), so we
+        // can't add watches dynamically. Instead, set an env var at pre-launch time
+        // so the profiler hooks ALL methods from these assemblies.
+        if (model.ProfilerBreakpointHints.Count > 0)
+        {
+            var watchAssemblies = _managedDebugger.ResolveWatchAssemblies(model.ProfilerBreakpointHints);
+            if (watchAssemblies.Count > 0)
+            {
+                var asmList = string.Join(",", watchAssemblies);
+                Environment.SetEnvironmentVariable("MIXDBG_WATCH_ASSEMBLIES", asmList);
+                _log.LogInfo(_logStore, $"Profiler watch assemblies: {asmList}");
+            }
+        }
+
         _log.LogInfo(_logStore, $"Profiler pipe created: {pipeName}, DLL: {profilerPath}");
     }
 
@@ -771,6 +795,26 @@ internal sealed class NativeDebuggerService(
                                 };
                                 _log.LogInfo(_logStore, $"ProfilerReader: stored IL map for {key} ({mapEntries.Count} entries)");
                             }
+                        }
+                        // Check if this JIT matches a deferred breakpoint (e.g. C++/CLI).
+                        // Deferred BPs with matching token+assembly need the JIT'd address to set hw BPs.
+                        bool jitMatches = false;
+                        foreach (var deferred in model.DeferredManagedBreakpoints)
+                        {
+                            if (deferred.MethodToken == jToken &&
+                                deferred.AssemblyName != null &&
+                                deferred.AssemblyName.Equals(jAsm, StringComparison.OrdinalIgnoreCase))
+                            {
+                                jitMatches = true;
+                                break;
+                            }
+                        }
+                        if (jitMatches)
+                        {
+                            model.JitNotifications.Enqueue(new JitNotification(jToken, jAddr, jSize, jAsm));
+                            _log.LogInfo(_logStore,
+                                $"ProfilerReader: JIT: match! token=0x{jToken:X8} addr=0x{jAddr:X} asm={jAsm} — interrupting engine");
+                            try { model.Control.SetInterrupt(0); } catch { }
                         }
                     }
                     model.ProfilerHooksActive = true;

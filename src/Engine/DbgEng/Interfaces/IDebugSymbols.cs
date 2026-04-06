@@ -47,8 +47,19 @@ public interface IDebugSymbols
         [MarshalAs(UnmanagedType.LPStr)] string File,
         out ulong Offset);
 
-    // Slots 9-28
-    void _VtblGap4_20();
+    // Slots 9-11: GetNumberModules, GetModuleByIndex, GetModuleByModuleName
+    void _VtblGap4_3();
+
+    // Slot 12
+    [PreserveSig]
+    int GetModuleByOffset(
+        ulong Offset,
+        uint StartIndex,
+        out uint Index,
+        out ulong Base);
+
+    // Slots 13-28
+    void _VtblGap5_16();
 
     // Slot 29
     [PreserveSig]
@@ -59,7 +70,7 @@ public interface IDebugSymbols
         uint ScopeContextSize);
 
     // Slot 30: ResetScope
-    void _VtblGap5_1();
+    void _VtblGap6_1();
 
     // Slot 31
     [PreserveSig]
@@ -69,7 +80,7 @@ public interface IDebugSymbols
         [MarshalAs(UnmanagedType.Interface)] out IDebugSymbolGroup2 Group);
 
     // Slots 32-37
-    void _VtblGap6_6();
+    void _VtblGap7_6();
 
     // Slot 38
     [PreserveSig]
@@ -82,7 +93,7 @@ public interface IDebugSymbols
         [MarshalAs(UnmanagedType.LPStr)] string Addition);
 
     // Slots 40-44: image/source path getters
-    void _VtblGap8_5();
+    void _VtblGap9_5();
 
     // Slot 45
     [PreserveSig]

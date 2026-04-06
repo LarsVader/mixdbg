@@ -35,8 +35,8 @@ public sealed class SourceFileService : ISourceFileService
         if (ext == ".cs")
             return true;
 
-        // C++/CLI files: .cpp/.c in a project with <CLRSupport>.
-        if (ext is ".cpp" or ".c" or ".cc" or ".cxx")
+        // C++/CLI files: .cpp/.c/.h/.hpp in a project with <CLRSupport>.
+        if (ext is ".cpp" or ".c" or ".cc" or ".cxx" or ".h" or ".hpp")
         {
             var dir = Path.GetDirectoryName(path);
             if (dir != null)
@@ -54,6 +54,30 @@ public sealed class SourceFileService : ISourceFileService
             }
         }
 
+        return false;
+    }
+
+    public bool IsCliFile(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is not ".cpp" and not ".c" and not ".cc" and not ".cxx"
+            and not ".h" and not ".hpp")
+            return false;
+
+        var dir = Path.GetDirectoryName(path);
+        if (dir != null)
+        {
+            try
+            {
+                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                {
+                    var text = File.ReadAllText(vcx);
+                    if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+            }
+            catch { /* ignore IO errors */ }
+        }
         return false;
     }
 }

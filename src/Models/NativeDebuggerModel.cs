@@ -74,6 +74,12 @@ public sealed class NativeDebuggerModel : IDisposable
     /// </summary>
     internal HashSet<ulong> ManagedBreakpointAddresses { get; } = new();
 
+    /// <summary>
+    /// Maps managed breakpoint native addresses to their source file and line.
+    /// Used for C++/CLI stack trace resolution where PdbSourceMapper can't read Windows PDBs.
+    /// </summary>
+    internal Dictionary<ulong, (string File, int Line)> ManagedBreakpointSources { get; } = new();
+
     // JIT profiler pipe — receives JIT compilation notifications from MixDbgProfiler.dll.
     internal NamedPipeServerStream? ProfilerPipe { get; set; }
     internal StreamReader? ProfilerPipeReader { get; set; }
@@ -147,7 +153,7 @@ internal record PendingManagedBreakpoint(string FilePath, int Line, int BpId);
 /// yet JIT-compiled). Resolved on CLR notification exceptions (0xe0444143) which
 /// fire during JIT compilation.
 /// </summary>
-internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodToken, int ILOffset, int BpId, string? AssemblyName);
+internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodToken, int ILOffset, int BpId, string? AssemblyName, bool IsCliMethod = false);
 
 /// <summary>
 /// A JIT compilation notification received from the CLR profiler DLL via named pipe.

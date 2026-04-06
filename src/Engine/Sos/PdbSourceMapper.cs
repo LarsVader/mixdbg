@@ -221,6 +221,40 @@ internal sealed class PdbSourceMapper : IDisposable
         }
     }
 
+    /// <summary>
+    /// Finds a method token by a relative virtual address (RVA) that falls inside the
+    /// method body. dbgeng's <c>GetOffsetByLine</c> may return an address past the IL
+    /// method header (e.g. +12 bytes into the body), so we find the method whose RVA
+    /// is the largest value that is still ≤ the target RVA.
+    /// </summary>
+    public int? FindTokenByRva(string assemblyPath, int rva)
+    {
+        var peReaderAndStream = GetOrLoadPeReader(assemblyPath);
+        if (peReaderAndStream == null)
+            return null;
+
+        var reader = peReaderAndStream.Value.Reader;
+        try
+        {
+            int bestRva = -1;
+            MethodDefinitionHandle bestHandle = default;
+            foreach (var handle in reader.MethodDefinitions)
+            {
+                var method = reader.GetMethodDefinition(handle);
+                int methodRva = method.RelativeVirtualAddress;
+                if (methodRva > 0 && methodRva <= rva && methodRva > bestRva)
+                {
+                    bestRva = methodRva;
+                    bestHandle = handle;
+                }
+            }
+            if (bestRva >= 0 && !bestHandle.IsNil)
+                return MetadataTokens.GetToken(bestHandle);
+        }
+        catch { }
+        return null;
+    }
+
     public void Dispose()
     {
         foreach (var (pe, _) in _peReaders.Values)

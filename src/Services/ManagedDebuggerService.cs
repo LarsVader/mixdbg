@@ -1,3 +1,6 @@
+using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using ClrDebug;
@@ -16,10 +19,12 @@ namespace MixDbg.Services;
 /// </summary>
 internal sealed class ManagedDebuggerService(
     ILoggingService log,
-    LogStore logStore) : IManagedDebugger
+    LogStore logStore,
+    ISourceFileService sourceFiles) : IManagedDebugger
 {
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
+    private readonly ISourceFileService _sourceFiles = sourceFiles;
     private IntPtr _dacHandle;
 
     public bool IsInitialized(NativeDebuggerModel model) => model.ManagedInitialized;
@@ -250,6 +255,7 @@ internal sealed class ManagedDebuggerService(
     {
         // Check if PDB resolution finds the method in any loaded module.
         bool foundInPdb = false;
+        bool isCliMethod = false; // C++/CLI: skip direct GetOffsetByLine, use deferred + JIT notification
         int methodToken = 0;
         int ilOffset = 0;
         string? assemblyName = null;
@@ -285,10 +291,65 @@ internal sealed class ManagedDebuggerService(
         }
 
         if (!foundInPdb)
-            return false;
+        {
+            // C++/CLI files: dbgeng reads Windows PDBs natively. Use GetOffsetByLine
+            // to get the IL section address, then compute RVA → find method token from
+            // PE metadata. The token is used to match against profiler JIT notifications,
+            // which provide the actual JIT'd native address for the hw breakpoint.
+            if (_sourceFiles.IsCliFile(filePath))
+            {
+                _log.LogInfo(_logStore, $"  C++/CLI file detected: {filePath}");
+                int cliHr = model.Symbols.GetOffsetByLine((uint)line, filePath, out var ilAddr);
+                if (cliHr >= 0 && ilAddr != 0)
+                {
+                    int modHr = model.Symbols.GetModuleByOffset(ilAddr, 0, out _, out var moduleBase);
+                    if (modHr >= 0 && moduleBase != 0)
+                    {
+                        int rva = (int)(ilAddr - moduleBase);
+                        assemblyName = ResolveCliAssemblyName(filePath);
+                        var dllPath = FindCliAssemblyDll(filePath, assemblyName);
+                        _log.LogInfo(_logStore, $"  C++/CLI: ilAddr=0x{ilAddr:X} base=0x{moduleBase:X} rva=0x{rva:X} asm={assemblyName} dll={dllPath}");
+                        if (dllPath != null)
+                        {
+                            using var mapper = new PdbSourceMapper();
+                            var token = mapper.FindTokenByRva(dllPath, rva);
+                            if (token != null)
+                            {
+                                methodToken = token.Value;
+                                _log.LogInfo(_logStore,
+                                    $"  C++/CLI: resolved token=0x{methodToken:X8} in {assemblyName}");
+                                foundInPdb = true;
+                                isCliMethod = true;
+                            }
+                            else
+                            {
+                                _log.LogWarning(_logStore, $"  C++/CLI: no method found at RVA 0x{rva:X} in {dllPath}");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        _log.LogWarning(_logStore, $"  C++/CLI: GetModuleByOffset failed: hr=0x{modHr:X8}");
+                    }
+                }
+                else
+                {
+                    _log.LogInfo(_logStore, $"  C++/CLI: GetOffsetByLine({line}) failed: hr=0x{cliHr:X8}");
+                }
+                if (!foundInPdb)
+                    return false; // Module not loaded yet — stays as PendingManagedBreakpoint.
+            }
+            else
+            {
+                return false;
+            }
+        }
 
         // Try direct resolution via GetOffsetByLine (works if method is already JIT'd).
-        int hr = model.Symbols.GetOffsetByLine((uint)line, filePath, out var offset);
+        // Skip for C++/CLI: GetOffsetByLine returns the IL section address (not JIT'd code).
+        // C++/CLI methods must go through the deferred + JIT notification path.
+        ulong offset = 0;
+        int hr = isCliMethod ? -1 : model.Symbols.GetOffsetByLine((uint)line, filePath, out offset);
         if (hr >= 0 && offset != 0)
         {
             _log.LogInfo(_logStore, $"  GetOffsetByLine({line}) -> 0x{offset:X} — setting hardware breakpoint");
@@ -306,7 +367,7 @@ internal sealed class ManagedDebuggerService(
 
         // Method not JIT'd yet — store as deferred for periodic polling.
         model.DeferredManagedBreakpoints.Add(
-            new DeferredManagedBreakpoint(filePath, line, methodToken, ilOffset, bpId, assemblyName));
+            new DeferredManagedBreakpoint(filePath, line, methodToken, ilOffset, bpId, assemblyName, isCliMethod));
         if (!model.ManagedFileBreakpointIds.ContainsKey(filePath))
             model.ManagedFileBreakpointIds[filePath] = new List<int>();
         model.ManagedFileBreakpointIds[filePath].Add(bpId);
@@ -367,6 +428,7 @@ internal sealed class ManagedDebuggerService(
         model.UserBreakpointIds.Add(bpId);
         model.ManagedBreakpointIds.Add(bpId);
         model.ManagedBreakpointAddresses.Add(address);
+        model.ManagedBreakpointSources[address] = (filePath, line);
 
         _log.LogInfo(_logStore, $"  Hardware bp #{bpId} set at 0x{address:X} for {key}");
         return bpId;
@@ -466,7 +528,13 @@ internal sealed class ManagedDebuggerService(
                         $"  JIT notification matched deferred bp #{deferred.BpId}: " +
                         $"token=0x{jit.MethodToken:X8} addr=0x{jit.NativeAddress:X} asm={jit.AssemblyName}");
 
-                    if (model.ProfilerHooksActive)
+                    // Check if this method has ENTER hooks active. When hooks are active
+                    // and we have IL-to-native mapping, the ENTER path sets a transient BP
+                    // at the exact breakpointed line (more precise than method entry).
+                    var bpKey = $"{jit.AssemblyName}:{jit.MethodToken:X8}";
+                    bool hasEnterHooks = model.ProfilerHooksActive &&
+                        model.JitMethodMappings.ContainsKey(bpKey);
+                    if (hasEnterHooks)
                     {
                         // With hooks: don't set hardware BP here — the ENTER path will
                         // set a transient BP using this resolved address. Don't signal ACK
@@ -595,6 +663,23 @@ internal sealed class ManagedDebuggerService(
                 var methodInfo = mapper.GetMethodName(assemblyPath, method.MethodToken);
                 if (methodInfo != null)
                     methodName = methodInfo;
+
+                // C++/CLI fallback: PdbSourceMapper can't read Windows PDBs.
+                // Look up the source from the managed BP we set at this method's address.
+                // Check both method start and exact IP (transient BPs from ENTER hooks
+                // are set at an IL-mapped offset, not the method start).
+                if (source == null && (model.ManagedBreakpointSources.TryGetValue(
+                    method.StartAddress, out var bpSource) ||
+                    model.ManagedBreakpointSources.TryGetValue(
+                    instructionPointer, out bpSource)))
+                {
+                    source = new Source
+                    {
+                        Name = Path.GetFileName(bpSource.File),
+                        Path = bpSource.File,
+                    };
+                    line = bpSource.Line;
+                }
             }
             catch (Exception ex)
             {
@@ -989,6 +1074,75 @@ internal sealed class ManagedDebuggerService(
         return null;
     }
 
+    /// <summary>
+    /// Resolves the assembly name for a C++/CLI source file by walking up directories
+    /// looking for a .vcxproj with CLRSupport.
+    /// </summary>
+    private static string? ResolveCliAssemblyName(string sourceFile)
+    {
+        var dir = Path.GetDirectoryName(sourceFile);
+        for (int up = 0; up < 5 && dir != null; up++)
+        {
+            try
+            {
+                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                {
+                    if (File.ReadAllText(vcx).Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                        return Path.GetFileNameWithoutExtension(vcx);
+                }
+            }
+            catch { }
+            dir = Path.GetDirectoryName(dir);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Finds the built DLL for a C++/CLI project by searching bin/ directories.
+    /// </summary>
+    private static string? FindCliAssemblyDll(string sourceFile, string? assemblyName)
+    {
+        if (assemblyName == null) return null;
+        var dir = Path.GetDirectoryName(sourceFile);
+        for (int up = 0; up < 5 && dir != null; up++)
+        {
+            try
+            {
+                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                {
+                    if (Path.GetFileNameWithoutExtension(vcx).Equals(assemblyName, StringComparison.OrdinalIgnoreCase)
+                        && File.ReadAllText(vcx).Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Search bin/ for the DLL.
+                        var binDir = Path.Combine(dir, "bin");
+                        if (Directory.Exists(binDir))
+                        {
+                            foreach (var dll in Directory.GetFiles(binDir, $"{assemblyName}.dll", SearchOption.AllDirectories))
+                                return dll;
+                        }
+                        // Also check output in the WpfApp bin (typical for C++/CLI wrapper).
+                        var parent = Path.GetDirectoryName(dir);
+                        if (parent != null)
+                        {
+                            foreach (var subDir in Directory.GetDirectories(parent))
+                            {
+                                var subBin = Path.Combine(subDir, "bin");
+                                if (Directory.Exists(subBin))
+                                {
+                                    foreach (var dll in Directory.GetFiles(subBin, $"{assemblyName}.dll", SearchOption.AllDirectories))
+                                        return dll;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            dir = Path.GetDirectoryName(dir);
+        }
+        return null;
+    }
+
     public List<(string Assembly, int Token)> ResolveTokensFromBreakpoints(
         IEnumerable<(string FilePath, int Line)> breakpoints)
     {
@@ -1004,6 +1158,22 @@ internal sealed class ManagedDebuggerService(
             catch { }
         }
         return tokens;
+    }
+
+    public List<string> ResolveWatchAssemblies(
+        IEnumerable<(string FilePath, int Line)> breakpoints)
+    {
+        var assemblies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (filePath, _) in breakpoints)
+        {
+            if (_sourceFiles.IsCliFile(filePath))
+            {
+                var asmName = ResolveCliAssemblyName(filePath);
+                if (asmName != null)
+                    assemblies.Add(asmName);
+            }
+        }
+        return assemblies.ToList();
     }
 
     /// <summary>

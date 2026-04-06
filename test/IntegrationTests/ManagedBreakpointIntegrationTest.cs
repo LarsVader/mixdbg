@@ -109,6 +109,48 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ManagedBreakpoint_WhenCliWrapperMethodBreakpointed_StopsWithSource()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set breakpoints on C++/CLI wrapper methods in ManagedCalculator.h.
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _cliWrapperBpFile, name = "ManagedCalculator.h" },
+            breakpoints = new[] { new { line = _cliWrapperAddLine }, new { line = _cliWrapperMultiplyLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // Use --auto-test: first-click BPs now work for C++/CLI via assembly-level
+        // WATCH (MIXDBG_WATCH_ASSEMBLIES). The profiler hooks all methods from the
+        // C++/CLI assembly, so ENTER fires on the very first call.
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Hit 1: ManagedCalculator::Add (first call)
+        await WhenWaitingForStoppedEvent(timeout: 20);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 2: ManagedCalculator::Multiply (first call)
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "ManagedCalculator.h");
+        ThenBreakpointWasHit(hitIndex: 1);
+        ThenStackTraceHasSource(hitIndex: 1, "ManagedCalculator.h");
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task ManagedBreakpoint_WhenBreakpointInsideMethodBody_StopsAtExactLine()
     {
         GivenMixDbgAndWpfAppExist();
@@ -461,10 +503,14 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         _repoRoot, "test", "TestApp", "WpfApp", "bin", "x64", "Debug", "net10.0-windows", "WpfApp.exe");
     private static readonly string _bpFile = Path.Combine(
         _repoRoot, "test", "TestApp", "WpfApp", "MainWindow.xaml.cs");
+    private static readonly string _cliWrapperBpFile = Path.Combine(
+        _repoRoot, "test", "TestApp", "CliWrapper", "ManagedCalculator.h");
     private const int _addLine = 63;
     private const int _multiplyLine = 72;
     private const int _addBodyLine = 65;       // int result = ManagedCalculator.Add(a, b);
     private const int _multiplyBodyLine = 74;  // int result = ManagedCalculator.Multiply(a, b);
+    private const int _cliWrapperAddLine = 14;      // return NativeLib::Calculator::Add(a, b);
+    private const int _cliWrapperMultiplyLine = 19;  // return NativeLib::Calculator::Multiply(a, b);
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-test-{Guid.NewGuid():N}.log");

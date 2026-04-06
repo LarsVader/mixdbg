@@ -14,8 +14,15 @@ public interface ISourceFileService
     bool IsNativeFile(string path);
 
     /// <summary>
-    /// Returns true for managed files: C# (.cs) and C++/CLI (.cpp with
+    /// Returns true for managed files: C# (.cs) and C++/CLI (.cpp/.h with
     /// CLRSupport in vcxproj). These require the managed debugger (SOS + ClrMD).
     /// </summary>
     bool IsManagedFile(string path);
+
+    /// <summary>
+    /// Returns true for C++/CLI files: .cpp/.c/.cc/.cxx/.h/.hpp in a directory
+    /// with a vcxproj containing CLRSupport. These can be debugged via dbgeng's
+    /// native PDB support (GetOffsetByLine) without portable PDB parsing.
+    /// </summary>
+    bool IsCliFile(string path);
 }

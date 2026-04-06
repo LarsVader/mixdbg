@@ -171,10 +171,17 @@ class MixDbgProfiler : public IUnknown {
 
     // Exact (assembly, token) pairs that have breakpoints — only block JIT for these.
     // All other methods send notifications without blocking.
-    static const int MAX_WATCH = 32;
+    static const int MAX_WATCH = 64;
     struct WatchEntry { char assembly[256]; unsigned int token; };
     WatchEntry m_watchEntries[MAX_WATCH];
     int m_watchCount;
+
+    // Assembly-level watches for C++/CLI — hook ALL methods from these assemblies.
+    // Set via MIXDBG_WATCH_ASSEMBLIES env var at pre-launch time because
+    // FunctionIDMapper results are cached by the CLR (can't add watches dynamically).
+    static const int MAX_WATCH_ASM = 8;
+    char m_watchAssemblies[MAX_WATCH_ASM][256];
+    int m_watchAssemblyCount;
 
     void WriteToPipe(const char* data, int len) {
         EnterCriticalSection(&m_pipeLock);
@@ -186,11 +193,20 @@ class MixDbgProfiler : public IUnknown {
     }
 
 public: // Accessed by static FunctionIDMapper callback — no vtable impact (non-virtual).
-    // Check if an (assembly, token) pair is in the watch list.
+    // Check if an (assembly, token) pair is in the exact watch list.
     bool IsWatchedMethod(const char* asmName, unsigned int token) {
         for (int i = 0; i < m_watchCount; i++) {
             if (m_watchEntries[i].token == token &&
                 _stricmp(m_watchEntries[i].assembly, asmName) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    // Check if an assembly is in the assembly-level watch list (C++/CLI).
+    bool IsWatchedAssembly(const char* asmName) {
+        for (int i = 0; i < m_watchAssemblyCount; i++) {
+            if (_stricmp(m_watchAssemblies[i], asmName) == 0)
                 return true;
         }
         return false;
@@ -281,8 +297,11 @@ public:
 
 public:
     MixDbgProfiler() : m_refCount(1), m_pInfo(nullptr),
-        m_hPipe(INVALID_HANDLE_VALUE), m_hAckEvent(nullptr), m_hRehookEvent(nullptr), m_watchCount(0) {
+        m_hPipe(INVALID_HANDLE_VALUE),
+        m_hAckEvent(nullptr), m_hRehookEvent(nullptr),
+        m_watchCount(0), m_watchAssemblyCount(0) {
         memset(m_watchEntries, 0, sizeof(m_watchEntries));
+        memset(m_watchAssemblies, 0, sizeof(m_watchAssemblies));
         InitializeCriticalSection(&m_pipeLock);
         InitializeCriticalSection(&m_funcLock);
     }
@@ -296,6 +315,7 @@ public:
         DeleteCriticalSection(&m_pipeLock);
         DeleteCriticalSection(&m_funcLock);
     }
+
 
     // ========================================================================
     // IUnknown
@@ -407,7 +427,21 @@ public:
             }
         }
 
-        if (m_watchCount > 0) {
+        // Parse "Asm1,Asm2,..." — assemblies to watch at assembly level (C++/CLI).
+        // FunctionIDMapper hooks every method from these assemblies.
+        char asmBuf[2048] = {};
+        DWORD asmLen = GetEnvironmentVariableA("MIXDBG_WATCH_ASSEMBLIES", asmBuf, sizeof(asmBuf));
+        if (asmLen > 0 && asmLen < sizeof(asmBuf)) {
+            char* ctx = nullptr;
+            char* tok = strtok_s(asmBuf, ",", &ctx);
+            while (tok && m_watchAssemblyCount < MAX_WATCH_ASM) {
+                strncpy_s(m_watchAssemblies[m_watchAssemblyCount], 256, tok, _TRUNCATE);
+                m_watchAssemblyCount++;
+                tok = strtok_s(nullptr, ",", &ctx);
+            }
+        }
+
+        if (m_watchCount > 0 || m_watchAssemblyCount > 0) {
             g_pProfiler = this;
             m_pInfo->SetFunctionIDMapper((void*)&MixDbgFunctionIDMapper);
             hr = m_pInfo->SetEnterLeaveFunctionHooks(
@@ -531,7 +565,7 @@ public:
                 (unsigned int)token, (unsigned long long)(UINT_PTR)codeStart,
                 (unsigned int)codeSize, asmUtf8);
 
-            if (lineLen > 0 && IsWatchedMethod(asmUtf8, token)) {
+            if (lineLen > 0 && (IsWatchedMethod(asmUtf8, token) || IsWatchedAssembly(asmUtf8))) {
                 // Append IL-to-native mapping for exact-line BP resolution: :IL0=N0,IL1=N1,...
                 ILNativeMap maps[128];
                 ULONG32 mapCount = 0;
@@ -663,7 +697,8 @@ extern "C" UINT_PTR __stdcall MixDbgFunctionIDMapper(FunctionID funcId, BOOL* pb
     char asmUtf8[256] = {};
     MixDbgProfiler::ExtractAssemblyName(modulePath, asmUtf8, sizeof(asmUtf8));
 
-    if (g_pProfiler->IsWatchedMethod(asmUtf8, token)) {
+    if (g_pProfiler->IsWatchedMethod(asmUtf8, token) ||
+        g_pProfiler->IsWatchedAssembly(asmUtf8)) {
         // Only enable hooks if the profiler has them active.
         if (g_pProfiler->m_hooksActive)
             *pbHookFunction = TRUE;

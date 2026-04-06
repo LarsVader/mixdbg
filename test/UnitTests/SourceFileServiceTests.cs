@@ -122,6 +122,95 @@ public sealed class SourceFileServiceTests : IDisposable
         ThenResultIsFalse();
     }
 
+    [Fact]
+    public void IsManagedFile_WhenHeaderInCliProject_ReturnsTrue()
+    {
+        GivenACppCliVcxproj();
+        GivenAFileWithName("ManagedCalculator.h");
+
+        WhenCheckingIsManagedFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsManagedFile_WhenHppInCliProject_ReturnsTrue()
+    {
+        GivenACppCliVcxproj();
+        GivenAFileWithName("wrapper.hpp");
+
+        WhenCheckingIsManagedFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsManagedFile_WhenHeaderInNativeProject_ReturnsFalse()
+    {
+        GivenANativeVcxproj();
+        GivenAFileWithName("native.h");
+
+        WhenCheckingIsManagedFile();
+
+        ThenResultIsFalse();
+    }
+
+    // ── IsCliFile ───────────────────────────────────────
+
+    [Fact]
+    public void IsCliFile_WhenCppInCliProject_ReturnsTrue()
+    {
+        GivenACppCliVcxproj();
+        GivenAFileWithName("wrapper.cpp");
+
+        WhenCheckingIsCliFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsCliFile_WhenHeaderInCliProject_ReturnsTrue()
+    {
+        GivenACppCliVcxproj();
+        GivenAFileWithName("ManagedCalculator.h");
+
+        WhenCheckingIsCliFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsCliFile_WhenCppInNativeProject_ReturnsFalse()
+    {
+        GivenANativeVcxproj();
+        GivenAFileWithName("native.cpp");
+
+        WhenCheckingIsCliFile();
+
+        ThenResultIsFalse();
+    }
+
+    [Fact]
+    public void IsCliFile_WhenStandaloneCpp_ReturnsFalse()
+    {
+        GivenAFileWithName("standalone.cpp");
+
+        WhenCheckingIsCliFile();
+
+        ThenResultIsFalse();
+    }
+
+    [Fact]
+    public void IsCliFile_WhenCsFile_ReturnsFalse()
+    {
+        GivenACppCliVcxproj();
+        GivenAFileWithName("Program.cs");
+
+        WhenCheckingIsCliFile();
+
+        ThenResultIsFalse();
+    }
+
     #region Given
 
     private void GivenAFileWithName(string fileName)
@@ -156,6 +245,11 @@ public sealed class SourceFileServiceTests : IDisposable
     private void WhenCheckingIsManagedFile()
     {
         _result = _testee.IsManagedFile(_filePath);
+    }
+
+    private void WhenCheckingIsCliFile()
+    {
+        _result = _testee.IsCliFile(_filePath);
     }
 
     #endregion
