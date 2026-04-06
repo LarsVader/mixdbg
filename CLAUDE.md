@@ -37,16 +37,16 @@ src/
   MixDbg.csproj                  # Production project
   Program.cs                     # Entry point — DI composition root
   ServiceCollectionExtensions.cs # AddMixDbgCore() — registers all services + models
-  DapMessages/                   # DAP protocol types (namespace MixDbg.Dap), one file per type
-    Protocol/                    # ProtocolMessage, RequestMessage, ResponseMessage, EventMessage, Source, DisconnectException
-    Initialize/                  # InitializeRequestArguments, Capabilities
-    Lifecycle/                   # LaunchRequestArguments, AttachRequestArguments, DisconnectArguments
-    Breakpoints/                 # SetBreakpointsArguments, SourceBreakpoint, Breakpoint, SetBreakpointsResponseBody
-    Execution/                   # ContinueArguments, ContinueResponseBody, StepArguments
-    Inspection/                  # StackTraceArguments/ResponseBody, StackFrame, Scopes*, Variables*, Variable
-    Threads/                     # ThreadsResponseBody, DapThread
-    Evaluate/                    # EvaluateArguments, EvaluateResponseBody
-    Events/                      # StoppedEventBody, OutputEventBody, BreakpointEventBody, Terminated/InitializedEventBody
+  Models/
+    DapMessages/                 # DAP protocol types (namespace MixDbg.Models.Dap), one file per type
+      Protocol/                  # ProtocolMessage, RequestMessage, ResponseMessage, EventMessage, Source, DisconnectException, EmptyArguments
+      Initialize/                # InitializeRequestArguments, Capabilities
+      Lifecycle/                 # LaunchRequestArguments, AttachRequestArguments, DisconnectArguments
+      Breakpoints/               # SetBreakpointsArguments, SourceBreakpoint, Breakpoint, SetBreakpointsResponseBody
+      Execution/                 # ContinueArguments, ContinueResponseBody, StepArguments
+      Inspection/                # StackTrace*, Scopes*, Variables*, Variable, StackFrame, Scope, Evaluate*
+      Threads/                   # ThreadsResponseBody, DapThread
+      Events/                    # StoppedEventBody, OutputEventBody, BreakpointEventBody, Terminated/InitializedEventBody
   Engine/
     DbgEng/
       Constants/                 # One file per type: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, DebugBreakpoint*, DebugBreakAccess, DebugEvent, DebugEnd, DebugExecute, DebugOutCtl, SymOpt, DebugScopeGroup, DEBUG_STACK_FRAME, DEBUG_SYMBOL_PARAMETERS, DebugSymbolFlags
@@ -58,9 +58,7 @@ src/
       RuntimeLibraryProvider.cs  # ICLRDebuggingLibraryProvider — finds mscordbi.dll next to coreclr.dll
     Sos/
       PdbSourceMapper.cs         # Reads portable PDBs to map (method token, IL offset) → (source file, line)
-  Models/
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
-    DapDispatcherModel.cs        # Dispatcher state: handler registrations
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
     NativeDebuggerModel.cs       # Engine state: COM interfaces, threads, flags, breakpoint tracking, variable store, ICorDebug V4 refs
     VariableStore.cs             # Maps variablesReference handles to VariableContainer (symbol group + index range), invalidated per stop
@@ -69,23 +67,27 @@ src/
   Services/
     Interfaces/
       IDapServer.cs              # Stateless DAP transport — all methods take DapServerModel
-      IDapDispatcher.cs          # Stateless request dispatcher — all methods take DapDispatcherModel
-      IDebugSession.cs           # Stateless session orchestrator — all methods take DebugSessionModel
+      IDapDispatcher.cs          # Stateless request dispatcher — Run() dispatches to handler services
+      IDapHandlerService.cs      # Handler interface: Command + Execute(JsonElement?)
+      IDapMessage.cs             # Marker interface for DAP response types
       INativeDebugger.cs         # Stateless dbgeng wrapper — all methods take NativeDebuggerModel
       ILoggingService.cs         # LogInfo/LogWarning/LogError with [CallerFilePath] — all take LogStore
       ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
       IManagedDebugger.cs        # Stateless managed debugging — ClrMD + SOS, all methods take NativeDebuggerModel
     DapServerService.cs          # IDapServer: Content-Length framed JSON-RPC transport
-    DapDispatcherService.cs      # IDapDispatcher: command routing, request/response lifecycle
-    DebugSessionService.cs       # IDebugSession: state machine, delegates to INativeDebugger
+    DapDispatcherService.cs      # IDapDispatcher: command routing via DI-resolved handler services
     NativeDebuggerService.cs     # INativeDebugger: dbgeng COM wrapper, engine thread, breakpoints
     ManagedDebuggerService.cs    # IManagedDebugger: ICorDebug V4 via OpenVirtualProcess — IL breakpoints + managed stack traces
     LoggingService.cs            # ILoggingService: file + in-memory logger, [CallerFilePath] sender
     SourceFileService.cs         # ISourceFileService: native vs managed/CLI file detection
-  Handlers/
-    InitializeHandler.cs         # DAP initialize handshake
-    LifecycleHandlers.cs         # launch, attach, configurationDone, disconnect, terminate, threads
-    StubHandlers.cs              # setBreakpoints, continue, next, stepIn, stepOut, stackTrace, scopes, variables, evaluate
+    Handlers/
+      DapHandlerServiceBase.cs   # Base class for handlers with response body
+      DapVoidHandlerServiceBase.cs # Base class for handlers without response body
+      Initialize/                # initialize
+      Lifecycle/                 # launch, attach, configurationDone, disconnect, terminate, threads
+      Breakpoints/               # setBreakpoints, setFunctionBreakpoints, setExceptionBreakpoints
+      Execution/                 # continue, next, stepIn, stepOut, pause
+      Inspection/                # stackTrace, scopes, variables, evaluate, source, loadedSources
 profiler/
   MixDbgProfiler.cpp                 # CLR profiler DLL — ICorProfilerCallback2, sends JIT notifications via named pipe
   MixDbgProfiler.vcxproj             # Native C++ build config (MSBuild, v145 toolset)
@@ -104,7 +106,7 @@ test/
 
 ## Architecture
 
-**DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Follows model+service pattern from zonr: all services are stateless singletons; all mutable state lives in model objects created by services via `CreateModel()` and registered as singletons. Service methods take their model as the first parameter. `NativeDebuggerModel` is created per-session (one per Launch/Attach) by `INativeDebugger.CreateModel()`, stored in `DebugSessionModel.Engine`.
+**DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Services are stateless singletons; all mutable state lives in model objects registered as singletons. DAP request handling uses `IDapHandlerService` implementations auto-discovered via assembly scanning — each handler extends `DapHandlerServiceBase<TResponse, TArgs>` or `DapVoidHandlerServiceBase<TArgs>` and contains its own session logic (no separate session orchestrator layer). `NativeDebuggerModel` is created per-session (one per Launch/Attach) by `INativeDebugger.CreateModel()`, stored in `DebugSessionModel.Engine`.
 
 Three threads, one command queue:
 

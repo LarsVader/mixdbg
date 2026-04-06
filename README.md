@@ -73,7 +73,7 @@ nvim-dap ──stdio──> IDapServer
                     IDapDispatcher
                       │ (routes requests)
                       v
-                    IDebugSession ──command queue──> INativeDebugger
+                    Handlers ──────command queue──> INativeDebugger
                       │                              │
                       │                            dbgeng COM calls
                       │                            WaitForEvent loop
@@ -85,7 +85,7 @@ nvim-dap ──stdio──> IDapServer
 nvim-dap <──stdio────                            [target.exe]
 ```
 
-All services are stateless singletons; mutable state lives in model objects (`DapServerModel`, `DapDispatcherModel`, `DebugSessionModel`, `NativeDebuggerModel`). Services receive their models via DI and pass them as the first parameter to every method.
+All services are stateless singletons; mutable state lives in model objects (`DapServerModel`, `DebugSessionModel`, `NativeDebuggerModel`). DAP requests are routed by `IDapDispatcher` to `IDapHandlerService` implementations (auto-discovered via assembly scanning). Each handler contains its own session logic and delegates to `INativeDebugger` for engine operations.
 
 **Two threads, one queue:**
 
