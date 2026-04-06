@@ -45,11 +45,24 @@ internal sealed class ManagedDebuggerService(
         }
 
         model.CorWrapper = _corDebug.CreateModel();
-        var result = _corDebug.InitializeRuntime(
-            model.CorWrapper, model.Wrapper, model.CoreClrPath, model.CoreClrBaseAddress);
-        if (result)
-            model.ManagedInitialized = true;
-        return result;
+
+        _log.LogInfo(_logStore, $"Initializing ICorDebug V4 (coreclr={model.CoreClrPath}, base=0x{model.CoreClrBaseAddress:X})");
+        if (!_corDebug.InitializeProcess(
+                model.CorWrapper, model.Wrapper, model.CoreClrPath, model.CoreClrBaseAddress))
+        {
+            _log.LogError(_logStore, "Failed to initialize ICorDebug V4");
+            return false;
+        }
+
+        _corDebug.FlushProcessState(model.CorWrapper);
+        _corDebug.RefreshModules(model.CorWrapper);
+
+        try { _corDebug.InitializeDac(model.CorWrapper, model.Wrapper, model.CoreClrPath, model.CoreClrBaseAddress); }
+        catch (Exception ex) { _log.LogWarning(_logStore, $"DAC init failed: {ex.Message}"); }
+
+        model.ManagedInitialized = true;
+        _log.LogInfo(_logStore, "ICorDebug V4 initialized");
+        return true;
     }
 
     public Breakpoint[] SetManagedBreakpoints(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
@@ -73,22 +86,37 @@ internal sealed class ManagedDebuggerService(
             return [];
 
         var currentOsId = _dbgEng.GetCurrentThreadSystemId(model.Wrapper);
-        var managedFrames = _corDebug.GetManagedStackFrames(model.CorWrapper, currentOsId);
-        if (managedFrames.Length == 0)
+        var rawFrames = _corDebug.GetRawManagedFrames(model.CorWrapper, currentOsId);
+        if (rawFrames.Length == 0)
             return [];
 
         int frameId = 1;
-        return managedFrames.Select(f => new StackFrame
+        return rawFrames.Select(f =>
         {
-            Id = frameId++,
-            Name = f.Name,
-            Source = f.SourceFile != null ? new Source
+            string? sourceFile = null;
+            int line = 0;
+            if (f.ModulePath != null)
             {
-                Name = Path.GetFileName(f.SourceFile),
-                Path = f.SourceFile,
-            } : null,
-            Line = f.Line,
-            Column = 0,
+                var srcLoc = _pdbMapper.GetSourceLocation(f.ModulePath, f.MethodToken,
+                    f.ILOffset > 0 ? f.ILOffset : 1);
+                if (srcLoc != null)
+                {
+                    sourceFile = srcLoc.Value.File;
+                    line = srcLoc.Value.Line;
+                }
+            }
+            return new StackFrame
+            {
+                Id = frameId++,
+                Name = f.Name,
+                Source = sourceFile != null ? new Source
+                {
+                    Name = Path.GetFileName(sourceFile),
+                    Path = sourceFile,
+                } : null,
+                Line = line,
+                Column = 0,
+            };
         }).ToArray();
     }
 
@@ -98,6 +126,7 @@ internal sealed class ManagedDebuggerService(
             return [];
 
         // Re-enumerate ICorDebug modules to pick up newly loaded assemblies.
+        _corDebug.FlushProcessState(model.CorWrapper);
         _corDebug.RefreshModules(model.CorWrapper);
 
         // Try to bind pending managed breakpoints against the new modules.
@@ -304,6 +333,7 @@ internal sealed class ManagedDebuggerService(
         _log.LogInfo(_logStore, $"TryResolveDeferredBreakpoints: {model.DeferredManagedBreakpoints.Count} deferred");
 
         // Recreate the DAC so it sees the latest JIT state.
+        _corDebug.FlushProcessState(model.CorWrapper);
         try { _corDebug.InitializeDac(model.CorWrapper, model.Wrapper, model.CoreClrPath!, model.CoreClrBaseAddress); }
         catch { }
 

@@ -15,10 +15,11 @@ public interface ICorDebugWrapper
     CorDebugWrapperModel CreateModel();
 
     /// <summary>
-    /// Initializes ICorDebug V4 via <c>OpenVirtualProcess</c>, piggybacked on
-    /// the dbgeng session. Enumerates modules on success.
+    /// Opens a piggybacked ICorDebugProcess via OpenVirtualProcessImpl.
+    /// Creates the DbgEngDataTarget bridge internally. Does NOT enumerate
+    /// modules or initialize the DAC — the caller orchestrates those steps.
     /// </summary>
-    bool InitializeRuntime(CorDebugWrapperModel model, DbgEngWrapperModel dbgEngModel,
+    bool InitializeProcess(CorDebugWrapperModel model, DbgEngWrapperModel dbgEngModel,
         string coreclrPath, ulong baseAddress);
 
     /// <summary>
@@ -29,6 +30,15 @@ public interface ICorDebugWrapper
 
     /// <summary>Whether ICorDebug V4 has been initialized.</summary>
     bool IsInitialized(CorDebugWrapperModel model);
+
+    // ── Process State ──
+
+    /// <summary>
+    /// Notifies ICorDebug that the process state has changed
+    /// (calls ProcessStateChanged(FLUSH_ALL)). Call before reading
+    /// process state after a break.
+    /// </summary>
+    void FlushProcessState(CorDebugWrapperModel model);
 
     // ── Module Enumeration ──
 
@@ -47,11 +57,11 @@ public interface ICorDebugWrapper
     // ── Stack Traces ──
 
     /// <summary>
-    /// Gets managed stack frames for the given OS thread ID by walking
-    /// ICorDebug chains and frames. Uses MetaDataImport for method names
-    /// and PdbSourceMapper for source resolution.
+    /// Gets raw managed stack frames for the given OS thread ID by walking
+    /// ICorDebug chains and frames. Uses MetaDataImport for method names.
+    /// Does NOT resolve PDB source locations — the caller does that.
     /// </summary>
-    ManagedFrameInfo[] GetManagedStackFrames(CorDebugWrapperModel model, uint osThreadId);
+    RawManagedFrame[] GetRawManagedFrames(CorDebugWrapperModel model, uint osThreadId);
 
     // ── DAC Operations ──
 
@@ -60,12 +70,6 @@ public interface ICorDebugWrapper
     /// Returns 0 if not yet JIT'd.
     /// </summary>
     ulong ResolveNativeEntryViaXclrData(CorDebugWrapperModel model, int methodToken, string? assemblyName);
-
-    /// <summary>
-    /// Resolves a native address to a method descriptor's native code address
-    /// via SOSDacInterface. Returns the input address if DAC lookup fails.
-    /// </summary>
-    ulong ResolveNativeEntryPoint(CorDebugWrapperModel model, ulong symbolAddress);
 
     // ── Breakpoint Support ──
 
