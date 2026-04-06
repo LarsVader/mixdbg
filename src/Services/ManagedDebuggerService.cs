@@ -1,8 +1,9 @@
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
-using MixDbg.Models.Dap;
+
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services;
 
@@ -57,7 +58,7 @@ internal sealed class ManagedDebuggerService(
         _corDebug.FlushProcessState(model.CorWrapper);
         _corDebug.RefreshModules(model.CorWrapper);
 
-        try { _corDebug.InitializeDac(model.CorWrapper, model.Wrapper, model.CoreClrPath, model.CoreClrBaseAddress); }
+        try { _ = _corDebug.InitializeDac(model.CorWrapper, model.Wrapper, model.CoreClrPath, model.CoreClrBaseAddress); }
         catch (Exception ex) { _log.LogWarning(_logStore, $"DAC init failed: {ex.Message}"); }
 
         model.ManagedInitialized = true;
@@ -72,7 +73,7 @@ internal sealed class ManagedDebuggerService(
         // Clear existing managed breakpoints for this file.
         ClearManagedBreakpointsForFile(model, filePath);
 
-        var results = new Breakpoint[requested.Length];
+        Breakpoint[] results = new Breakpoint[requested.Length];
         for (int i = 0; i < requested.Length; i++)
         {
             results[i] = SetOneManagedBreakpoint(model, filePath, requested[i]);
@@ -85,19 +86,19 @@ internal sealed class ManagedDebuggerService(
         if (!model.ManagedInitialized)
             return [];
 
-        var currentOsId = _dbgEng.GetCurrentThreadSystemId(model.Wrapper);
-        var rawFrames = _corDebug.GetRawManagedFrames(model.CorWrapper, currentOsId);
+        uint currentOsId = _dbgEng.GetCurrentThreadSystemId(model.Wrapper);
+        RawManagedFrame[] rawFrames = _corDebug.GetRawManagedFrames(model.CorWrapper, currentOsId);
         if (rawFrames.Length == 0)
             return [];
 
         int frameId = 1;
-        return rawFrames.Select(f =>
+        return [.. rawFrames.Select(f =>
         {
             string? sourceFile = null;
             int line = 0;
             if (f.ModulePath != null)
             {
-                var srcLoc = _pdbMapper.GetSourceLocation(f.ModulePath, f.MethodToken,
+                (string File, int Line)? srcLoc = _pdbMapper.GetSourceLocation(f.ModulePath, f.MethodToken,
                     f.ILOffset > 0 ? f.ILOffset : 1);
                 if (srcLoc != null)
                 {
@@ -117,7 +118,7 @@ internal sealed class ManagedDebuggerService(
                 Line = line,
                 Column = 0,
             };
-        }).ToArray();
+        })];
     }
 
     public Breakpoint[] OnModuleLoad(NativeDebuggerModel model)
@@ -138,7 +139,7 @@ internal sealed class ManagedDebuggerService(
     private Breakpoint SetOneManagedBreakpoint(
         NativeDebuggerModel model, string filePath, SourceBreakpoint req)
     {
-        var bpId = ++model.NextBpId;
+        int bpId = ++model.NextBpId;
 
         // Try to bind the breakpoint to a loaded module via PDB.
         if (TryBindBreakpoint(model, filePath, req.Line, bpId))
@@ -157,7 +158,7 @@ internal sealed class ManagedDebuggerService(
         _log.LogInfo(_logStore, $"  Breakpoint #{bpId} pending — module not loaded yet");
 
         if (!model.ManagedFileBreakpointIds.ContainsKey(filePath))
-            model.ManagedFileBreakpointIds[filePath] = new List<int>();
+            model.ManagedFileBreakpointIds[filePath] = [];
         model.ManagedFileBreakpointIds[filePath].Add(bpId);
 
         return new Breakpoint
@@ -184,11 +185,11 @@ internal sealed class ManagedDebuggerService(
         int methodToken = 0;
         int ilOffset = 0;
         string? assemblyName = null;
-        foreach (var loaded in _corDebug.GetModules(model.CorWrapper))
+        foreach (ManagedModuleInfo loaded in _corDebug.GetModules(model.CorWrapper))
         {
             if (loaded.PdbPath == null || loaded.Path == null)
                 continue;
-            var result = _pdbMapper.FindMethodAtLine(loaded.Path, filePath, line);
+            (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = _pdbMapper.FindMethodAtLine(loaded.Path, filePath, line);
             if (result != null)
             {
                 (_, _, methodToken, ilOffset) = result.Value;
@@ -201,7 +202,7 @@ internal sealed class ManagedDebuggerService(
 
         if (!foundInPdb)
         {
-            var diskResult = FindMethodFromDiskPdb(filePath, line);
+            (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? diskResult = FindMethodFromDiskPdb(filePath, line);
             if (diskResult != null)
             {
                 methodToken = diskResult.Value.MethodToken;
@@ -221,19 +222,19 @@ internal sealed class ManagedDebuggerService(
             if (_sourceFiles.IsCliFile(filePath))
             {
                 _log.LogInfo(_logStore, $"  C++/CLI file detected: {filePath}");
-                var (ilAddr, cliResolved) = _dbgEng.GetOffsetByLine(model.Wrapper, (uint)line, filePath);
+                (ulong ilAddr, bool cliResolved) = _dbgEng.GetOffsetByLine(model.Wrapper, (uint)line, filePath);
                 if (cliResolved && ilAddr != 0)
                 {
-                    var moduleBase = _dbgEng.GetModuleByOffset(model.Wrapper, ilAddr);
+                    ulong? moduleBase = _dbgEng.GetModuleByOffset(model.Wrapper, ilAddr);
                     if (moduleBase != null && moduleBase.Value != 0)
                     {
                         int rva = (int)(ilAddr - moduleBase.Value);
                         assemblyName = ResolveCliAssemblyName(filePath);
-                        var dllPath = FindCliAssemblyDll(filePath, assemblyName);
+                        string? dllPath = FindCliAssemblyDll(filePath, assemblyName);
                         _log.LogInfo(_logStore, $"  C++/CLI: ilAddr=0x{ilAddr:X} base=0x{moduleBase.Value:X} rva=0x{rva:X} asm={assemblyName} dll={dllPath}");
                         if (dllPath != null)
                         {
-                                                        var token = _pdbMapper.FindTokenByRva(dllPath, rva);
+                            int? token = _pdbMapper.FindTokenByRva(dllPath, rva);
                             if (token != null)
                             {
                                 methodToken = token.Value;
@@ -276,11 +277,11 @@ internal sealed class ManagedDebuggerService(
         if (offsetResolved && offset != 0)
         {
             _log.LogInfo(_logStore, $"  GetOffsetByLine({line}) -> 0x{offset:X} — setting hardware breakpoint");
-            var hwBpId = SetManagedCodeBreakpoint(model, offset, filePath, line);
+            uint? hwBpId = SetManagedCodeBreakpoint(model, offset, filePath, line);
             if (hwBpId != null)
             {
                 if (!model.ManagedFileBreakpointIds.ContainsKey(filePath))
-                    model.ManagedFileBreakpointIds[filePath] = new List<int>();
+                    model.ManagedFileBreakpointIds[filePath] = [];
                 model.ManagedFileBreakpointIds[filePath].Add(bpId);
                 return true;
             }
@@ -292,7 +293,7 @@ internal sealed class ManagedDebuggerService(
         model.DeferredManagedBreakpoints.Add(
             new DeferredManagedBreakpoint(filePath, line, methodToken, ilOffset, bpId, assemblyName, isCliMethod));
         if (!model.ManagedFileBreakpointIds.ContainsKey(filePath))
-            model.ManagedFileBreakpointIds[filePath] = new List<int>();
+            model.ManagedFileBreakpointIds[filePath] = [];
         model.ManagedFileBreakpointIds[filePath].Add(bpId);
         _log.LogInfo(_logStore, $"  Deferred managed bp #{bpId}: method not JIT'd yet");
         return true;
@@ -307,18 +308,18 @@ internal sealed class ManagedDebuggerService(
     /// </summary>
     private uint? SetManagedCodeBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line)
     {
-        var (bpId, success) = _dbgEng.AddHardwareBreakpoint(model.Wrapper, address, 1);
+        (uint bpId, bool success) = _dbgEng.AddHardwareBreakpoint(model.Wrapper, address, 1);
         if (!success)
         {
             _log.LogWarning(_logStore, $"  AddHardwareBreakpoint failed at 0x{address:X}");
             return null;
         }
 
-        var key = $"{filePath}:{line}";
+        string key = $"{filePath}:{line}";
         model.BreakpointIds[key] = bpId;
-        model.UserBreakpointIds.Add(bpId);
-        model.ManagedBreakpointIds.Add(bpId);
-        model.ManagedBreakpointAddresses.Add(address);
+        _ = model.UserBreakpointIds.Add(bpId);
+        _ = model.ManagedBreakpointIds.Add(bpId);
+        _ = model.ManagedBreakpointAddresses.Add(address);
         model.ManagedBreakpointSources[address] = (filePath, line);
 
         _log.LogInfo(_logStore, $"  Hardware bp #{bpId} set at 0x{address:X} for {key}");
@@ -334,24 +335,24 @@ internal sealed class ManagedDebuggerService(
 
         // Recreate the DAC so it sees the latest JIT state.
         _corDebug.FlushProcessState(model.CorWrapper);
-        try { _corDebug.InitializeDac(model.CorWrapper, model.Wrapper, model.CoreClrPath!, model.CoreClrBaseAddress); }
+        try { _ = _corDebug.InitializeDac(model.CorWrapper, model.Wrapper, model.CoreClrPath!, model.CoreClrBaseAddress); }
         catch { }
 
-        var resolved = new List<Breakpoint>();
-        var bound = new List<DeferredManagedBreakpoint>();
+        List<Breakpoint> resolved = [];
+        List<DeferredManagedBreakpoint> bound = [];
 
-        foreach (var deferred in model.DeferredManagedBreakpoints)
+        foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
         {
             try
             {
                 // Use the DAC (XCLRDataProcess) to find the real JIT native entry point.
-                var nativeAddress = _corDebug.ResolveNativeEntryViaXclrData(model.CorWrapper, deferred.MethodToken, deferred.AssemblyName);
+                ulong nativeAddress = _corDebug.ResolveNativeEntryViaXclrData(model.CorWrapper, deferred.MethodToken, deferred.AssemblyName);
                 if (nativeAddress == 0)
                     continue;
 
                 _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{nativeAddress:X}");
 
-                var hwBpId = SetManagedCodeBreakpoint(model, nativeAddress, deferred.FilePath, deferred.Line);
+                uint? hwBpId = SetManagedCodeBreakpoint(model, nativeAddress, deferred.FilePath, deferred.Line);
                 if (hwBpId != null)
                 {
                     bound.Add(deferred);
@@ -391,10 +392,10 @@ internal sealed class ManagedDebuggerService(
             }
         }
 
-        foreach (var r in bound)
-            model.DeferredManagedBreakpoints.Remove(r);
+        foreach (DeferredManagedBreakpoint r in bound)
+            _ = model.DeferredManagedBreakpoints.Remove(r);
 
-        return resolved.ToArray();
+        return [.. resolved];
     }
 
     public Breakpoint[] HandleJitNotifications(NativeDebuggerModel model)
@@ -402,14 +403,14 @@ internal sealed class ManagedDebuggerService(
         if (model.DeferredManagedBreakpoints.Count == 0 || model.JitNotifications.IsEmpty)
             return [];
 
-        var resolved = new List<Breakpoint>();
-        var bound = new List<DeferredManagedBreakpoint>();
+        List<Breakpoint> resolved = [];
+        List<DeferredManagedBreakpoint> bound = [];
 
         // Drain all pending JIT notifications from the profiler pipe.
-        while (model.JitNotifications.TryDequeue(out var jit))
+        while (model.JitNotifications.TryDequeue(out JitNotification? jit))
         {
             // Match against deferred breakpoints by token + assembly name.
-            foreach (var deferred in model.DeferredManagedBreakpoints)
+            foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
             {
                 if (deferred.MethodToken == jit.MethodToken &&
                     deferred.AssemblyName != null &&
@@ -423,7 +424,7 @@ internal sealed class ManagedDebuggerService(
                     // Check if this method has ENTER hooks active. When hooks are active
                     // and we have IL-to-native mapping, the ENTER path sets a transient BP
                     // at the exact breakpointed line (more precise than method entry).
-                    var bpKey = $"{jit.AssemblyName}:{jit.MethodToken:X8}";
+                    string bpKey = $"{jit.AssemblyName}:{jit.MethodToken:X8}";
                     bool hasEnterHooks = model.ProfilerHooksActive &&
                         model.JitMethodMappings.ContainsKey(bpKey);
                     if (hasEnterHooks)
@@ -436,7 +437,7 @@ internal sealed class ManagedDebuggerService(
                     }
 
                     // Without hooks: set hardware BP now and signal ACK.
-                    var hwBpId = SetManagedCodeBreakpoint(model, jit.NativeAddress, deferred.FilePath, deferred.Line);
+                    uint? hwBpId = SetManagedCodeBreakpoint(model, jit.NativeAddress, deferred.FilePath, deferred.Line);
 
                     bound.Add(deferred);
                     resolved.Add(new Breakpoint
@@ -455,22 +456,19 @@ internal sealed class ManagedDebuggerService(
             }
         }
 
-        foreach (var r in bound)
-            model.DeferredManagedBreakpoints.Remove(r);
+        foreach (DeferredManagedBreakpoint r in bound)
+            _ = model.DeferredManagedBreakpoints.Remove(r);
 
         // Signal the ACK event to unblock the profiler's JITCompilationFinished callback.
         // The hardware BP is now set, so when the profiler unblocks and the CLR dispatches
         // to the freshly JIT'd code, the BP will fire immediately.
         if (resolved.Count > 0)
-            model.ProfilerAckEvent?.Set();
+            _ = (model.ProfilerAckEvent?.Set());
 
-        return resolved.ToArray();
+        return [.. resolved];
     }
 
-    public void SetTransientBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line)
-    {
-        SetManagedCodeBreakpoint(model, address, filePath, line);
-    }
+    public void SetTransientBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line) => SetManagedCodeBreakpoint(model, address, filePath, line);
 
     public (string Name, Source? Source, int Line)? ResolveFrameFromProfilerData(
         NativeDebuggerModel model, ulong instructionPointer)
@@ -489,18 +487,18 @@ internal sealed class ManagedDebuggerService(
         string? assemblyPath = null;
         if (model.CorWrapper != null)
         {
-            var moduleInfo = _corDebug.FindModuleByName(model.CorWrapper, method.AssemblyName);
+            ManagedModuleInfo? moduleInfo = _corDebug.FindModuleByName(model.CorWrapper, method.AssemblyName);
             assemblyPath = moduleInfo?.Path;
 
             // Fallback: search near known module paths.
             if (assemblyPath == null)
             {
-                foreach (var mod in _corDebug.GetModules(model.CorWrapper))
+                foreach (ManagedModuleInfo mod in _corDebug.GetModules(model.CorWrapper))
                 {
                     if (mod.Path == null) continue;
-                    var dir = Path.GetDirectoryName(mod.Path);
+                    string? dir = Path.GetDirectoryName(mod.Path);
                     if (dir == null) continue;
-                    var candidate = Path.Combine(dir, method.AssemblyName + ".dll");
+                    string candidate = Path.Combine(dir, method.AssemblyName + ".dll");
                     if (File.Exists(candidate))
                     {
                         assemblyPath = candidate;
@@ -519,22 +517,22 @@ internal sealed class ManagedDebuggerService(
         {
             try
             {
-                
+
                 // Compute IL offset from native IP using the IL-to-native mapping.
                 int ilOffset = 0;
-                var bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
-                if (model.JitMethodMappings.TryGetValue(bpKey, out var methodMapping))
+                string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
+                if (model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? methodMapping))
                 {
                     uint nativeOffset = (uint)(instructionPointer - methodMapping.CodeStart);
                     // Find the largest IL offset whose native start ≤ our offset.
-                    foreach (var (il, nat) in methodMapping.ILToNativeMap)
+                    foreach ((int il, int nat) in methodMapping.ILToNativeMap)
                     {
                         if ((uint)nat <= nativeOffset)
                             ilOffset = il;
                     }
                 }
 
-                var srcLoc = _pdbMapper.GetSourceLocation(assemblyPath, method.MethodToken, ilOffset);
+                (string File, int Line)? srcLoc = _pdbMapper.GetSourceLocation(assemblyPath, method.MethodToken, ilOffset);
                 if (srcLoc != null)
                 {
                     source = new Source
@@ -546,7 +544,7 @@ internal sealed class ManagedDebuggerService(
                 }
 
                 // Try to get a better method name from PDB metadata.
-                var methodInfo = _pdbMapper.GetMethodName(assemblyPath, method.MethodToken);
+                string? methodInfo = _pdbMapper.GetMethodName(assemblyPath, method.MethodToken);
                 if (methodInfo != null)
                     methodName = methodInfo;
 
@@ -555,7 +553,7 @@ internal sealed class ManagedDebuggerService(
                 // Check both method start and exact IP (transient BPs from ENTER hooks
                 // are set at an IL-mapped offset, not the method start).
                 if (source == null && (model.ManagedBreakpointSources.TryGetValue(
-                    method.StartAddress, out var bpSource) ||
+                    method.StartAddress, out (string File, int Line) bpSource) ||
                     model.ManagedBreakpointSources.TryGetValue(
                     instructionPointer, out bpSource)))
                 {
@@ -585,7 +583,7 @@ internal sealed class ManagedDebuggerService(
         if (map.Count == 0)
             return null;
 
-        var keys = map.Keys;
+        IList<ulong> keys = map.Keys;
         int lo = 0, hi = keys.Count - 1;
 
         // Find the largest key ≤ ip.
@@ -602,19 +600,16 @@ internal sealed class ManagedDebuggerService(
         if (hi < 0)
             return null;
 
-        var entry = map.Values[hi];
-        if (ip < entry.StartAddress + entry.CodeSize)
-            return entry;
-
-        return null;
+        JitMethodInfo entry = map.Values[hi];
+        return ip < entry.StartAddress + entry.CodeSize ? entry : null;
     }
 
     private Breakpoint[] TryBindPendingBreakpoints(NativeDebuggerModel model)
     {
-        var resolved = new List<Breakpoint>();
-        var bound = new List<PendingManagedBreakpoint>();
+        List<Breakpoint> resolved = [];
+        List<PendingManagedBreakpoint> bound = [];
 
-        foreach (var pending in model.PendingILBreakpoints)
+        foreach (PendingManagedBreakpoint pending in model.PendingILBreakpoints)
         {
             if (TryBindBreakpoint(model, pending.FilePath, pending.Line, pending.BpId))
             {
@@ -633,27 +628,27 @@ internal sealed class ManagedDebuggerService(
             }
         }
 
-        foreach (var r in bound)
-            model.PendingILBreakpoints.Remove(r);
+        foreach (PendingManagedBreakpoint r in bound)
+            _ = model.PendingILBreakpoints.Remove(r);
 
-        return resolved.ToArray();
+        return [.. resolved];
     }
 
     private void ClearManagedBreakpointsForFile(NativeDebuggerModel model, string filePath)
     {
-        if (model.ManagedFileBreakpointIds.TryGetValue(filePath, out var existingIds))
+        if (model.ManagedFileBreakpointIds.TryGetValue(filePath, out List<int>? existingIds))
         {
-            foreach (var id in existingIds)
+            foreach (int id in existingIds)
             {
                 // Remove hardware breakpoints set by the managed debugger.
-                var key = model.BreakpointIds.FirstOrDefault(kv => kv.Value == (uint)id
+                KeyValuePair<string, uint> key = model.BreakpointIds.FirstOrDefault(kv => kv.Value == (uint)id
                     || kv.Key.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase));
-                if (key.Key != null && model.BreakpointIds.TryGetValue(key.Key, out var hwId))
+                if (key.Key != null && model.BreakpointIds.TryGetValue(key.Key, out uint hwId))
                 {
-                    _dbgEng.RemoveBreakpoint(model.Wrapper, hwId);
-                    model.UserBreakpointIds.Remove(hwId);
-                    model.ManagedBreakpointIds.Remove(hwId);
-                    model.BreakpointIds.Remove(key.Key);
+                    _ = _dbgEng.RemoveBreakpoint(model.Wrapper, hwId);
+                    _ = model.UserBreakpointIds.Remove(hwId);
+                    _ = model.ManagedBreakpointIds.Remove(hwId);
+                    _ = model.BreakpointIds.Remove(key.Key);
                 }
 
                 // Also deactivate any ICorDebug breakpoints (legacy path).
@@ -663,10 +658,10 @@ internal sealed class ManagedDebuggerService(
             existingIds.Clear();
         }
 
-        model.PendingILBreakpoints.RemoveAll(p =>
+        _ = model.PendingILBreakpoints.RemoveAll(p =>
             p.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
 
-        model.DeferredManagedBreakpoints.RemoveAll(d =>
+        _ = model.DeferredManagedBreakpoints.RemoveAll(d =>
             d.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -680,13 +675,13 @@ internal sealed class ManagedDebuggerService(
     private (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? FindMethodFromDiskPdb(
         string sourceFile, int line)
     {
-        var dir = Path.GetDirectoryName(sourceFile);
+        string? dir = Path.GetDirectoryName(sourceFile);
         string? projectDir = null;
         string? projectName = null;
 
         for (int up = 0; up < 5 && dir != null; up++)
         {
-            var csprojs = Directory.GetFiles(dir, "*.csproj");
+            string[] csprojs = Directory.GetFiles(dir, "*.csproj");
             if (csprojs.Length > 0)
             {
                 projectDir = dir;
@@ -699,20 +694,20 @@ internal sealed class ManagedDebuggerService(
         if (projectDir == null || projectName == null)
             return null;
 
-        var searchDirs = new[] { "bin", "obj" };
-        foreach (var subDir in searchDirs)
+        string[] searchDirs = ["bin", "obj"];
+        foreach (string? subDir in searchDirs)
         {
-            var binDir = Path.Combine(projectDir, subDir);
+            string binDir = Path.Combine(projectDir, subDir);
             if (!Directory.Exists(binDir))
                 continue;
 
-            foreach (var pdbFile in Directory.GetFiles(binDir, $"{projectName}.pdb", SearchOption.AllDirectories))
+            foreach (string pdbFile in Directory.GetFiles(binDir, $"{projectName}.pdb", SearchOption.AllDirectories))
             {
-                var assemblyPath = Path.ChangeExtension(pdbFile, ".dll");
+                string assemblyPath = Path.ChangeExtension(pdbFile, ".dll");
                 if (!File.Exists(assemblyPath))
                     continue;
 
-                                var result = _pdbMapper.FindMethodAtLine(assemblyPath, sourceFile, line);
+                (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = _pdbMapper.FindMethodAtLine(assemblyPath, sourceFile, line);
                 if (result != null)
                     return (result.Value.AssemblyName, result.Value.MethodName, result.Value.MethodToken, result.Value.ILOffset);
             }
@@ -727,12 +722,12 @@ internal sealed class ManagedDebuggerService(
     /// </summary>
     private static string? ResolveCliAssemblyName(string sourceFile)
     {
-        var dir = Path.GetDirectoryName(sourceFile);
+        string? dir = Path.GetDirectoryName(sourceFile);
         for (int up = 0; up < 5 && dir != null; up++)
         {
             try
             {
-                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
                 {
                     if (File.ReadAllText(vcx).Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
                         return Path.GetFileNameWithoutExtension(vcx);
@@ -750,33 +745,33 @@ internal sealed class ManagedDebuggerService(
     private static string? FindCliAssemblyDll(string sourceFile, string? assemblyName)
     {
         if (assemblyName == null) return null;
-        var dir = Path.GetDirectoryName(sourceFile);
+        string? dir = Path.GetDirectoryName(sourceFile);
         for (int up = 0; up < 5 && dir != null; up++)
         {
             try
             {
-                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
                 {
                     if (Path.GetFileNameWithoutExtension(vcx).Equals(assemblyName, StringComparison.OrdinalIgnoreCase)
                         && File.ReadAllText(vcx).Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
                     {
                         // Search bin/ for the DLL.
-                        var binDir = Path.Combine(dir, "bin");
+                        string binDir = Path.Combine(dir, "bin");
                         if (Directory.Exists(binDir))
                         {
-                            foreach (var dll in Directory.GetFiles(binDir, $"{assemblyName}.dll", SearchOption.AllDirectories))
+                            foreach (string dll in Directory.GetFiles(binDir, $"{assemblyName}.dll", SearchOption.AllDirectories))
                                 return dll;
                         }
                         // Also check output in the WpfApp bin (typical for C++/CLI wrapper).
-                        var parent = Path.GetDirectoryName(dir);
+                        string? parent = Path.GetDirectoryName(dir);
                         if (parent != null)
                         {
-                            foreach (var subDir in Directory.GetDirectories(parent))
+                            foreach (string subDir in Directory.GetDirectories(parent))
                             {
-                                var subBin = Path.Combine(subDir, "bin");
+                                string subBin = Path.Combine(subDir, "bin");
                                 if (Directory.Exists(subBin))
                                 {
-                                    foreach (var dll in Directory.GetFiles(subBin, $"{assemblyName}.dll", SearchOption.AllDirectories))
+                                    foreach (string dll in Directory.GetFiles(subBin, $"{assemblyName}.dll", SearchOption.AllDirectories))
                                         return dll;
                                 }
                             }
@@ -793,12 +788,12 @@ internal sealed class ManagedDebuggerService(
     public List<(string Assembly, int Token)> ResolveTokensFromBreakpoints(
         IEnumerable<(string FilePath, int Line)> breakpoints)
     {
-        var tokens = new List<(string Assembly, int Token)>();
-        foreach (var (filePath, line) in breakpoints)
+        List<(string Assembly, int Token)> tokens = [];
+        foreach ((string? filePath, int line) in breakpoints)
         {
             try
             {
-                var result = FindMethodFromDiskPdb(filePath, line);
+                (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = FindMethodFromDiskPdb(filePath, line);
                 if (result != null)
                     tokens.Add((result.Value.AssemblyName, result.Value.MethodToken));
             }
@@ -810,17 +805,17 @@ internal sealed class ManagedDebuggerService(
     public List<string> ResolveWatchAssemblies(
         IEnumerable<(string FilePath, int Line)> breakpoints)
     {
-        var assemblies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (filePath, _) in breakpoints)
+        HashSet<string> assemblies = new(StringComparer.OrdinalIgnoreCase);
+        foreach ((string? filePath, _) in breakpoints)
         {
             if (_sourceFiles.IsCliFile(filePath))
             {
-                var asmName = ResolveCliAssemblyName(filePath);
+                string? asmName = ResolveCliAssemblyName(filePath);
                 if (asmName != null)
-                    assemblies.Add(asmName);
+                    _ = assemblies.Add(asmName);
             }
         }
-        return assemblies.ToList();
+        return [.. assemblies];
     }
 
     // ── Methods moved from NativeDebuggerService ────────────────────
@@ -831,11 +826,11 @@ internal sealed class ManagedDebuggerService(
         if (InitializeRuntime(model))
         {
             // Apply any managed breakpoints that were pending before CLR loaded.
-            foreach (var pending in model.PendingManagedBreakpoints)
+            foreach (SetBreakpointsArguments pending in model.PendingManagedBreakpoints)
             {
-                var bps = SetManagedBreakpoints(
+                Breakpoint[] bps = SetManagedBreakpoints(
                     model, pending.Source.Path!, pending.Breakpoints);
-                foreach (var bp in bps)
+                foreach (Breakpoint bp in bps)
                 {
                     _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
                     {
@@ -859,8 +854,8 @@ internal sealed class ManagedDebuggerService(
     {
         try
         {
-            var resolved = OnModuleLoad(model);
-            foreach (var bp in resolved)
+            Breakpoint[] resolved = OnModuleLoad(model);
+            foreach (Breakpoint bp in resolved)
             {
                 _log.LogInfo(_logStore, $"Managed bp bound on module load: id={bp.Id} line={bp.Line}");
                 _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
@@ -883,27 +878,27 @@ internal sealed class ManagedDebuggerService(
         if (!model.ProfilerHooksActive || model.ManagedBreakpointIds.Count == 0)
             return;
 
-        var idsToRemove = new List<uint>(model.ManagedBreakpointIds);
-        foreach (var hwBpId in idsToRemove)
+        List<uint> idsToRemove = [.. model.ManagedBreakpointIds];
+        foreach (uint hwBpId in idsToRemove)
         {
             if (_dbgEng.RemoveBreakpoint(model.Wrapper, hwBpId))
                 _log.LogInfo(_logStore, $"Removed transient managed hw bp #{hwBpId}");
-            model.UserBreakpointIds.Remove(hwBpId);
+            _ = model.UserBreakpointIds.Remove(hwBpId);
         }
         model.ManagedBreakpointIds.Clear();
         model.ManagedBreakpointAddresses.Clear();
 
         // Clear the key→id mappings for managed breakpoints.
-        var keysToRemove = model.BreakpointIds
+        List<string> keysToRemove = [.. model.BreakpointIds
             .Where(kv => idsToRemove.Contains(kv.Value))
-            .Select(kv => kv.Key).ToList();
-        foreach (var key in keysToRemove)
-            model.BreakpointIds.Remove(key);
+            .Select(kv => kv.Key)];
+        foreach (string key in keysToRemove)
+            _ = model.BreakpointIds.Remove(key);
     }
 
     public void MergeManagedFrames(NativeDebuggerModel model, StackFrame[] nativeFrames)
     {
-        var managedFrames = GetManagedStackFrames(model);
+        StackFrame[] managedFrames = GetManagedStackFrames(model);
         if (managedFrames.Length == 0)
             return;
 
@@ -912,14 +907,14 @@ internal sealed class ManagedDebuggerService(
         int managedIdx = 0;
         for (int i = 0; i < nativeFrames.Length && managedIdx < managedFrames.Length; i++)
         {
-            var nf = nativeFrames[i];
+            StackFrame nf = nativeFrames[i];
 
             // Skip frames that already resolved to native source.
             if (nf.Source != null)
                 continue;
 
             // Check if this looks like a JIT-compiled or CLR infrastructure frame.
-            var name = nf.Name ?? "";
+            string name = nf.Name ?? "";
             bool looksManaged = name.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
                 || name.Contains("coreclr!", StringComparison.OrdinalIgnoreCase)
                 || name.Contains("clrjit!", StringComparison.OrdinalIgnoreCase)
@@ -929,7 +924,7 @@ internal sealed class ManagedDebuggerService(
                 continue;
 
             // Overlay with the next managed frame.
-            var mf = managedFrames[managedIdx++];
+            StackFrame mf = managedFrames[managedIdx++];
             nativeFrames[i] = new StackFrame
             {
                 Id = nf.Id,
@@ -945,7 +940,7 @@ internal sealed class ManagedDebuggerService(
     public void StartDeferredBreakpointPoller(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, $"Starting deferred BP poller ({model.DeferredManagedBreakpoints.Count} deferred)");
-        var timer = new System.Threading.Timer(_ =>
+        Timer timer = new(_ =>
         {
             if (model.Terminated || model.DeferredManagedBreakpoints.Count == 0)
                 return;
@@ -962,7 +957,7 @@ internal sealed class ManagedDebuggerService(
             timer.Dispose();
             model.Terminated = true;
             model.Commands.CompleteAdding();
-            model.EngineThread?.Join(3000);
+            _ = (model.EngineThread?.Join(3000));
             model.Commands.Dispose();
             model.Stopped.Dispose();
             model.EngineReady.Dispose();
@@ -976,8 +971,8 @@ internal sealed class ManagedDebuggerService(
         {
             try
             {
-                var jitResolved = HandleJitNotifications(model);
-                foreach (var bp in jitResolved)
+                Breakpoint[] jitResolved = HandleJitNotifications(model);
+                foreach (Breakpoint bp in jitResolved)
                 {
                     _log.LogInfo(_logStore, $"Profiler JIT bp resolved: id={bp.Id} verified={bp.Verified}");
                     _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
@@ -1000,8 +995,8 @@ internal sealed class ManagedDebuggerService(
         {
             try
             {
-                var resolved = TryResolveDeferredBreakpoints(model);
-                foreach (var bp in resolved)
+                Breakpoint[] resolved = TryResolveDeferredBreakpoints(model);
+                foreach (Breakpoint bp in resolved)
                 {
                     _log.LogInfo(_logStore, $"Deferred managed bp resolved: id={bp.Id} verified={bp.Verified}");
                     _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
@@ -1026,9 +1021,9 @@ internal sealed class ManagedDebuggerService(
         model.PendingEnterBreakpoint = false;
         // Find the matching deferred BP and compute exact native address
         // from the IL-to-native mapping (resolves breakpoint line → native offset).
-        var bpKey = $"{model.EnterBreakpointAssembly}:{model.EnterBreakpointToken:X8}";
+        string bpKey = $"{model.EnterBreakpointAssembly}:{model.EnterBreakpointToken:X8}";
         bool matched = false;
-        foreach (var deferred in model.DeferredManagedBreakpoints)
+        foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
         {
             if (deferred.MethodToken == model.EnterBreakpointToken &&
                 deferred.AssemblyName != null &&
@@ -1036,7 +1031,7 @@ internal sealed class ManagedDebuggerService(
             {
                 // Use IL-to-native mapping to get the exact address for the BP line.
                 ulong addr = model.EnterBreakpointAddress; // fallback: body entry
-                if (model.JitMethodMappings.TryGetValue(bpKey, out var mapping))
+                if (model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
                 {
                     addr = mapping.GetNativeAddress(deferred.ILOffset);
                     _log.LogInfo(_logStore,
@@ -1049,13 +1044,13 @@ internal sealed class ManagedDebuggerService(
             }
         }
         // ACK unblocks the profiler (hooks disabled during method body).
-        model.ProfilerAckEvent?.Set();
+        _ = (model.ProfilerAckEvent?.Set());
         if (!matched)
         {
             // Non-BP method from assembly-level watch — re-enable hooks
             // immediately so the next method call also fires ENTER.
             _log.LogInfo(_logStore, $"  ENTER: no match for token=0x{model.EnterBreakpointToken:X8} — rehooking");
-            model.ProfilerRehookEvent?.Set();
+            _ = (model.ProfilerRehookEvent?.Set());
         }
         return true;
     }

@@ -1,6 +1,5 @@
-using System.Text.Json;
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Services;
@@ -10,35 +9,35 @@ namespace MixDbg.Services;
 /// registered <see cref="IDapHandlerService"/> implementations.
 /// </summary>
 internal sealed class DapDispatcherService(
-	IEnumerable<IDapHandlerService> handlers,
+    IEnumerable<IDapHandlerService> handlers,
     IDapServer _server,
     DapServerModel _transport,
     ILoggingService _log,
     LogStore _logStore) : IDapDispatcher
 {
-	private readonly Dictionary<string, IDapHandlerService> _handlers
-		= handlers.ToDictionary(s => s.Command, s => s);
+    private readonly Dictionary<string, IDapHandlerService> _handlers
+        = handlers.ToDictionary(s => s.Command, s => s);
 
     public void Run()
     {
         while (true)
         {
-            var request = _server.ReadRequest(_transport);
+            RequestMessage? request = _server.ReadRequest(_transport);
             if (request is null) break;
 
             try
             {
-                var argsStr = request.Arguments.HasValue
+                string argsStr = request.Arguments.HasValue
                     ? request.Arguments.Value.ToString() : "null";
                 _log.LogInfo(_logStore, $"DAP request: seq={request.Seq} cmd={request.Command} args={argsStr}");
 
-				if (_handlers.TryGetValue(request.Command, out var handler))
-				{
-					var body = handler.Execute(request.Arguments);
-					_server.SendResponse(_transport, request, body);
-					_log.LogInfo(_logStore, $"DAP response: cmd={request.Command} success=true");
-				}
-				else
+                if (_handlers.TryGetValue(request.Command, out IDapHandlerService? handler))
+                {
+                    IDapMessage? body = handler.Execute(request.Arguments);
+                    _server.SendResponse(_transport, request, body);
+                    _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} success=true");
+                }
+                else
                 {
                     _server.SendErrorResponse(_transport, request, $"Unknown command: {request.Command}");
                     _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} UNKNOWN");

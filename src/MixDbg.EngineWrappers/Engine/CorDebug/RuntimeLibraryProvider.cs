@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
+
 using ClrDebug;
 
 namespace MixDbg.Engine.CorDebug;
@@ -10,21 +11,16 @@ namespace MixDbg.Engine.CorDebug;
 /// <c>ICLRDebugging::OpenVirtualProcess</c> to load the correct debugging library
 /// matching the target CLR version.
 /// </summary>
+/// <param name="coreClrPath">Full path to the target's coreclr.dll (from dbgeng LoadModule).</param>
 [GeneratedComClass]
-internal sealed partial class RuntimeLibraryProvider : ICLRDebuggingLibraryProvider
+internal sealed partial class RuntimeLibraryProvider(string coreClrPath) : ICLRDebuggingLibraryProvider
 {
-    private readonly string _coreClrDirectory;
-
-    /// <param name="coreClrPath">Full path to the target's coreclr.dll (from dbgeng LoadModule).</param>
-    public RuntimeLibraryProvider(string coreClrPath)
-    {
-        _coreClrDirectory = Path.GetDirectoryName(coreClrPath)
+    private readonly string _coreClrDirectory = Path.GetDirectoryName(coreClrPath)
             ?? throw new ArgumentException("Invalid coreclr path", nameof(coreClrPath));
-    }
 
     public HRESULT ProvideLibrary(string pwszFileName, int dwTimestamp, int dwSizeOfImage, out IntPtr phModule)
     {
-        var fullPath = Path.Combine(_coreClrDirectory, pwszFileName);
+        string fullPath = Path.Combine(_coreClrDirectory, pwszFileName);
         if (!File.Exists(fullPath))
         {
             phModule = IntPtr.Zero;

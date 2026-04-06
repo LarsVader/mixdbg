@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Execution;
 
@@ -17,7 +17,7 @@ public class PauseRequestHandlerService(
 
     public override void ExecuteInternal(EmptyArguments args)
     {
-		if (sessionModel.Engine != null)
-			nativeDebugger.Break(sessionModel.Engine);
+        if (sessionModel.Engine != null)
+            nativeDebugger.Break(sessionModel.Engine);
     }
 }

@@ -1,7 +1,8 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
 using MixDbg.Services.Handlers.Lifecycle;
+
 using NSubstitute;
 
 namespace MixDbg.Tests.Handlers.Lifecycle;
@@ -27,25 +28,19 @@ public sealed class AttachRequestHandlerServiceTests
     {
         GivenAttachArgs(pid: null);
 
-        var ex = Assert.Throws<InvalidOperationException>(() => WhenExecuting());
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(WhenExecuting);
         Assert.Contains("PID", ex.Message);
     }
 
     #region Given
 
-    private void GivenAttachArgs(int? pid)
-    {
-        _attachArgs = new AttachRequestArguments { Pid = pid };
-    }
+    private void GivenAttachArgs(int? pid) => _attachArgs = new AttachRequestArguments { Pid = pid };
 
     #endregion
 
     #region When
 
-    private void WhenExecuting()
-    {
-        _testee.ExecuteInternal(_attachArgs!);
-    }
+    private void WhenExecuting() => _testee.ExecuteInternal(_attachArgs!);
 
     #endregion
 
@@ -68,7 +63,7 @@ public sealed class AttachRequestHandlerServiceTests
 
     public AttachRequestHandlerServiceTests()
     {
-        _engine.CreateModel().Returns(_engineModel);
+        _ = _engine.CreateModel().Returns(_engineModel);
         _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
             .Do(ci => ci.ArgAt<NativeDebuggerModel>(0).EngineReady.Set());
         _testee = new AttachRequestHandlerService(_engine, _session);

@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
+
 using ClrDebug;
+
 using MixDbg.Engine.DbgEng;
 
 namespace MixDbg.Engine.CorDebug;
@@ -12,21 +14,14 @@ namespace MixDbg.Engine.CorDebug;
 /// for all memory and thread context access.
 /// </summary>
 [GeneratedComClass]
-internal sealed partial class DbgEngDataTarget : ICorDebugMutableDataTarget
+internal sealed partial class DbgEngDataTarget(
+    IDebugDataSpaces dataSpaces,
+    IDebugAdvanced advanced,
+    IDebugSystemObjects sysObjects) : ICorDebugMutableDataTarget
 {
-    private readonly IDebugDataSpaces _dataSpaces;
-    private readonly IDebugAdvanced _advanced;
-    private readonly IDebugSystemObjects _sysObjects;
-
-    public DbgEngDataTarget(
-        IDebugDataSpaces dataSpaces,
-        IDebugAdvanced advanced,
-        IDebugSystemObjects sysObjects)
-    {
-        _dataSpaces = dataSpaces;
-        _advanced = advanced;
-        _sysObjects = sysObjects;
-    }
+    private readonly IDebugDataSpaces _dataSpaces = dataSpaces;
+    private readonly IDebugAdvanced _advanced = advanced;
+    private readonly IDebugSystemObjects _sysObjects = sysObjects;
 
     public HRESULT GetPlatform(out CorDebugPlatform pTargetPlatform)
     {
@@ -69,7 +64,7 @@ internal sealed partial class DbgEngDataTarget : ICorDebugMutableDataTarget
         finally
         {
             // Restore the original thread.
-            _sysObjects.SetCurrentThreadId(savedThreadId);
+            _ = _sysObjects.SetCurrentThreadId(savedThreadId);
         }
     }
 
@@ -102,12 +97,9 @@ internal sealed partial class DbgEngDataTarget : ICorDebugMutableDataTarget
         }
         finally
         {
-            _sysObjects.SetCurrentThreadId(savedThreadId);
+            _ = _sysObjects.SetCurrentThreadId(savedThreadId);
         }
     }
 
-    public HRESULT ContinueStatusChanged(int dwThreadId, int continueStatus)
-    {
-        return HRESULT.S_OK;
-    }
+    public HRESULT ContinueStatusChanged(int dwThreadId, int continueStatus) => HRESULT.S_OK;
 }

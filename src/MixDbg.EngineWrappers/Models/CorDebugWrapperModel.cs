@@ -24,11 +24,11 @@ public sealed class CorDebugWrapperModel
 
     // ── Module cache — CorDebugModule references stay internal ──
 
-    internal Dictionary<long, CorDebugWrapperModule> Modules { get; } = new();
+    internal Dictionary<long, CorDebugWrapperModule> Modules { get; } = [];
 
     // ── Legacy ICorDebug breakpoints (deactivate-only) ──
 
-    internal Dictionary<int, CorDebugFunctionBreakpoint> LegacyBreakpoints { get; } = new();
+    internal Dictionary<int, CorDebugFunctionBreakpoint> LegacyBreakpoints { get; } = [];
 
     /// <summary>Whether any legacy ICorDebug breakpoints exist (for hit detection).</summary>
     public bool HasLegacyBreakpoints => LegacyBreakpoints.Count > 0;

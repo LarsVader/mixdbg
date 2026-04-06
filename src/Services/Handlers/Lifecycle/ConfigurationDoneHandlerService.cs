@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Lifecycle;
 
@@ -7,8 +7,8 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 /// Handles the DAP configurationDone request by applying pending breakpoints and resuming.
 /// </summary>
 public class ConfigurationDoneHandlerService(
-		ILoggingService log,
-		LogStore logStore,
+        ILoggingService log,
+        LogStore logStore,
         INativeDebugger nativeDebugger,
         IDapServer server,
         DapServerModel transport,
@@ -21,30 +21,30 @@ public class ConfigurationDoneHandlerService(
 
     public override void ExecuteInternal(EmptyArguments args)
     {
-		sessionModel.State = SessionState.Configured;
+        sessionModel.State = SessionState.Configured;
 
-		if (sessionModel.Engine is NativeDebuggerModel model)
-		{
-			// Apply breakpoints that arrived before launch.
-			foreach (var pending in sessionModel.PendingBreakpoints)
-			{
-				var bps = model.QueueEngineQuery(
-					() => nativeDebugger.SetBreakpointsOnEngine(model, pending.Source.Path!, pending.Breakpoints));
-				foreach (var bp in bps)
-				{
-					server.SendEvent(transport, "breakpoint", new BreakpointEventBody
-					{
-						Reason = "changed",
-						Breakpoint = bp,
-					});
-				}
-			}
-			sessionModel.PendingBreakpoints.Clear();
+        if (sessionModel.Engine is NativeDebuggerModel model)
+        {
+            // Apply breakpoints that arrived before launch.
+            foreach (SetBreakpointsArguments pending in sessionModel.PendingBreakpoints)
+            {
+                Breakpoint[] bps = model.QueueEngineQuery(
+                    () => nativeDebugger.SetBreakpointsOnEngine(model, pending.Source.Path!, pending.Breakpoints));
+                foreach (Breakpoint? bp in bps)
+                {
+                    server.SendEvent(transport, "breakpoint", new BreakpointEventBody
+                    {
+                        Reason = "changed",
+                        Breakpoint = bp,
+                    });
+                }
+            }
+            sessionModel.PendingBreakpoints.Clear();
 
-			log.LogInfo(logStore, "Continue queued");
-			model.CachedStackTraceResult = null;
-			model.Commands.Add(() => nativeDebugger.ExecuteContinueOnEngine(model));
-			sessionModel.State = SessionState.Running;
-		}
+            log.LogInfo(logStore, "Continue queued");
+            model.CachedStackTraceResult = null;
+            model.Commands.Add(() => nativeDebugger.ExecuteContinueOnEngine(model));
+            sessionModel.State = SessionState.Running;
+        }
     }
 }

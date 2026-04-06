@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Inspection;
 
@@ -17,11 +17,11 @@ public class ScopesRequestHandlerService(
 
     public override ScopesResponseBody ExecuteInternal(ScopesArguments args)
     {
-		if (sessionModel.Engine is not NativeDebuggerModel model)
-			return new ScopesResponseBody { Scopes = [] };
+        if (sessionModel.Engine is not NativeDebuggerModel model)
+            return new ScopesResponseBody { Scopes = [] };
 
-		var scopes = model.QueueEngineQuery(
-			() => nativeDebugger.GetScopesOnEngine(model, args.FrameId));
-		return new ScopesResponseBody { Scopes = scopes };
+        Scope[] scopes = model.QueueEngineQuery(
+            () => nativeDebugger.GetScopesOnEngine(model, args.FrameId));
+        return new ScopesResponseBody { Scopes = scopes };
     }
 }

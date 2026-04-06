@@ -4,20 +4,22 @@ public sealed class SourceFileService : ISourceFileService
 {
     public bool IsNativeFile(string path)
     {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
+        string ext = Path.GetExtension(path).ToLowerInvariant();
         if (ext is not ".cpp" and not ".c" and not ".cc" and not ".cxx"
             and not ".h" and not ".hpp")
+        {
             return false;
+        }
 
         // C++/CLI projects compile to IL — not debuggable via dbgeng.
-        var dir = Path.GetDirectoryName(path);
+        string? dir = Path.GetDirectoryName(path);
         if (dir != null)
         {
             try
             {
-                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
                 {
-                    var text = File.ReadAllText(vcx);
+                    string text = File.ReadAllText(vcx);
                     if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
                         return false;
                 }
@@ -29,7 +31,7 @@ public sealed class SourceFileService : ISourceFileService
 
     public bool IsManagedFile(string path)
     {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
+        string ext = Path.GetExtension(path).ToLowerInvariant();
 
         // C# files are always managed.
         if (ext == ".cs")
@@ -38,14 +40,14 @@ public sealed class SourceFileService : ISourceFileService
         // C++/CLI files: .cpp/.c/.h/.hpp in a project with <CLRSupport>.
         if (ext is ".cpp" or ".c" or ".cc" or ".cxx" or ".h" or ".hpp")
         {
-            var dir = Path.GetDirectoryName(path);
+            string? dir = Path.GetDirectoryName(path);
             if (dir != null)
             {
                 try
                 {
-                    foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                    foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
                     {
-                        var text = File.ReadAllText(vcx);
+                        string text = File.ReadAllText(vcx);
                         if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
                             return true;
                     }
@@ -59,19 +61,21 @@ public sealed class SourceFileService : ISourceFileService
 
     public bool IsCliFile(string path)
     {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
+        string ext = Path.GetExtension(path).ToLowerInvariant();
         if (ext is not ".cpp" and not ".c" and not ".cc" and not ".cxx"
             and not ".h" and not ".hpp")
+        {
             return false;
+        }
 
-        var dir = Path.GetDirectoryName(path);
+        string? dir = Path.GetDirectoryName(path);
         if (dir != null)
         {
             try
             {
-                foreach (var vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
                 {
-                    var text = File.ReadAllText(vcx);
+                    string text = File.ReadAllText(vcx);
                     if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
                         return true;
                 }

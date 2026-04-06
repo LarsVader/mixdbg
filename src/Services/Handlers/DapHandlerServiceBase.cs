@@ -1,4 +1,5 @@
 using System.Text.Json;
+
 using MixDbg.Models.Interfaces;
 using MixDbg.Services.Interfaces;
 
@@ -9,27 +10,19 @@ public abstract class DapHandlerServiceBase<TResponse, TArgs>
     where TResponse : IDapMessage
     where TArgs : IDapMessageArguments, new()
 {
-    public IDapMessage? Execute(JsonElement? args)
-    {
-		return ExecuteInternal(DeserializeArgs(args));
-    }
+    public IDapMessage? Execute(JsonElement? args) => ExecuteInternal(DeserializeArgs(args));
 
-	public abstract string Command { get; }
+    public abstract string Command { get; }
 
-	public abstract TResponse ExecuteInternal(TArgs args);
+    public abstract TResponse ExecuteInternal(TArgs args);
 
-	private static readonly JsonSerializerOptions JsonOpts = new()
+    private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-	public TArgs DeserializeArgs(JsonElement? request)
-    {
-        if (!request.HasValue)
-            return new TArgs();
-
-        return request.Value.Deserialize<TArgs>(JsonOpts)
+    public TArgs DeserializeArgs(JsonElement? request) => !request.HasValue
+            ? new TArgs()
+            : request.Value.Deserialize<TArgs>(JsonOpts)
             ?? Activator.CreateInstance<TArgs>();
-    }
 }
-

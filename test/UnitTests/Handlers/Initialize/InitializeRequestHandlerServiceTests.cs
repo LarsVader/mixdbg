@@ -1,7 +1,8 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
 using MixDbg.Services.Handlers.Initialize;
+
 using NSubstitute;
 
 namespace MixDbg.Tests.Handlers.Initialize;
@@ -36,24 +37,15 @@ public sealed class InitializeRequestHandlerServiceTests
 
     #region When
 
-    private void WhenExecuting()
-    {
-        _result = _testee.ExecuteInternal(new InitializeRequestArguments());
-    }
+    private void WhenExecuting() => _result = _testee.ExecuteInternal(new InitializeRequestArguments());
 
     #endregion
 
     #region Then
 
-    private void ThenSessionStateIs(SessionState expected)
-    {
-        Assert.Equal(expected, _session.State);
-    }
+    private void ThenSessionStateIs(SessionState expected) => Assert.Equal(expected, _session.State);
 
-    private void ThenInitializedEventWasSent()
-    {
-        _server.Received(1).SendEvent(_transport, "initialized", Arg.Any<InitializedEventBody>());
-    }
+    private void ThenInitializedEventWasSent() => _server.Received(1).SendEvent(_transport, "initialized", Arg.Any<InitializedEventBody>());
 
     #endregion
 
@@ -65,10 +57,7 @@ public sealed class InitializeRequestHandlerServiceTests
     private readonly InitializeRequestHandlerService _testee;
     private Capabilities? _result;
 
-    public InitializeRequestHandlerServiceTests()
-    {
-        _testee = new InitializeRequestHandlerService(_server, _transport, _session);
-    }
+    public InitializeRequestHandlerServiceTests() => _testee = new InitializeRequestHandlerService(_server, _transport, _session);
 
     #endregion
 }

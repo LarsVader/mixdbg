@@ -28,10 +28,7 @@ public sealed class DebugSessionModel : IDisposable
 
     internal NativeDebuggerModel? Engine { get; set; }
     internal int NextPendingBpId { get; set; } = 1000;
-    internal List<SetBreakpointsArguments> PendingBreakpoints { get; } = new();
+    internal List<SetBreakpointsArguments> PendingBreakpoints { get; } = [];
 
-    public void Dispose()
-    {
-        Engine?.Dispose();
-    }
+    public void Dispose() => Engine?.Dispose();
 }

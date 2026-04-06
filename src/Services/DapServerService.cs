@@ -1,7 +1,8 @@
 using System.Text;
 using System.Text.Json;
-using MixDbg.Models.Dap;
+
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services;
 
@@ -22,31 +23,31 @@ internal sealed class DapServerService : IDapServer
 
     public RequestMessage? ReadRequest(DapServerModel model)
     {
-        var headers = ReadHeaders(model);
+        Dictionary<string, string>? headers = ReadHeaders(model);
         if (headers is null) return null;
 
-        if (!headers.TryGetValue("Content-Length", out var lengthStr)
-            || !int.TryParse(lengthStr, out var length))
+        if (!headers.TryGetValue("Content-Length", out string? lengthStr)
+            || !int.TryParse(lengthStr, out int length))
         {
             throw new InvalidOperationException("Missing or invalid Content-Length header");
         }
 
-        var body = new byte[length];
-        var read = 0;
+        byte[] body = new byte[length];
+        int read = 0;
         while (read < length)
         {
-            var n = model.Input.Read(body, read, length - read);
+            int n = model.Input.Read(body, read, length - read);
             if (n == 0) return null;
             read += n;
         }
 
-        var json = Encoding.UTF8.GetString(body);
+        string json = Encoding.UTF8.GetString(body);
         return JsonSerializer.Deserialize<RequestMessage>(json, JsonOpts);
     }
 
     public void SendResponse(DapServerModel model, RequestMessage request, object? body = null)
     {
-        var response = new ResponseMessage
+        ResponseMessage response = new()
         {
             Seq = NextSeq(model),
             RequestSeq = request.Seq,
@@ -59,7 +60,7 @@ internal sealed class DapServerService : IDapServer
 
     public void SendErrorResponse(DapServerModel model, RequestMessage request, string message)
     {
-        var response = new ResponseMessage
+        ResponseMessage response = new()
         {
             Seq = NextSeq(model),
             RequestSeq = request.Seq,
@@ -72,7 +73,7 @@ internal sealed class DapServerService : IDapServer
 
     public void SendEvent(DapServerModel model, string eventName, object? body = null)
     {
-        var evt = new EventMessage
+        EventMessage evt = new()
         {
             Seq = NextSeq(model),
             Event = eventName,
@@ -83,10 +84,10 @@ internal sealed class DapServerService : IDapServer
 
     private static void WriteMessage(DapServerModel model, ProtocolMessage message)
     {
-        var json = JsonSerializer.Serialize(message, message.GetType(), JsonOpts);
-        var bytes = Encoding.UTF8.GetBytes(json);
-        var header = $"Content-Length: {bytes.Length}\r\n\r\n";
-        var headerBytes = Encoding.ASCII.GetBytes(header);
+        string json = JsonSerializer.Serialize(message, message.GetType(), JsonOpts);
+        byte[] bytes = Encoding.UTF8.GetBytes(json);
+        string header = $"Content-Length: {bytes.Length}\r\n\r\n";
+        byte[] headerBytes = Encoding.ASCII.GetBytes(header);
 
         lock (model.WriteLock)
         {
@@ -101,18 +102,18 @@ internal sealed class DapServerService : IDapServer
 
     private static Dictionary<string, string>? ReadHeaders(DapServerModel model)
     {
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, string> headers = new(StringComparer.OrdinalIgnoreCase);
         while (true)
         {
-            var line = ReadLine(model);
+            string? line = ReadLine(model);
             if (line is null) return null;
             if (line.Length == 0) break;
 
-            var colon = line.IndexOf(':');
+            int colon = line.IndexOf(':');
             if (colon > 0)
             {
-                var key = line[..colon].Trim();
-                var value = line[(colon + 1)..].Trim();
+                string key = line[..colon].Trim();
+                string value = line[(colon + 1)..].Trim();
                 headers[key] = value;
             }
         }
@@ -121,21 +122,21 @@ internal sealed class DapServerService : IDapServer
 
     private static string? ReadLine(DapServerModel model)
     {
-        var sb = new StringBuilder();
+        StringBuilder sb = new();
         while (true)
         {
-            var b = model.Input.ReadByte();
+            int b = model.Input.ReadByte();
             if (b == -1) return sb.Length > 0 ? sb.ToString() : null;
             if (b == '\r')
             {
-                var next = model.Input.ReadByte();
+                int next = model.Input.ReadByte();
                 if (next == '\n') return sb.ToString();
-                sb.Append((char)b);
-                if (next != -1) sb.Append((char)next);
+                _ = sb.Append((char)b);
+                if (next != -1) _ = sb.Append((char)next);
             }
             else
             {
-                sb.Append((char)b);
+                _ = sb.Append((char)b);
             }
         }
     }

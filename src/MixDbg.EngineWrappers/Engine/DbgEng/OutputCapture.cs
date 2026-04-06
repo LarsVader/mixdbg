@@ -21,7 +21,7 @@ internal sealed class OutputCapture : IDebugOutputCallbacks
     /// <inheritdoc />
     public int Output(uint Mask, string Text)
     {
-        _sb.Append(Text);
+        _ = _sb.Append(Text);
         return 0; // S_OK
     }
 }

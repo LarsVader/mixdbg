@@ -1,11 +1,12 @@
 using Microsoft.Extensions.DependencyInjection;
+
 using MixDbg;
 using MixDbg.Models;
 using MixDbg.Services;
 
 // DAP adapters communicate over stdin/stdout.
-using var stdin = Console.OpenStandardInput();
-using var stdout = Console.OpenStandardOutput();
+using Stream stdin = Console.OpenStandardInput();
+using Stream stdout = Console.OpenStandardOutput();
 
 // Optional: --logpath <path> overrides the default ~/mixdbg.log location.
 string? logPath = null;
@@ -15,12 +16,12 @@ for (int i = 0; i < args.Length - 1; i++)
         logPath = args[i + 1];
 }
 
-var services = new ServiceCollection()
+ServiceProvider services = new ServiceCollection()
     .AddMixDbgCore(stdin, stdout, logPath)
     .BuildServiceProvider();
 
-var dispatcher = services.GetRequiredService<IDapDispatcher>();
-var sessionModel = services.GetRequiredService<DebugSessionModel>();
+IDapDispatcher dispatcher = services.GetRequiredService<IDapDispatcher>();
+DebugSessionModel sessionModel = services.GetRequiredService<DebugSessionModel>();
 
 // Run the message loop until disconnect or EOF
 dispatcher.Run();

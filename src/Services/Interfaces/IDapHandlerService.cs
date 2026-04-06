@@ -4,6 +4,6 @@ namespace MixDbg.Services.Interfaces;
 
 public interface IDapHandlerService
 {
-	public string Command { get; }
-    public IDapMessage? Execute(JsonElement? args);
+    string Command { get; }
+    IDapMessage? Execute(JsonElement? args);
 }

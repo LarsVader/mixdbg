@@ -1,5 +1,6 @@
 using MixDbg.Engine.DbgEng;
 using MixDbg.Models;
+
 using NSubstitute;
 
 namespace MixDbg.Tests;
@@ -99,88 +100,43 @@ public sealed class VariableStoreTests
 
     #region Given
 
-    private void GivenStartIndex(uint startIndex)
-    {
-        _startIndex = startIndex;
-    }
+    private void GivenStartIndex(uint startIndex) => _startIndex = startIndex;
 
-    private void GivenCount(uint count)
-    {
-        _count = count;
-    }
+    private void GivenCount(uint count) => _count = count;
 
     #endregion
 
     #region When
 
-    private void WhenAllocating()
-    {
-        _allocatedRef = _testee.Allocate(_group, _startIndex, _count);
-    }
+    private void WhenAllocating() => _allocatedRef = _testee.Allocate(_group, _startIndex, _count);
 
-    private void WhenAllocatingAnother()
-    {
-        _secondRef = _testee.Allocate(_group2, 0, 1);
-    }
+    private void WhenAllocatingAnother() => _secondRef = _testee.Allocate(_group2, 0, 1);
 
-    private void WhenGettingAllocatedRef()
-    {
-        _container = _testee.Get(_allocatedRef);
-    }
+    private void WhenGettingAllocatedRef() => _container = _testee.Get(_allocatedRef);
 
-    private void WhenGettingNonExistentRef(int refId)
-    {
-        _container = _testee.Get(refId);
-    }
+    private void WhenGettingNonExistentRef(int refId) => _container = _testee.Get(refId);
 
-    private void WhenClearing()
-    {
-        _testee.Clear();
-    }
+    private void WhenClearing() => _testee.Clear();
 
     #endregion
 
     #region Then
 
-    private void ThenAllocatedRefIsPositive()
-    {
-        Assert.True(_allocatedRef > 0);
-    }
+    private void ThenAllocatedRefIsPositive() => Assert.True(_allocatedRef > 0);
 
-    private void ThenAllocatedRefsAreDistinct()
-    {
-        Assert.NotEqual(_allocatedRef, _secondRef);
-    }
+    private void ThenAllocatedRefsAreDistinct() => Assert.NotEqual(_allocatedRef, _secondRef);
 
-    private void ThenContainerIsNotNull()
-    {
-        Assert.NotNull(_container);
-    }
+    private void ThenContainerIsNotNull() => Assert.NotNull(_container);
 
-    private void ThenContainerIsNull()
-    {
-        Assert.Null(_container);
-    }
+    private void ThenContainerIsNull() => Assert.Null(_container);
 
-    private void ThenContainerGroupIs(IDebugSymbolGroup2 expected)
-    {
-        Assert.Same(expected, _container!.Group);
-    }
+    private void ThenContainerGroupIs(IDebugSymbolGroup2 expected) => Assert.Same(expected, _container!.Group);
 
-    private void ThenContainerStartIndexIs(uint expected)
-    {
-        Assert.Equal(expected, _container!.StartIndex);
-    }
+    private void ThenContainerStartIndexIs(uint expected) => Assert.Equal(expected, _container!.StartIndex);
 
-    private void ThenContainerCountIs(uint expected)
-    {
-        Assert.Equal(expected, _container!.Count);
-    }
+    private void ThenContainerCountIs(uint expected) => Assert.Equal(expected, _container!.Count);
 
-    private void ThenSecondRefEqualsFirstRef()
-    {
-        Assert.Equal(_allocatedRef, _secondRef);
-    }
+    private void ThenSecondRefEqualsFirstRef() => Assert.Equal(_allocatedRef, _secondRef);
 
     #endregion
 

@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+
 using MixDbg.Models;
 
 namespace MixDbg.Services;

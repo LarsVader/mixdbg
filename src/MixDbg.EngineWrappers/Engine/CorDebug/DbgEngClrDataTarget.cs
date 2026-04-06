@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
+
 using ClrDebug;
+
 using MixDbg.Engine.DbgEng;
 
 namespace MixDbg.Engine.CorDebug;
@@ -11,24 +13,17 @@ namespace MixDbg.Engine.CorDebug;
 /// for querying JIT-compiled method addresses.
 /// </summary>
 [GeneratedComClass]
-internal sealed partial class DbgEngClrDataTarget : ICLRDataTarget
+internal sealed partial class DbgEngClrDataTarget(
+    IDebugDataSpaces dataSpaces,
+    IDebugAdvanced advanced,
+    IDebugSystemObjects sysObjects) : ICLRDataTarget
 {
-    private readonly IDebugDataSpaces _dataSpaces;
-    private readonly IDebugAdvanced _advanced;
-    private readonly IDebugSystemObjects _sysObjects;
+    private readonly IDebugDataSpaces _dataSpaces = dataSpaces;
+    private readonly IDebugAdvanced _advanced = advanced;
+    private readonly IDebugSystemObjects _sysObjects = sysObjects;
 
     /// <summary>Known module base addresses keyed by image path (case-insensitive).</summary>
     private readonly Dictionary<string, ulong> _moduleBaseAddresses = new(StringComparer.OrdinalIgnoreCase);
-
-    public DbgEngClrDataTarget(
-        IDebugDataSpaces dataSpaces,
-        IDebugAdvanced advanced,
-        IDebugSystemObjects sysObjects)
-    {
-        _dataSpaces = dataSpaces;
-        _advanced = advanced;
-        _sysObjects = sysObjects;
-    }
 
     /// <summary>
     /// Registers a known module base address for <see cref="GetImageBase"/> lookups.
@@ -37,7 +32,7 @@ internal sealed partial class DbgEngClrDataTarget : ICLRDataTarget
     {
         _moduleBaseAddresses[imagePath] = baseAddress;
         // Also register by filename only for flexible matching.
-        var fileName = Path.GetFileName(imagePath);
+        string fileName = Path.GetFileName(imagePath);
         if (!string.IsNullOrEmpty(fileName))
             _moduleBaseAddresses[fileName] = baseAddress;
     }
@@ -57,13 +52,13 @@ internal sealed partial class DbgEngClrDataTarget : ICLRDataTarget
     public HRESULT GetImageBase(string imagePath, out CLRDATA_ADDRESS baseAddress)
     {
         // Look up in registered modules (by full path or filename).
-        if (_moduleBaseAddresses.TryGetValue(imagePath, out var addr))
+        if (_moduleBaseAddresses.TryGetValue(imagePath, out ulong addr))
         {
             baseAddress = (CLRDATA_ADDRESS)addr;
             return HRESULT.S_OK;
         }
 
-        var fileName = Path.GetFileName(imagePath);
+        string fileName = Path.GetFileName(imagePath);
         if (!string.IsNullOrEmpty(fileName) && _moduleBaseAddresses.TryGetValue(fileName, out addr))
         {
             baseAddress = (CLRDATA_ADDRESS)addr;
@@ -94,10 +89,7 @@ internal sealed partial class DbgEngClrDataTarget : ICLRDataTarget
         return HRESULT.E_NOTIMPL;
     }
 
-    public HRESULT SetTLSValue(int threadID, int index, CLRDATA_ADDRESS value)
-    {
-        return HRESULT.E_NOTIMPL;
-    }
+    public HRESULT SetTLSValue(int threadID, int index, CLRDATA_ADDRESS value) => HRESULT.E_NOTIMPL;
 
     public HRESULT GetCurrentThreadID(out int threadID)
     {
@@ -127,17 +119,11 @@ internal sealed partial class DbgEngClrDataTarget : ICLRDataTarget
         }
         finally
         {
-            _sysObjects.SetCurrentThreadId(savedThreadId);
+            _ = _sysObjects.SetCurrentThreadId(savedThreadId);
         }
     }
 
-    public HRESULT SetThreadContext(int threadID, int contextSize, IntPtr context)
-    {
-        return HRESULT.E_NOTIMPL;
-    }
+    public HRESULT SetThreadContext(int threadID, int contextSize, IntPtr context) => HRESULT.E_NOTIMPL;
 
-    public HRESULT Request(uint reqCode, int inBufferSize, IntPtr inBuffer, int outBufferSize, IntPtr outBuffer)
-    {
-        return HRESULT.E_NOTIMPL;
-    }
+    public HRESULT Request(uint reqCode, int inBufferSize, IntPtr inBuffer, int outBufferSize, IntPtr outBuffer) => HRESULT.E_NOTIMPL;
 }

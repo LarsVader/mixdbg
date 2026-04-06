@@ -221,20 +221,20 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
                 CreateNoWindow = true,
             },
         };
-        _process.Start();
+        _ = _process.Start();
 
         _readTask = Task.Run(async () =>
         {
-            var stream = _process.StandardOutput.BaseStream;
-            var buf = new byte[65536];
+            Stream stream = _process.StandardOutput.BaseStream;
+            byte[] buf = new byte[65536];
             while (!_cts.Token.IsCancellationRequested)
             {
                 try
                 {
                     int read = await stream.ReadAsync(buf, _cts.Token);
                     if (read == 0) break;
-                    var text = Encoding.UTF8.GetString(buf, 0, read);
-                    _outputBuilder.Append(text);
+                    string text = Encoding.UTF8.GetString(buf, 0, read);
+                    _ = _outputBuilder.Append(text);
                     ParseDapMessages(text);
                 }
                 catch (OperationCanceledException) { break; }
@@ -355,21 +355,20 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await SendDapRequest(_nextSeq, "disconnect", new { terminateDebuggee = true });
     }
 
-    private async Task WhenWaitingForSeconds(int seconds)
-    {
-        await Task.Delay(TimeSpan.FromSeconds(seconds));
-    }
+    private async Task WhenWaitingForSeconds(int seconds) => await Task.Delay(TimeSpan.FromSeconds(seconds));
 
     private async Task WhenWaitingForResponse(string command, int timeout)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(timeout);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(timeout);
         while (DateTime.UtcNow < deadline)
         {
             lock (_responses)
             {
                 if (_responses.Any(r =>
                     r["command"]?.GetValue<string>() == command))
+                {
                     return;
+                }
             }
             await Task.Delay(100);
         }
@@ -377,17 +376,17 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
 
     private async Task WhenWaitingForStoppedEvent(int timeout)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(timeout);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(timeout);
         while (DateTime.UtcNow < deadline)
         {
             lock (_events)
             {
-                var stopped = _events.FirstOrDefault(e =>
+                JsonObject? stopped = _events.FirstOrDefault(e =>
                     e["event"]?.GetValue<string>() == "stopped");
                 if (stopped != null)
                 {
                     _stoppedReasons.Add(stopped["body"]?["reason"]?.GetValue<string>());
-                    _events.Remove(stopped);
+                    _ = _events.Remove(stopped);
                     return;
                 }
             }
@@ -398,22 +397,22 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
 
     private async Task WhenWaitingForStackTraceResponse(int timeout)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(timeout);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(timeout);
         while (DateTime.UtcNow < deadline)
         {
             lock (_responses)
             {
-                var resp = _responses.FirstOrDefault(r =>
+                JsonObject? resp = _responses.FirstOrDefault(r =>
                     r["command"]?.GetValue<string>() == "stackTrace");
                 if (resp != null)
                 {
-                    var frames = resp["body"]?["stackFrames"]?.AsArray();
-                    var firstFrame = frames?.FirstOrDefault()?.AsObject();
-                    var sourcePath = firstFrame?["source"]?["path"]?.GetValue<string>();
-                    var sourceLine = firstFrame?["line"]?.GetValue<int>() ?? 0;
+                    JsonArray? frames = resp["body"]?["stackFrames"]?.AsArray();
+                    JsonObject? firstFrame = frames?.FirstOrDefault()?.AsObject();
+                    string? sourcePath = firstFrame?["source"]?["path"]?.GetValue<string>();
+                    int sourceLine = firstFrame?["line"]?.GetValue<int>() ?? 0;
                     _stackTraceSourcePaths.Add(sourcePath);
                     _stackTraceLines.Add(sourceLine);
-                    _responses.Remove(resp);
+                    _ = _responses.Remove(resp);
                     return;
                 }
             }
@@ -425,16 +424,16 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
 
     private async Task WhenWaitingAndConsumingStackTraceResponse(int timeout)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(timeout);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(timeout);
         while (DateTime.UtcNow < deadline)
         {
             lock (_responses)
             {
-                var resp = _responses.FirstOrDefault(r =>
+                JsonObject? resp = _responses.FirstOrDefault(r =>
                     r["command"]?.GetValue<string>() == "stackTrace");
                 if (resp != null)
                 {
-                    _responses.Remove(resp);
+                    _ = _responses.Remove(resp);
                     return;
                 }
             }
@@ -484,7 +483,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     {
         if (!File.Exists(_sessionLogPath))
             return;
-        var log = File.ReadAllText(_sessionLogPath);
+        string log = File.ReadAllText(_sessionLogPath);
         Assert.DoesNotContain("CreateDacInstance failed", log);
         Assert.DoesNotContain("Could not find matching DAC", log);
     }
@@ -519,11 +518,11 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     private Task? _readTask;
     private readonly CancellationTokenSource _cts = new();
     private readonly StringBuilder _outputBuilder = new();
-    private readonly List<JsonObject> _responses = new();
-    private readonly List<JsonObject> _events = new();
-    private readonly List<string?> _stoppedReasons = new();
-    private readonly List<string?> _stackTraceSourcePaths = new();
-    private readonly List<int> _stackTraceLines = new();
+    private readonly List<JsonObject> _responses = [];
+    private readonly List<JsonObject> _events = [];
+    private readonly List<string?> _stoppedReasons = [];
+    private readonly List<string?> _stackTraceSourcePaths = [];
+    private readonly List<int> _stackTraceLines = [];
     private int _nextSeq = 10;
 
     public Task InitializeAsync() => Task.CompletedTask;
@@ -544,14 +543,14 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
 
     private async Task SendDapRequest(int seq, string command, object args)
     {
-        var body = JsonSerializer.Serialize(new
+        string body = JsonSerializer.Serialize(new
         {
             seq,
             type = "request",
             command,
             arguments = args,
         });
-        var msg = $"Content-Length: {Encoding.UTF8.GetByteCount(body)}\r\n\r\n{body}";
+        string msg = $"Content-Length: {Encoding.UTF8.GetByteCount(body)}\r\n\r\n{body}";
         await _process!.StandardInput.WriteAsync(msg);
         await _process.StandardInput.FlushAsync();
     }
@@ -560,31 +559,31 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
 
     private void ParseDapMessages(string text)
     {
-        _partialBuffer.Append(text);
-        var buf = _partialBuffer.ToString();
+        _ = _partialBuffer.Append(text);
+        string buf = _partialBuffer.ToString();
 
         while (true)
         {
-            var headerEnd = buf.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+            int headerEnd = buf.IndexOf("\r\n\r\n", StringComparison.Ordinal);
             if (headerEnd < 0) break;
 
-            var header = buf[..headerEnd];
-            var contentStart = headerEnd + 4;
+            string header = buf[..headerEnd];
+            int contentStart = headerEnd + 4;
 
             if (!header.Contains("Content-Length:")) break;
-            var lenStr = header.Split("Content-Length:")[1].Trim();
-            if (!int.TryParse(lenStr, out var len)) break;
+            string lenStr = header.Split("Content-Length:")[1].Trim();
+            if (!int.TryParse(lenStr, out int len)) break;
             if (buf.Length < contentStart + len) break;
 
-            var json = buf.Substring(contentStart, len);
+            string json = buf.Substring(contentStart, len);
             buf = buf[(contentStart + len)..];
 
             try
             {
-                var obj = JsonNode.Parse(json)?.AsObject();
+                JsonObject? obj = JsonNode.Parse(json)?.AsObject();
                 if (obj == null) continue;
 
-                var msgType = obj["type"]?.GetValue<string>();
+                string? msgType = obj["type"]?.GetValue<string>();
                 if (msgType == "response")
                     lock (_responses) { _responses.Add(obj); }
                 else if (msgType == "event")
@@ -593,8 +592,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
             catch { }
         }
 
-        _partialBuffer.Clear();
-        _partialBuffer.Append(buf);
+        _ = _partialBuffer.Clear();
+        _ = _partialBuffer.Append(buf);
     }
 
     #endregion

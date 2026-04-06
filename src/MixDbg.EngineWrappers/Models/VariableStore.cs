@@ -10,7 +10,7 @@ namespace MixDbg.Models;
 internal sealed class VariableStore
 {
     private int _nextRef = 1;
-    private readonly Dictionary<int, VariableContainer> _containers = new();
+    private readonly Dictionary<int, VariableContainer> _containers = [];
 
     /// <summary>
     /// Allocates a new variablesReference handle for the given symbol group
@@ -18,7 +18,7 @@ internal sealed class VariableStore
     /// </summary>
     internal int Allocate(IDebugSymbolGroup2 group, uint startIndex, uint count)
     {
-        var id = _nextRef++;
+        int id = _nextRef++;
         _containers[id] = new VariableContainer(group, startIndex, count);
         return id;
     }
@@ -26,7 +26,7 @@ internal sealed class VariableStore
     /// <summary>Looks up a container by its variablesReference handle.</summary>
     internal VariableContainer? Get(int variablesReference)
     {
-        _containers.TryGetValue(variablesReference, out var container);
+        _ = _containers.TryGetValue(variablesReference, out VariableContainer? container);
         return container;
     }
 

@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Execution;
 
@@ -17,10 +17,10 @@ public class StepOutRequestHandlerService(
 
     public override void ExecuteInternal(StepArguments args)
     {
-		if (sessionModel.Engine is NativeDebuggerModel model)
-		{
-			model.Commands.Add(() => nativeDebugger.ExecuteStepOutOnEngine(model));
-		}
-		sessionModel.State = SessionState.Running;
+        if (sessionModel.Engine is NativeDebuggerModel model)
+        {
+            model.Commands.Add(() => nativeDebugger.ExecuteStepOutOnEngine(model));
+        }
+        sessionModel.State = SessionState.Running;
     }
 }

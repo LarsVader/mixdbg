@@ -1,6 +1,7 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
+
 using NSubstitute;
 
 namespace MixDbg.Tests;
@@ -369,352 +370,172 @@ public sealed class NativeDebuggerServiceTests : IDisposable
 
     #region Given
 
-    private void GivenSourceFileIsNative(string path)
-    {
-        _sourceFiles.IsNativeFile(path).Returns(true);
-    }
+    private void GivenSourceFileIsNative(string path) => _ = _sourceFiles.IsNativeFile(path).Returns(true);
 
-    private void GivenSourceFileIsManaged(string path)
-    {
-        _sourceFiles.IsNativeFile(path).Returns(false);
-    }
+    private void GivenSourceFileIsManaged(string path) => _ = _sourceFiles.IsNativeFile(path).Returns(false);
 
     private void GivenBreakpointRequest(string filePath, int[] lines)
     {
         _bpFilePath = filePath;
-        _bpRequested = lines.Select(l => new SourceBreakpoint { Line = l }).ToArray();
+        _bpRequested = [.. lines.Select(l => new SourceBreakpoint { Line = l })];
     }
 
-    private void GivenGetOffsetByLineSucceeds(string file, int line, ulong offset)
-    {
-        _wrapper.GetOffsetByLine(_model.Wrapper, (uint)line, file)
+    private void GivenGetOffsetByLineSucceeds(string file, int line, ulong offset) => _ = _wrapper.GetOffsetByLine(_model.Wrapper, (uint)line, file)
             .Returns((offset, true));
-    }
 
-    private void GivenGetOffsetByLineSucceedsForAll(string file, (int line, ulong offset)[] mappings)
-    {
-        _wrapper.GetOffsetByLine(_model.Wrapper, Arg.Any<uint>(), file)
+    private void GivenGetOffsetByLineSucceedsForAll(string file, (int line, ulong offset)[] mappings) => _ = _wrapper.GetOffsetByLine(_model.Wrapper, Arg.Any<uint>(), file)
             .Returns(ci =>
             {
-                var reqLine = (int)(uint)ci[1];
-                var match = mappings.FirstOrDefault(m => m.line == reqLine);
+                int reqLine = (int)(uint)ci[1];
+                (int line, ulong offset) match = mappings.FirstOrDefault(m => m.line == reqLine);
                 return match != default ? (match.offset, true) : (0UL, false);
             });
-    }
 
-    private void GivenGetOffsetByLineFails(string file, int line)
-    {
-        _wrapper.GetOffsetByLine(_model.Wrapper, (uint)line, file)
+    private void GivenGetOffsetByLineFails(string file, int line) => _ = _wrapper.GetOffsetByLine(_model.Wrapper, (uint)line, file)
             .Returns((0UL, false));
-    }
 
-    private void GivenAddCodeBreakpointSucceeds(uint bpId)
-    {
-        _wrapper.AddCodeBreakpoint(_model.Wrapper, Arg.Any<ulong>())
+    private void GivenAddCodeBreakpointSucceeds(uint bpId) => _ = _wrapper.AddCodeBreakpoint(_model.Wrapper, Arg.Any<ulong>())
             .Returns((bpId, true));
-    }
 
     private void GivenAddCodeBreakpointSucceedsMultiple(uint[] bpIds)
     {
-        var idx = 0;
-        _wrapper.AddCodeBreakpoint(_model.Wrapper, Arg.Any<ulong>())
+        int idx = 0;
+        _ = _wrapper.AddCodeBreakpoint(_model.Wrapper, Arg.Any<ulong>())
             .Returns(_ => (bpIds[idx++], true));
     }
 
-    private void GivenGetLineByOffsetSucceeds(ulong offset, int resolvedLine)
-    {
-        _wrapper.GetLineByOffset(_model.Wrapper, offset)
+    private void GivenGetLineByOffsetSucceeds(ulong offset, int resolvedLine) => _ = _wrapper.GetLineByOffset(_model.Wrapper, offset)
             .Returns(((uint)resolvedLine, ""));
-    }
 
-    private void GivenGetLineByOffsetSucceedsForAll((ulong offset, int line)[] mappings)
-    {
-        _wrapper.GetLineByOffset(_model.Wrapper, Arg.Any<ulong>())
+    private void GivenGetLineByOffsetSucceedsForAll((ulong offset, int line)[] mappings) => _ = _wrapper.GetLineByOffset(_model.Wrapper, Arg.Any<ulong>())
             .Returns(ci =>
             {
-                var reqOffset = (ulong)ci[1];
-                var match = mappings.FirstOrDefault(m => m.offset == reqOffset);
+                ulong reqOffset = (ulong)ci[1];
+                (ulong offset, int line) match = mappings.FirstOrDefault(m => m.offset == reqOffset);
                 return match != default ? ((uint Line, string File)?)(((uint)match.line, "")) : null;
             });
-    }
 
-    private void GivenAddDeferredBreakpointSucceeds(uint deferredBpId)
-    {
-        _wrapper.AddDeferredBreakpoint(_model.Wrapper, Arg.Any<string>(), Arg.Any<int>())
+    private void GivenAddDeferredBreakpointSucceeds(uint deferredBpId) => _ = _wrapper.AddDeferredBreakpoint(_model.Wrapper, Arg.Any<string>(), Arg.Any<int>())
             .Returns((deferredBpId, true));
-    }
 
-    private void GivenAddDeferredBreakpointFails()
-    {
-        _wrapper.AddDeferredBreakpoint(_model.Wrapper, Arg.Any<string>(), Arg.Any<int>())
+    private void GivenAddDeferredBreakpointFails() => _ = _wrapper.AddDeferredBreakpoint(_model.Wrapper, Arg.Any<string>(), Arg.Any<int>())
             .Returns((0u, false));
-    }
 
     private void GivenExistingBreakpointForFile(string filePath, int line, uint bpId)
     {
         _model.BreakpointIds[$"{filePath}:{line}"] = bpId;
-        _model.UserBreakpointIds.Add(bpId);
+        _ = _model.UserBreakpointIds.Add(bpId);
     }
 
-    private void GivenThreadsExist((uint engineId, uint systemId)[] threads)
-    {
-        _wrapper.GetThreads(_model.Wrapper).Returns(threads);
-    }
+    private void GivenThreadsExist((uint engineId, uint systemId)[] threads) => _ = _wrapper.GetThreads(_model.Wrapper).Returns(threads);
 
-    private void GivenNoThreadsExist()
-    {
-        _wrapper.GetThreads(_model.Wrapper).Returns([]);
-    }
+    private void GivenNoThreadsExist() => _ = _wrapper.GetThreads(_model.Wrapper).Returns([]);
 
-    private void GivenEventThreadId(uint threadId)
-    {
-        _wrapper.GetEventThreadId(_model.Wrapper).Returns(threadId);
-    }
+    private void GivenEventThreadId(uint threadId) => _ = _wrapper.GetEventThreadId(_model.Wrapper).Returns(threadId);
 
-    private void GivenSetScopeAndGetLocalsReturns(int variablesReference)
-    {
-        _wrapper.SetScopeAndGetLocals(_model.Wrapper, Arg.Any<int>())
+    private void GivenSetScopeAndGetLocalsReturns(int variablesReference) => _ = _wrapper.SetScopeAndGetLocals(_model.Wrapper, Arg.Any<int>())
             .Returns(variablesReference);
-    }
 
-    private void GivenGetVariablesReturns(VariableInfo[] vars)
-    {
-        _wrapper.GetVariables(_model.Wrapper, Arg.Any<int>())
+    private void GivenGetVariablesReturns(VariableInfo[] vars) => _ = _wrapper.GetVariables(_model.Wrapper, Arg.Any<int>())
             .Returns(vars);
-    }
 
     #endregion
 
     #region When
 
-    private void WhenCreatingModel()
-    {
-        _createdModel = _testee.CreateModel();
-    }
+    private void WhenCreatingModel() => _createdModel = _testee.CreateModel();
 
-    private void WhenDisposingCreatedModel()
-    {
-        _createdModel!.Dispose();
-    }
+    private void WhenDisposingCreatedModel() => _createdModel!.Dispose();
 
-    private void WhenExecutingContinueOnEngine()
-    {
-        _testee.ExecuteContinueOnEngine(_model);
-    }
+    private void WhenExecutingContinueOnEngine() => _testee.ExecuteContinueOnEngine(_model);
 
-    private void WhenBreaking()
-    {
-        _testee.Break(_model);
-    }
+    private void WhenBreaking() => _testee.Break(_model);
 
-    private void WhenExecutingStepOnEngine(EngineExecutionStatus stepKind)
-    {
-        _testee.ExecuteStepOnEngine(_model, stepKind);
-    }
+    private void WhenExecutingStepOnEngine(EngineExecutionStatus stepKind) => _testee.ExecuteStepOnEngine(_model, stepKind);
 
-    private void WhenExecutingStepOutOnEngine()
-    {
-        _testee.ExecuteStepOutOnEngine(_model);
-    }
+    private void WhenExecutingStepOutOnEngine() => _testee.ExecuteStepOutOnEngine(_model);
 
-    private void WhenTerminating()
-    {
-        _testee.Terminate(_model);
-    }
+    private void WhenTerminating() => _testee.Terminate(_model);
 
-    private void WhenDetaching()
-    {
-        _testee.Detach(_model);
-    }
+    private void WhenDetaching() => _testee.Detach(_model);
 
-    private void WhenSettingBreakpointsOnEngine()
-    {
-        _bpResults = _testee.SetBreakpointsOnEngine(_model, _bpFilePath!, _bpRequested!);
-    }
+    private void WhenSettingBreakpointsOnEngine() => _bpResults = _testee.SetBreakpointsOnEngine(_model, _bpFilePath!, _bpRequested!);
 
-    private void WhenGettingThreadsOnEngine()
-    {
-        _threadResults = _testee.GetThreadsOnEngine(_model);
-    }
+    private void WhenGettingThreadsOnEngine() => _threadResults = _testee.GetThreadsOnEngine(_model);
 
-    private void WhenGettingStoppedThreadIdOnEngine()
-    {
-        _stoppedThreadId = _testee.GetStoppedThreadIdOnEngine(_model);
-    }
+    private void WhenGettingStoppedThreadIdOnEngine() => _stoppedThreadId = _testee.GetStoppedThreadIdOnEngine(_model);
 
-    private void WhenGettingScopesOnEngine(int frameId)
-    {
-        _scopeResults = _testee.GetScopesOnEngine(_model, frameId);
-    }
+    private void WhenGettingScopesOnEngine(int frameId) => _scopeResults = _testee.GetScopesOnEngine(_model, frameId);
 
-    private void WhenGettingVariablesOnEngine(int variablesReference)
-    {
-        _variableResults = _testee.GetVariablesOnEngine(_model, variablesReference);
-    }
+    private void WhenGettingVariablesOnEngine(int variablesReference) => _variableResults = _testee.GetVariablesOnEngine(_model, variablesReference);
 
     #endregion
 
     #region Then
 
-    private void ThenCreatedModelIsNotNull()
-    {
-        Assert.NotNull(_createdModel);
-    }
+    private void ThenCreatedModelIsNotNull() => Assert.NotNull(_createdModel);
 
-    private void ThenCreatedModelDisposeActionIsSet()
-    {
-        Assert.NotNull(_createdModel!.DisposeAction);
-    }
+    private void ThenCreatedModelDisposeActionIsSet() => Assert.NotNull(_createdModel!.DisposeAction);
 
-    private void ThenCreatedModelIsTerminated()
-    {
-        Assert.True(_createdModel!.Terminated);
-    }
+    private void ThenCreatedModelIsTerminated() => Assert.True(_createdModel!.Terminated);
 
-    private void ThenCommandWasQueued()
-    {
-        Assert.True(_model.Commands.Count > 0);
-    }
+    private void ThenCommandWasQueued() => Assert.True(_model.Commands.Count > 0);
 
-    private void ThenConfigDoneIsTrue()
-    {
-        Assert.True(_model.ConfigDone);
-    }
+    private void ThenConfigDoneIsTrue() => Assert.True(_model.ConfigDone);
 
-    private void ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus status)
-    {
-        _wrapper.Received().SetExecutionStatus(_model.Wrapper, status);
-    }
+    private void ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus status) => _wrapper.Received().SetExecutionStatus(_model.Wrapper, status);
 
-    private void ThenPauseRequestedIsTrue()
-    {
-        Assert.True(_model.PauseRequested);
-    }
+    private void ThenPauseRequestedIsTrue() => Assert.True(_model.PauseRequested);
 
-    private void ThenSetInterruptWasCalled()
-    {
-        _wrapper.Received(1).SetInterrupt(_model.Wrapper);
-    }
+    private void ThenSetInterruptWasCalled() => _wrapper.Received(1).SetInterrupt(_model.Wrapper);
 
-    private void ThenExecuteCommandWasCalledWith(string command)
-    {
-        _wrapper.Received(1).ExecuteCommand(_model.Wrapper, command);
-    }
+    private void ThenExecuteCommandWasCalledWith(string command) => _ = _wrapper.Received(1).ExecuteCommand(_model.Wrapper, command);
 
-    private void ThenModelIsTerminated()
-    {
-        Assert.True(_model.Terminated);
-    }
+    private void ThenModelIsTerminated() => Assert.True(_model.Terminated);
 
-    private void ThenTerminateSessionWasCalled()
-    {
-        _wrapper.Received(1).TerminateSession(_model.Wrapper);
-    }
+    private void ThenTerminateSessionWasCalled() => _wrapper.Received(1).TerminateSession(_model.Wrapper);
 
-    private void ThenDetachSessionWasCalled()
-    {
-        _wrapper.Received(1).DetachSession(_model.Wrapper);
-    }
+    private void ThenDetachSessionWasCalled() => _wrapper.Received(1).DetachSession(_model.Wrapper);
 
-    private void ThenBreakpointResultCountIs(int expected)
-    {
-        Assert.Equal(expected, _bpResults!.Length);
-    }
+    private void ThenBreakpointResultCountIs(int expected) => Assert.Equal(expected, _bpResults!.Length);
 
-    private void ThenAllBreakpointsAreVerified(bool expected)
-    {
-        Assert.All(_bpResults!, bp => Assert.Equal(expected, bp.Verified));
-    }
+    private void ThenAllBreakpointsAreVerified(bool expected) => Assert.All(_bpResults!, bp => Assert.Equal(expected, bp.Verified));
 
-    private void ThenBreakpointsHaveMessage(string expected)
-    {
-        Assert.All(_bpResults!, bp => Assert.Equal(expected, bp.Message));
-    }
+    private void ThenBreakpointsHaveMessage(string expected) => Assert.All(_bpResults!, bp => Assert.Equal(expected, bp.Message));
 
-    private void ThenBreakpointAtIndexIsVerified(int index, bool expected)
-    {
-        Assert.Equal(expected, _bpResults![index].Verified);
-    }
+    private void ThenBreakpointAtIndexIsVerified(int index, bool expected) => Assert.Equal(expected, _bpResults![index].Verified);
 
-    private void ThenBreakpointAtIndexHasLine(int index, int expected)
-    {
-        Assert.Equal(expected, _bpResults![index].Line);
-    }
+    private void ThenBreakpointAtIndexHasLine(int index, int expected) => Assert.Equal(expected, _bpResults![index].Line);
 
-    private void ThenBreakpointAtIndexHasId(int index, int expected)
-    {
-        Assert.Equal(expected, _bpResults![index].Id);
-    }
+    private void ThenBreakpointAtIndexHasId(int index, int expected) => Assert.Equal(expected, _bpResults![index].Id);
 
-    private void ThenUserBreakpointIdsContains(uint id)
-    {
-        Assert.Contains(id, _model.UserBreakpointIds);
-    }
+    private void ThenUserBreakpointIdsContains(uint id) => Assert.Contains(id, _model.UserBreakpointIds);
 
-    private void ThenUserBreakpointIdsDoesNotContain(uint id)
-    {
-        Assert.DoesNotContain(id, _model.UserBreakpointIds);
-    }
+    private void ThenUserBreakpointIdsDoesNotContain(uint id) => Assert.DoesNotContain(id, _model.UserBreakpointIds);
 
-    private void ThenRemoveBreakpointWasCalled(uint bpId)
-    {
-        _wrapper.Received(1).RemoveBreakpoint(_model.Wrapper, bpId);
-    }
+    private void ThenRemoveBreakpointWasCalled(uint bpId) => _ = _wrapper.Received(1).RemoveBreakpoint(_model.Wrapper, bpId);
 
-    private void ThenThreadResultCountIs(int expected)
-    {
-        Assert.Equal(expected, _threadResults!.Length);
-    }
+    private void ThenThreadResultCountIs(int expected) => Assert.Equal(expected, _threadResults!.Length);
 
-    private void ThenThreadAtIndexHasId(int index, int expected)
-    {
-        Assert.Equal(expected, _threadResults![index].Id);
-    }
+    private void ThenThreadAtIndexHasId(int index, int expected) => Assert.Equal(expected, _threadResults![index].Id);
 
-    private void ThenThreadAtIndexNameContains(int index, string expected)
-    {
-        Assert.Contains(expected, _threadResults![index].Name);
-    }
+    private void ThenThreadAtIndexNameContains(int index, string expected) => Assert.Contains(expected, _threadResults![index].Name);
 
-    private void ThenStoppedThreadIdIs(int expected)
-    {
-        Assert.Equal(expected, _stoppedThreadId);
-    }
+    private void ThenStoppedThreadIdIs(int expected) => Assert.Equal(expected, _stoppedThreadId);
 
-    private void ThenScopeResultCountIs(int expected)
-    {
-        Assert.Equal(expected, _scopeResults!.Length);
-    }
+    private void ThenScopeResultCountIs(int expected) => Assert.Equal(expected, _scopeResults!.Length);
 
-    private void ThenScopeAtIndexHasName(int index, string expected)
-    {
-        Assert.Equal(expected, _scopeResults![index].Name);
-    }
+    private void ThenScopeAtIndexHasName(int index, string expected) => Assert.Equal(expected, _scopeResults![index].Name);
 
-    private void ThenScopeAtIndexHasVariablesReference(int index, int expected)
-    {
-        Assert.Equal(expected, _scopeResults![index].VariablesReference);
-    }
+    private void ThenScopeAtIndexHasVariablesReference(int index, int expected) => Assert.Equal(expected, _scopeResults![index].VariablesReference);
 
-    private void ThenVariableResultCountIs(int expected)
-    {
-        Assert.Equal(expected, _variableResults!.Length);
-    }
+    private void ThenVariableResultCountIs(int expected) => Assert.Equal(expected, _variableResults!.Length);
 
-    private void ThenVariableAtIndexHasName(int index, string expected)
-    {
-        Assert.Equal(expected, _variableResults![index].Name);
-    }
+    private void ThenVariableAtIndexHasName(int index, string expected) => Assert.Equal(expected, _variableResults![index].Name);
 
-    private void ThenVariableAtIndexHasValue(int index, string expected)
-    {
-        Assert.Equal(expected, _variableResults![index].Value);
-    }
+    private void ThenVariableAtIndexHasValue(int index, string expected) => Assert.Equal(expected, _variableResults![index].Value);
 
-    private void ThenVariableAtIndexHasType(int index, string expected)
-    {
-        Assert.Equal(expected, _variableResults![index].Type);
-    }
+    private void ThenVariableAtIndexHasType(int index, string expected) => Assert.Equal(expected, _variableResults![index].Type);
 
     #endregion
 

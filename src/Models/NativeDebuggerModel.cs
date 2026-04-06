@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
+
 using MixDbg.Models.Dap;
 
 namespace MixDbg.Models;
@@ -36,45 +37,45 @@ public sealed class NativeDebuggerModel : IDisposable
     internal volatile bool PauseRequested;
 
     // Native breakpoint tracking.
-    internal HashSet<uint> UserBreakpointIds { get; } = new();
+    internal HashSet<uint> UserBreakpointIds { get; } = [];
     internal uint LastHitBpId;
     internal volatile bool HitUserBreakpoint;
-    internal Dictionary<string, uint> BreakpointIds { get; } = new();
+    internal Dictionary<string, uint> BreakpointIds { get; } = [];
     internal int NextBpId;
 
     // Command queue: main thread queues, engine thread executes.
-    internal BlockingCollection<Action> Commands { get; } = new();
+    internal BlockingCollection<Action> Commands { get; } = [];
 
     // Managed breakpoint tracking (ICorDebug V4).
-    internal HashSet<uint> ManagedBreakpointIds { get; } = new();
-    internal List<SetBreakpointsArguments> PendingManagedBreakpoints { get; } = new();
+    internal HashSet<uint> ManagedBreakpointIds { get; } = [];
+    internal List<SetBreakpointsArguments> PendingManagedBreakpoints { get; } = [];
 
     // CLR detection state.
     internal volatile bool ClrLoaded;
     internal volatile bool ManagedInitialized;
     internal string? CoreClrPath { get; set; }
     internal ulong CoreClrBaseAddress { get; set; }
-    internal Dictionary<string, List<int>> ManagedFileBreakpointIds { get; } = new();
-    internal List<PendingManagedBreakpoint> PendingILBreakpoints { get; } = new();
+    internal Dictionary<string, List<int>> ManagedFileBreakpointIds { get; } = [];
+    internal List<PendingManagedBreakpoint> PendingILBreakpoints { get; } = [];
 
     /// <summary>
     /// Managed breakpoints waiting for JIT compilation. Resolved when CLR notification
     /// exceptions (0xe0444143) fire and <c>GetFunctionFromToken(token).NativeCode</c>
     /// becomes available.
     /// </summary>
-    internal List<DeferredManagedBreakpoint> DeferredManagedBreakpoints { get; } = new();
+    internal List<DeferredManagedBreakpoint> DeferredManagedBreakpoints { get; } = [];
 
     /// <summary>
     /// Native addresses of active managed breakpoints (from ICorDebug IL breakpoints).
     /// Used to identify managed breakpoint hits from dbgeng EXCEPTION_BREAKPOINT events.
     /// </summary>
-    internal HashSet<ulong> ManagedBreakpointAddresses { get; } = new();
+    internal HashSet<ulong> ManagedBreakpointAddresses { get; } = [];
 
     /// <summary>
     /// Maps managed breakpoint native addresses to their source file and line.
     /// Used for C++/CLI stack trace resolution where PdbSourceMapper can't read Windows PDBs.
     /// </summary>
-    internal Dictionary<ulong, (string File, int Line)> ManagedBreakpointSources { get; } = new();
+    internal Dictionary<ulong, (string File, int Line)> ManagedBreakpointSources { get; } = [];
 
     // JIT profiler pipe — receives JIT compilation notifications from MixDbgProfiler.dll.
     internal NamedPipeServerStream? ProfilerPipe { get; set; }
@@ -95,7 +96,7 @@ public sealed class NativeDebuggerModel : IDisposable
     /// from the profiler's JIT notification. Used by ENTER hooks to compute the exact
     /// native address for a breakpointed line.
     /// </summary>
-    internal Dictionary<string, JitMethodMapping> JitMethodMappings { get; } = new();
+    internal Dictionary<string, JitMethodMapping> JitMethodMappings { get; } = [];
     internal EventWaitHandle? ProfilerAckEvent { get; set; }
     internal EventWaitHandle? ProfilerRehookEvent { get; set; }
 
@@ -105,7 +106,7 @@ public sealed class NativeDebuggerModel : IDisposable
     /// binary search finds the containing method → token + assembly → PDB source info.
     /// Written by profiler reader thread, read by engine thread (under stop).
     /// </summary>
-    internal SortedList<ulong, JitMethodInfo> JitMethodMap { get; } = new();
+    internal SortedList<ulong, JitMethodInfo> JitMethodMap { get; } = [];
 
     // Stack trace cache — DAP-level result, invalidated on continue/step.
     internal StackFrame[]? CachedStackTraceResult { get; set; }
@@ -118,7 +119,7 @@ public sealed class NativeDebuggerModel : IDisposable
     /// Used by <see cref="Services.NativeDebuggerService.SetupProfilerPipe"/> to resolve
     /// assembly names so the profiler knows which assemblies to block on during JIT.
     /// </summary>
-    internal List<(string FilePath, int Line)> ProfilerBreakpointHints { get; } = new();
+    internal List<(string FilePath, int Line)> ProfilerBreakpointHints { get; } = [];
 
     // Saved launch/attach parameters — actual work happens on engine thread.
     internal string? LaunchProgram;
@@ -140,7 +141,7 @@ public sealed class NativeDebuggerModel : IDisposable
     /// </summary>
     public T QueueEngineQuery<T>(Func<T> engineCall)
     {
-        var tcs = new TaskCompletionSource<T>();
+        TaskCompletionSource<T> tcs = new();
         Commands.Add(() =>
         {
             try { tcs.SetResult(engineCall()); }
@@ -189,7 +190,7 @@ internal sealed class JitMethodMapping
     {
         // Find the mapping entry with the largest IL offset ≤ the requested one.
         int bestNativeOffset = 0;
-        foreach (var (il, native) in ILToNativeMap)
+        foreach ((int il, int native) in ILToNativeMap)
         {
             if (il <= ilOffset)
                 bestNativeOffset = native;
@@ -203,4 +204,3 @@ internal sealed class JitMethodMapping
 /// instruction pointer to a managed method name and source location via PDB lookup.
 /// </summary>
 internal record JitMethodInfo(int MethodToken, ulong StartAddress, uint CodeSize, string AssemblyName);
-

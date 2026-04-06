@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+
 using MixDbg.Engine.DbgEng;
 using MixDbg.Models;
 
@@ -18,8 +19,8 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
 
     public void CreateEngine(DbgEngWrapperModel model)
     {
-        var iid = typeof(IDebugClient).GUID;
-        Check(DbgEngNative.DebugCreate(ref iid, out var obj));
+        Guid iid = typeof(IDebugClient).GUID;
+        Check(DbgEngNative.DebugCreate(ref iid, out object? obj));
         model.Client = (IDebugClient)obj;
         model.Control = (IDebugControl)obj;
         model.Symbols = (IDebugSymbols)obj;
@@ -33,13 +34,13 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         // Translate IDebugBreakpoint → uint bpId so the COM type stays encapsulated.
         model.Callbacks.OnBreakpoint += bp =>
         {
-            bp.GetId(out var id);
+            _ = bp.GetId(out uint id);
             model.RaiseBreakpointHit(id);
         };
-        model.Callbacks.OnExitProcess += code => model.RaiseExitProcess(code);
-        model.Callbacks.OnLoadModule += (name, img, baseAddr) => model.RaiseLoadModule(name, img, baseAddr);
-        model.Callbacks.OnCreateProcess += name => model.RaiseCreateProcess(name);
-        model.Callbacks.OnExceptionBreakpoint += addr => model.RaiseExceptionBreakpoint(addr);
+        model.Callbacks.OnExitProcess += model.RaiseExitProcess;
+        model.Callbacks.OnLoadModule += model.RaiseLoadModule;
+        model.Callbacks.OnCreateProcess += model.RaiseCreateProcess;
+        model.Callbacks.OnExceptionBreakpoint += model.RaiseExceptionBreakpoint;
         model.Callbacks.OnClrNotification += () =>
         {
             model.RaiseClrNotification();
@@ -50,45 +51,39 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         Check(model.Client.SetEventCallbacks(model.Callbacks));
     }
 
-    public void CreateProcess(DbgEngWrapperModel model, string cmdLine)
-    {
-        Check(model.Client.CreateProcess(
+    public void CreateProcess(DbgEngWrapperModel model, string cmdLine) => Check(model.Client.CreateProcess(
             0,
             cmdLine,
             CreateProcessFlags.DebugOnlyThisProcess | CreateProcessFlags.CreateNewConsole));
-    }
 
-    public void AttachProcess(DbgEngWrapperModel model, uint pid)
-    {
-        Check(model.Client.AttachProcess(0, pid, DebugAttach.Default));
-    }
+    public void AttachProcess(DbgEngWrapperModel model, uint pid) => Check(model.Client.AttachProcess(0, pid, DebugAttach.Default));
 
     public void TerminateSession(DbgEngWrapperModel model)
     {
-        try { model.Client.TerminateProcesses(); } catch { }
-        try { model.Client.EndSession(DebugEnd.ActiveTerminate); } catch { }
+        try { _ = model.Client.TerminateProcesses(); } catch { }
+        try { _ = model.Client.EndSession(DebugEnd.ActiveTerminate); } catch { }
     }
 
     public void DetachSession(DbgEngWrapperModel model)
     {
-        try { model.Client.DetachProcesses(); } catch { }
-        try { model.Client.EndSession(DebugEnd.ActiveDetach); } catch { }
+        try { _ = model.Client.DetachProcesses(); } catch { }
+        try { _ = model.Client.EndSession(DebugEnd.ActiveDetach); } catch { }
     }
 
     // ── Symbols ──
 
     public void InitializeSymbols(DbgEngWrapperModel model, string? symbolPath, string? sourcePath)
     {
-        model.Symbols.SetSymbolOptions(SymOpt.LoadLines | SymOpt.DeferredLoads | SymOpt.UndName);
+        _ = model.Symbols.SetSymbolOptions(SymOpt.LoadLines | SymOpt.DeferredLoads | SymOpt.UndName);
         if (symbolPath != null)
-            model.Symbols.SetSymbolPath(symbolPath);
+            _ = model.Symbols.SetSymbolPath(symbolPath);
         if (sourcePath != null)
-            model.Symbols.SetSourcePath(sourcePath);
+            _ = model.Symbols.SetSourcePath(sourcePath);
     }
 
     public (ulong Offset, bool Success) GetOffsetByLine(DbgEngWrapperModel model, uint line, string file)
     {
-        int hr = model.Symbols.GetOffsetByLine(line, file, out var offset);
+        int hr = model.Symbols.GetOffsetByLine(line, file, out ulong offset);
         return (offset, hr >= 0);
     }
 
@@ -97,10 +92,10 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         IntPtr buf = Marshal.AllocHGlobal(512);
         try
         {
-            int hr = model.Symbols.GetNameByOffset(offset, buf, 512, out _, out var displacement);
+            int hr = model.Symbols.GetNameByOffset(offset, buf, 512, out _, out ulong displacement);
             if (hr < 0)
                 return null;
-            var name = Marshal.PtrToStringAnsi(buf) ?? "";
+            string name = Marshal.PtrToStringAnsi(buf) ?? "";
             return (name, displacement);
         }
         finally
@@ -114,10 +109,10 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         IntPtr buf = Marshal.AllocHGlobal(512);
         try
         {
-            int hr = model.Symbols.GetLineByOffset(offset, out var line, buf, 512, out _, out _);
+            int hr = model.Symbols.GetLineByOffset(offset, out uint line, buf, 512, out _, out _);
             if (hr < 0)
                 return null;
-            var file = Marshal.PtrToStringAnsi(buf) ?? "";
+            string file = Marshal.PtrToStringAnsi(buf) ?? "";
             return (line, file);
         }
         finally
@@ -128,48 +123,36 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
 
     public ulong? GetModuleByOffset(DbgEngWrapperModel model, ulong offset)
     {
-        int hr = model.Symbols.GetModuleByOffset(offset, 0, out _, out var moduleBase);
+        int hr = model.Symbols.GetModuleByOffset(offset, 0, out _, out ulong moduleBase);
         return hr >= 0 ? moduleBase : null;
     }
 
     // ── Execution ──
 
-    public int WaitForEvent(DbgEngWrapperModel model)
-    {
-        return model.Control.WaitForEvent(0, 0xFFFFFFFF); // INFINITE
-    }
+    public int WaitForEvent(DbgEngWrapperModel model) => model.Control.WaitForEvent(0, 0xFFFFFFFF); // INFINITE
 
-    public void SetExecutionStatus(DbgEngWrapperModel model, EngineExecutionStatus status)
-    {
-        Check(model.Control.SetExecutionStatus((uint)status));
-    }
+    public void SetExecutionStatus(DbgEngWrapperModel model, EngineExecutionStatus status) => Check(model.Control.SetExecutionStatus((uint)status));
 
     public EngineExecutionStatus GetExecutionStatus(DbgEngWrapperModel model)
     {
-        model.Control.GetExecutionStatus(out var status);
+        _ = model.Control.GetExecutionStatus(out uint status);
         return (EngineExecutionStatus)status;
     }
 
-    public void SetInterrupt(DbgEngWrapperModel model)
-    {
-        model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
-    }
+    public void SetInterrupt(DbgEngWrapperModel model) => model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
 
-    public int ExecuteCommand(DbgEngWrapperModel model, string command)
-    {
-        return model.Control.Execute(DebugOutCtl.Ignore, command, DebugExecute.Default);
-    }
+    public int ExecuteCommand(DbgEngWrapperModel model, string command) => model.Control.Execute(DebugOutCtl.Ignore, command, DebugExecute.Default);
 
     public EngineEventInfo GetLastEventInfo(DbgEngWrapperModel model)
     {
         IntPtr descBuf = Marshal.AllocHGlobal(256);
         try
         {
-            model.Control.GetLastEventInformation(
-                out var evtType, out var evtPid, out var evtTid,
+            _ = model.Control.GetLastEventInformation(
+                out uint evtType, out uint evtPid, out uint evtTid,
                 IntPtr.Zero, 0, out _,
                 descBuf, 256, out _);
-            var desc = Marshal.PtrToStringAnsi(descBuf) ?? "";
+            string desc = Marshal.PtrToStringAnsi(descBuf) ?? "";
             return new EngineEventInfo(evtType, evtPid, evtTid, desc);
         }
         finally
@@ -185,13 +168,13 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         int hr = model.Control.AddBreakpoint(
             DebugBreakpointType.Code,
             0xFFFFFFFF, // DEBUG_ANY_ID
-            out var bp);
+            out IDebugBreakpoint? bp);
         if (hr < 0)
             return (0, false);
 
-        bp.SetOffset(offset);
-        bp.AddFlags(DebugBreakpointFlag.Enabled);
-        bp.GetId(out var bpId);
+        _ = bp.SetOffset(offset);
+        _ = bp.AddFlags(DebugBreakpointFlag.Enabled);
+        _ = bp.GetId(out uint bpId);
         return (bpId, true);
     }
 
@@ -200,64 +183,64 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         int hr = model.Control.AddBreakpoint(
             DebugBreakpointType.Data,
             0xFFFFFFFF, // DEBUG_ANY_ID
-            out var bp);
+            out IDebugBreakpoint? bp);
         if (hr < 0)
             return (0, false);
 
         hr = bp.SetDataParameters(size, DebugBreakAccess.Execute);
         if (hr < 0)
         {
-            model.Control.RemoveBreakpoint(bp);
+            _ = model.Control.RemoveBreakpoint(bp);
             return (0, false);
         }
 
-        bp.SetOffset(address);
-        bp.AddFlags(DebugBreakpointFlag.Enabled);
-        bp.GetId(out var bpId);
+        _ = bp.SetOffset(address);
+        _ = bp.AddFlags(DebugBreakpointFlag.Enabled);
+        _ = bp.GetId(out uint bpId);
         return (bpId, true);
     }
 
     public bool RemoveBreakpoint(DbgEngWrapperModel model, uint bpId)
     {
-        int hr = model.Control.GetBreakpointById(bpId, out var bp);
+        int hr = model.Control.GetBreakpointById(bpId, out IDebugBreakpoint? bp);
         if (hr < 0)
             return false;
-        model.Control.RemoveBreakpoint(bp);
+        _ = model.Control.RemoveBreakpoint(bp);
         return true;
     }
 
     public uint GetBreakpointCount(DbgEngWrapperModel model)
     {
-        model.Control.GetNumberBreakpoints(out var count);
+        _ = model.Control.GetNumberBreakpoints(out uint count);
         return count;
     }
 
     public uint? GetBreakpointIdByIndex(DbgEngWrapperModel model, uint index)
     {
-        int hr = model.Control.GetBreakpointByIndex(index, out var bp);
+        int hr = model.Control.GetBreakpointByIndex(index, out IDebugBreakpoint? bp);
         if (hr < 0 || bp == null)
             return null;
-        bp.GetId(out var id);
+        _ = bp.GetId(out uint id);
         return id;
     }
 
     public (uint BpId, bool Success) AddDeferredBreakpoint(DbgEngWrapperModel model, string file, int line)
     {
-        var buCmd = $"bu `{file}:{line}`";
+        string buCmd = $"bu `{file}:{line}`";
         int hr = model.Control.Execute(DebugOutCtl.Ignore, buCmd, DebugExecute.Default);
         if (hr < 0)
             return (0, false);
 
         // The deferred breakpoint is the last one in the list.
-        model.Control.GetNumberBreakpoints(out var bpCount);
+        _ = model.Control.GetNumberBreakpoints(out uint bpCount);
         if (bpCount == 0)
             return (0, false);
 
-        int bpHr = model.Control.GetBreakpointByIndex(bpCount - 1, out var bp);
+        int bpHr = model.Control.GetBreakpointByIndex(bpCount - 1, out IDebugBreakpoint? bp);
         if (bpHr < 0 || bp == null)
             return (0, false);
 
-        bp.GetId(out var id);
+        _ = bp.GetId(out uint id);
         return (id, true);
     }
 
@@ -271,7 +254,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         IntPtr buf = Marshal.AllocHGlobal(frameSize * maxFrames);
         try
         {
-            int hr = model.Control.GetStackTrace(0, 0, 0, buf, (uint)maxFrames, out var filled);
+            int hr = model.Control.GetStackTrace(0, 0, 0, buf, (uint)maxFrames, out uint filled);
             if (hr < 0)
             {
                 model.CachedStackFrames = [];
@@ -279,13 +262,13 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
             }
 
             // Cache raw frames for SetScopeAndGetLocals.
-            var rawFrames = new DEBUG_STACK_FRAME[filled];
+            DEBUG_STACK_FRAME[] rawFrames = new DEBUG_STACK_FRAME[filled];
             for (int i = 0; i < (int)filled; i++)
                 rawFrames[i] = Marshal.PtrToStructure<DEBUG_STACK_FRAME>(buf + i * frameSize);
             model.CachedStackFrames = rawFrames;
 
             // Return public-facing frames with only the instruction offset.
-            var result = new NativeStackFrame[filled];
+            NativeStackFrame[] result = new NativeStackFrame[filled];
             for (int i = 0; i < (int)filled; i++)
                 result[i] = new NativeStackFrame(rawFrames[i].InstructionOffset);
             return result;
@@ -305,7 +288,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         if (index < 0 || index >= model.CachedStackFrames.Length)
             return 0;
 
-        var frame = model.CachedStackFrames[index];
+        DEBUG_STACK_FRAME frame = model.CachedStackFrames[index];
 
         // Pin the DEBUG_STACK_FRAME and pass to SetScope.
         int frameSize = Marshal.SizeOf<DEBUG_STACK_FRAME>();
@@ -313,7 +296,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         try
         {
             Marshal.StructureToPtr(frame, frameBuf, false);
-            model.Symbols.SetScope(frame.InstructionOffset, frameBuf, IntPtr.Zero, 0);
+            _ = model.Symbols.SetScope(frame.InstructionOffset, frameBuf, IntPtr.Zero, 0);
         }
         finally
         {
@@ -322,37 +305,36 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
 
         // Get locals symbol group.
         int hr = model.Symbols.GetScopeSymbolGroup(
-            DebugScopeGroup.All, IntPtr.Zero, out var group);
+            DebugScopeGroup.All, IntPtr.Zero, out IDebugSymbolGroup2? group);
         if (hr < 0)
             return 0;
 
-        group.GetNumberSymbols(out var count);
-        if (count == 0)
-            return 0;
-
-        return model.Variables.Allocate(group, 0, count);
+        _ = group.GetNumberSymbols(out uint count);
+        return count == 0 ? 0 : model.Variables.Allocate(group, 0, count);
     }
 
     public VariableInfo[] GetVariables(DbgEngWrapperModel model, int variablesReference)
     {
-        var container = model.Variables.Get(variablesReference);
+        VariableContainer? container = model.Variables.Get(variablesReference);
         if (container == null)
             return [];
 
-        var group = container.Group;
-        var start = container.StartIndex;
-        var count = container.Count;
+        IDebugSymbolGroup2 group = container.Group;
+        uint start = container.StartIndex;
+        uint count = container.Count;
 
         // Read parameters for all symbols in the range to check SubElements.
         int paramSize = Marshal.SizeOf<DEBUG_SYMBOL_PARAMETERS>();
         IntPtr paramsBuf = Marshal.AllocHGlobal(paramSize * (int)count);
-        var paramArray = new DEBUG_SYMBOL_PARAMETERS[count];
+        DEBUG_SYMBOL_PARAMETERS[] paramArray = new DEBUG_SYMBOL_PARAMETERS[count];
         int hr = group.GetSymbolParameters(start, count, paramsBuf);
         if (hr >= 0)
         {
             for (int i = 0; i < (int)count; i++)
+            {
                 paramArray[i] = Marshal.PtrToStructure<DEBUG_SYMBOL_PARAMETERS>(
                     paramsBuf + i * paramSize);
+            }
         }
         Marshal.FreeHGlobal(paramsBuf);
 
@@ -362,7 +344,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
 
         try
         {
-            var result = new VariableInfo[count];
+            VariableInfo[] result = new VariableInfo[count];
             for (uint i = 0; i < count; i++)
             {
                 uint idx = start + i;
@@ -385,7 +367,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
                     int expHr = group.ExpandSymbol(idx, true);
                     if (expHr >= 0)
                     {
-                        group.GetNumberSymbols(out var newTotal);
+                        _ = group.GetNumberSymbols(out uint newTotal);
                         uint childCount = paramArray[i].SubElements;
                         uint childStart = idx + 1;
 
@@ -409,42 +391,39 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         }
     }
 
-    public void ClearVariables(DbgEngWrapperModel model)
-    {
-        model.Variables.Clear();
-    }
+    public void ClearVariables(DbgEngWrapperModel model) => model.Variables.Clear();
 
     // ── Threads ──
 
     public uint GetCurrentThreadId(DbgEngWrapperModel model)
     {
-        model.SysObjects.GetCurrentThreadId(out var id);
+        _ = model.SysObjects.GetCurrentThreadId(out uint id);
         return id;
     }
 
     public uint GetCurrentThreadSystemId(DbgEngWrapperModel model)
     {
-        model.SysObjects.GetCurrentThreadSystemId(out var id);
+        _ = model.SysObjects.GetCurrentThreadSystemId(out uint id);
         return id;
     }
 
     public uint GetEventThreadId(DbgEngWrapperModel model)
     {
-        model.SysObjects.GetEventThread(out var id);
+        _ = model.SysObjects.GetEventThread(out uint id);
         return id;
     }
 
     public (uint EngineId, uint SystemId)[] GetThreads(DbgEngWrapperModel model)
     {
-        int hr = model.SysObjects.GetNumberThreads(out var count);
+        int hr = model.SysObjects.GetNumberThreads(out uint count);
         if (hr < 0 || count == 0)
             return [];
 
-        var ids = new uint[count];
-        var sysIds = new uint[count];
-        model.SysObjects.GetThreadIdsByIndex(0, count, ids, sysIds);
+        uint[] ids = new uint[count];
+        uint[] sysIds = new uint[count];
+        _ = model.SysObjects.GetThreadIdsByIndex(0, count, ids, sysIds);
 
-        var result = new (uint, uint)[count];
+        (uint, uint)[] result = new (uint, uint)[count];
         for (int i = 0; i < count; i++)
             result[i] = (ids[i], sysIds[i]);
         return result;

@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
+
 using ClrDebug;
+
 using MixDbg.Engine.CorDebug;
 using MixDbg.Models;
 
@@ -23,7 +25,7 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
     {
         try
         {
-            var dataTarget = new DbgEngDataTarget(
+            DbgEngDataTarget dataTarget = new(
                 dbgEngModel.DataSpaces, dbgEngModel.Advanced, dbgEngModel.SysObjects);
 
             model.Process = OpenVirtualProcessImpl(
@@ -41,17 +43,17 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
     {
         try
         {
-            var runtimeDir = Path.GetDirectoryName(coreclrPath)!;
-            var dacPath = Path.Combine(runtimeDir, "mscordaccore.dll");
+            string runtimeDir = Path.GetDirectoryName(coreclrPath)!;
+            string dacPath = Path.Combine(runtimeDir, "mscordaccore.dll");
 
             if (model.DacHandle == IntPtr.Zero)
                 model.DacHandle = NativeLibrary.Load(dacPath);
 
-            var clrDataTarget = new DbgEngClrDataTarget(
+            DbgEngClrDataTarget clrDataTarget = new(
                 dbgEngModel.DataSpaces, dbgEngModel.Advanced, dbgEngModel.SysObjects);
             clrDataTarget.AddModuleBase(coreclrPath, baseAddress);
 
-            var interfaces = Extensions.CLRDataCreateInstance(model.DacHandle, clrDataTarget);
+            Extensions.CLRDataCreateInstanceInterfaces interfaces = Extensions.CLRDataCreateInstance(model.DacHandle, clrDataTarget);
             model.SosDac = interfaces.SOSDacInterface;
             model.XclrProcess = interfaces.XCLRDataProcess;
             model.DacLoaded = true;
@@ -83,16 +85,16 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
 
         try
         {
-            var appDomains = model.Process.AppDomains;
-            foreach (var appDomain in appDomains)
+            CorDebugAppDomain[] appDomains = model.Process.AppDomains;
+            foreach (CorDebugAppDomain? appDomain in appDomains)
             {
-                foreach (var assembly in appDomain.Assemblies)
+                foreach (CorDebugAssembly? assembly in appDomain.Assemblies)
                 {
-                    foreach (var module in assembly.Modules)
+                    foreach (CorDebugModule? module in assembly.Modules)
                     {
-                        var baseAddr = (long)module.BaseAddress;
-                        var name = module.Name;
-                        var pdbPath = name != null ? Path.ChangeExtension(name, ".pdb") : null;
+                        long baseAddr = (long)module.BaseAddress;
+                        string? name = module.Name;
+                        string? pdbPath = name != null ? Path.ChangeExtension(name, ".pdb") : null;
                         model.Modules[baseAddr] = new CorDebugWrapperModule
                         {
                             Module = module,
@@ -106,16 +108,11 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
         catch { }
     }
 
-    public ManagedModuleInfo[] GetModules(CorDebugWrapperModel model)
-    {
-        return model.Modules
-            .Select(kv => new ManagedModuleInfo(kv.Value.Path, kv.Value.PdbPath, kv.Key))
-            .ToArray();
-    }
+    public ManagedModuleInfo[] GetModules(CorDebugWrapperModel model) => [.. model.Modules.Select(kv => new ManagedModuleInfo(kv.Value.Path, kv.Value.PdbPath, kv.Key))];
 
     public ManagedModuleInfo? FindModuleByName(CorDebugWrapperModel model, string assemblyName)
     {
-        foreach (var (baseAddr, mod) in model.Modules)
+        foreach ((long baseAddr, CorDebugWrapperModule? mod) in model.Modules)
         {
             if (mod.Path != null &&
                 Path.GetFileNameWithoutExtension(mod.Path)
@@ -137,7 +134,7 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
         try
         {
             CorDebugThread? clrThread = null;
-            foreach (var thread in model.Process.Threads)
+            foreach (CorDebugThread? thread in model.Process.Threads)
             {
                 try
                 {
@@ -153,41 +150,41 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
             if (clrThread == null)
                 return [];
 
-            var frames = new List<RawManagedFrame>();
+            List<RawManagedFrame> frames = [];
 
-            foreach (var chain in clrThread.Chains)
+            foreach (CorDebugChain? chain in clrThread.Chains)
             {
                 if (!chain.IsManaged)
                     continue;
 
-                foreach (var frame in chain.Frames)
+                foreach (CorDebugFrame? frame in chain.Frames)
                 {
                     try
                     {
-                        var function = frame.Function;
-                        var module = function.Module;
-                        var token = (int)function.Token;
-                        var modulePath = module.Name;
+                        CorDebugFunction function = frame.Function;
+                        CorDebugModule module = function.Module;
+                        int token = (int)function.Token;
+                        string modulePath = module.Name;
 
                         int ilOffset = 0;
                         try
                         {
                             if (frame is CorDebugILFrame ilFrame)
                             {
-                                var ip = ilFrame.IP;
+                                GetIPResult ip = ilFrame.IP;
                                 ilOffset = (int)ip.pnOffset;
                             }
                         }
                         catch { }
 
-                        var name = GetFrameName(function);
+                        string name = GetFrameName(function);
                         frames.Add(new RawManagedFrame(token, modulePath, ilOffset, name));
                     }
                     catch { }
                 }
             }
 
-            return frames.ToArray();
+            return [.. frames];
         }
         catch
         {
@@ -204,12 +201,12 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
 
         try
         {
-            var enumHandle = model.XclrProcess.StartEnumModules();
+            nint enumHandle = model.XclrProcess.StartEnumModules();
             try
             {
                 while (true)
                 {
-                    var moduleResult = model.XclrProcess.TryEnumModule(ref enumHandle, out var xModule);
+                    HRESULT moduleResult = model.XclrProcess.TryEnumModule(ref enumHandle, out XCLRDataModule? xModule);
                     if (moduleResult != HRESULT.S_OK)
                         break;
 
@@ -223,18 +220,18 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
                                 continue;
                         }
 
-                        var methodDef = xModule.GetMethodDefinitionByToken((mdMethodDef)methodToken);
+                        XCLRDataMethodDefinition methodDef = xModule.GetMethodDefinitionByToken((mdMethodDef)methodToken);
 
-                        var startResult = methodDef.TryStartEnumInstances(null!, out var instHandle);
+                        HRESULT startResult = methodDef.TryStartEnumInstances(null!, out nint instHandle);
                         if (startResult != HRESULT.S_OK)
                             continue;
 
                         try
                         {
-                            var instResult = methodDef.TryEnumInstance(ref instHandle, out var methodInst);
+                            HRESULT instResult = methodDef.TryEnumInstance(ref instHandle, out XCLRDataMethodInstance? methodInst);
                             if (instResult == HRESULT.S_OK)
                             {
-                                var entryResult = methodInst.TryGetRepresentativeEntryAddress(out var entryAddr);
+                                HRESULT entryResult = methodInst.TryGetRepresentativeEntryAddress(out CLRDATA_ADDRESS entryAddr);
                                 if (entryResult == HRESULT.S_OK && (ulong)entryAddr != 0)
                                     return (ulong)entryAddr;
                             }
@@ -261,10 +258,10 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
 
     public void DeactivateLegacyBreakpoint(CorDebugWrapperModel model, int bpId)
     {
-        if (model.LegacyBreakpoints.TryGetValue(bpId, out var corBp))
+        if (model.LegacyBreakpoints.TryGetValue(bpId, out CorDebugFunctionBreakpoint? corBp))
         {
             try { corBp.Activate(false); } catch { }
-            model.LegacyBreakpoints.Remove(bpId);
+            _ = model.LegacyBreakpoints.Remove(bpId);
         }
     }
 
@@ -274,10 +271,10 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
     {
         try
         {
-            var module = function.Module;
-            var metaData = module.GetMetaDataInterface<MetaDataImport>();
-            var methodProps = metaData.GetMethodProps(function.Token);
-            var typeName = metaData.GetTypeDefProps(methodProps.pClass).szTypeDef;
+            CorDebugModule module = function.Module;
+            MetaDataImport metaData = module.GetMetaDataInterface<MetaDataImport>();
+            MetaDataImport_GetMethodPropsResult methodProps = metaData.GetMethodProps(function.Token);
+            string typeName = metaData.GetTypeDefProps(methodProps.pClass).szTypeDef;
             return $"{typeName}.{methodProps.szMethod}";
         }
         catch
@@ -295,31 +292,38 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
         out CLR_DEBUGGING_VERSION clrVersion)
     {
         clrVersion = default;
-        var runtimeDir = Path.GetDirectoryName(coreClrPath)!;
-        var mscordbiPath = Path.Combine(runtimeDir, "mscordbi.dll");
-        var mscordacPath = Path.Combine(runtimeDir, "mscordaccore.dll");
+        string runtimeDir = Path.GetDirectoryName(coreClrPath)!;
+        string mscordbiPath = Path.Combine(runtimeDir, "mscordbi.dll");
+        string mscordacPath = Path.Combine(runtimeDir, "mscordaccore.dll");
 
-        var hMscordbi = NativeLibrary.Load(mscordbiPath);
-        var hDac = NativeLibrary.Load(mscordacPath);
-        var pFunc = NativeLibrary.GetExport(hMscordbi, "OpenVirtualProcessImpl");
+        nint hMscordbi = NativeLibrary.Load(mscordbiPath);
+        nint hDac = NativeLibrary.Load(mscordacPath);
+        nint pFunc = NativeLibrary.GetExport(hMscordbi, "OpenVirtualProcessImpl");
 
-        var comWrappers = new StrategyBasedComWrappers();
+        StrategyBasedComWrappers comWrappers = new();
 
         IntPtr pDataTarget = comWrappers.GetOrCreateComInterfaceForObject(
             dataTarget, CreateComInterfaceFlags.None);
         try
         {
-            var maxVersion = new CLR_DEBUGGING_VERSION
+            CLR_DEBUGGING_VERSION maxVersion = new()
             {
                 wStructVersion = 0,
-                wMajor = 255, wMinor = 255, wBuild = 255, wRevision = 255,
+                wMajor = 255,
+                wMinor = 255,
+                wBuild = 255,
+                wRevision = 255,
             };
-            var riid = typeof(ICorDebugProcess).GUID;
-            var version = new CLR_DEBUGGING_VERSION();
+            Guid riid = typeof(ICorDebugProcess).GUID;
+            CLR_DEBUGGING_VERSION version = new();
             int flags = 0;
             IntPtr ppInstance = IntPtr.Zero;
 
-            var fn = (delegate* unmanaged[Stdcall]<
+            delegate* unmanaged[Stdcall]<
+                ulong, IntPtr, IntPtr,
+                CLR_DEBUGGING_VERSION*, Guid*,
+                IntPtr*, CLR_DEBUGGING_VERSION*, int*, int> fn =
+                (delegate* unmanaged[Stdcall]<
                 ulong, IntPtr, IntPtr,
                 CLR_DEBUGGING_VERSION*, Guid*,
                 IntPtr*, CLR_DEBUGGING_VERSION*, int*, int>)pFunc;
@@ -332,15 +336,15 @@ internal sealed class CorDebugWrapperService : ICorDebugWrapper
             if (hr < 0)
                 Marshal.ThrowExceptionForHR(hr);
 
-            var raw = (ICorDebugProcess)comWrappers.GetOrCreateObjectForComInstance(
+            ICorDebugProcess raw = (ICorDebugProcess)comWrappers.GetOrCreateObjectForComInstance(
                 ppInstance, CreateObjectFlags.None);
-            Marshal.Release(ppInstance);
+            _ = Marshal.Release(ppInstance);
             clrVersion = version;
             return new CorDebugProcess(raw);
         }
         finally
         {
-            Marshal.Release(pDataTarget);
+            _ = Marshal.Release(pDataTarget);
         }
     }
 }

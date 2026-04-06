@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Lifecycle;
 
@@ -17,9 +17,9 @@ public class TerminateRequestHandlerService(
 
     public override void ExecuteInternal(EmptyArguments args)
     {
-		if (sessionModel.Engine != null)
-			nativeDebugger.Terminate(sessionModel.Engine);
-		sessionModel.State = SessionState.Terminated;
-		throw new DisconnectException();
+        if (sessionModel.Engine != null)
+            nativeDebugger.Terminate(sessionModel.Engine);
+        sessionModel.State = SessionState.Terminated;
+        throw new DisconnectException();
     }
 }

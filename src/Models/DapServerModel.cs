@@ -5,16 +5,10 @@ namespace MixDbg.Models;
 /// a write lock for thread-safe output, and an atomic sequence counter
 /// for DAP message numbering.
 /// </summary>
-public sealed class DapServerModel
+public sealed class DapServerModel(Stream input, Stream output)
 {
-    internal Stream Input { get; }
-    internal Stream Output { get; }
+    internal Stream Input { get; } = input;
+    internal Stream Output { get; } = output;
     internal Lock WriteLock { get; } = new();
     internal int Seq;
-
-    public DapServerModel(Stream input, Stream output)
-    {
-        Input = input;
-        Output = output;
-    }
 }

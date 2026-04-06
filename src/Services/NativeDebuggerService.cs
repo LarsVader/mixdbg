@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services;
 
@@ -19,19 +19,19 @@ internal sealed class NativeDebuggerService(
 {
     public NativeDebuggerModel CreateModel()
     {
-        var model = new NativeDebuggerModel();
+        NativeDebuggerModel model = new();
         model.DisposeAction = () =>
         {
             model.Terminated = true;
             model.Commands.CompleteAdding();
-            model.EngineThread?.Join(3000);
-            model.ProfilerAckEvent?.Set(); // Unblock profiler if waiting.
-            model.ProfilerRehookEvent?.Set(); // Unblock rehook watcher.
+            _ = (model.EngineThread?.Join(3000));
+            _ = (model.ProfilerAckEvent?.Set()); // Unblock profiler if waiting.
+            _ = (model.ProfilerRehookEvent?.Set()); // Unblock rehook watcher.
             model.ProfilerAckEvent?.Dispose();
             model.ProfilerRehookEvent?.Dispose();
             model.ProfilerPipeReader?.Dispose();
             model.ProfilerPipe?.Dispose();
-            model.ProfilerReaderThread?.Join(1000);
+            _ = (model.ProfilerReaderThread?.Join(1000));
             model.Commands.Dispose();
             model.Stopped.Dispose();
             model.EngineReady.Dispose();
@@ -63,7 +63,9 @@ internal sealed class NativeDebuggerService(
     {
         model.Terminated = true;
         if (!model.TargetExited)
+        {
             _wrapper.TerminateSession(model.Wrapper);
+        }
         else
         {
             try { _wrapper.TerminateSession(model.Wrapper); } catch { }
@@ -83,7 +85,7 @@ internal sealed class NativeDebuggerService(
 
     private void CreateEngine(NativeDebuggerModel model)
     {
-        var wrapperModel = _wrapper.CreateModel();
+        DbgEngWrapperModel wrapperModel = _wrapper.CreateModel();
         model.Wrapper = wrapperModel;
 
         _wrapper.CreateEngine(wrapperModel);
@@ -91,14 +93,11 @@ internal sealed class NativeDebuggerService(
         // Subscribe to engine events.
         wrapperModel.OnBreakpointHit += bpId => OnBreakpoint(model, bpId);
         wrapperModel.OnExitProcess += code => OnExitProcess(model, code);
-        wrapperModel.OnCreateProcess += name =>
+        wrapperModel.OnCreateProcess += name => _server.SendEvent(_transport, "output", new OutputEventBody
         {
-            _server.SendEvent(_transport, "output", new OutputEventBody
-            {
-                Category = "console",
-                Output = $"[mixdbg] Process created: {name}\n",
-            });
-        };
+            Category = "console",
+            Output = $"[mixdbg] Process created: {name}\n",
+        });
         wrapperModel.OnLoadModule += (mod, img, baseOffset) =>
         {
             if (!model.ClrLoaded && mod != null &&
@@ -158,7 +157,7 @@ internal sealed class NativeDebuggerService(
             // All dbgeng COM calls must happen on this thread.
             CreateEngine(model);
 
-            var w = model.Wrapper;
+            DbgEngWrapperModel w = model.Wrapper;
 
             if (model.IsAttach)
             {
@@ -178,7 +177,7 @@ internal sealed class NativeDebuggerService(
                 // Set up CLR profiler for real-time JIT notifications.
                 _profilerPipe.SetupProfilerPipe(model);
 
-                var cmdLine = model.LaunchProgram!;
+                string cmdLine = model.LaunchProgram!;
                 if (model.LaunchArgs is { Length: > 0 })
                     cmdLine += " " + string.Join(" ", model.LaunchArgs);
                 _log.LogInfo(_logStore, $"Launch: CreateProcess({cmdLine})");
@@ -218,7 +217,7 @@ internal sealed class NativeDebuggerService(
                 }
 
                 // Get last event info for logging
-                var evt = _wrapper.GetLastEventInfo(w);
+                EngineEventInfo evt = _wrapper.GetLastEventInfo(w);
                 _log.LogInfo(_logStore, $"Event: type=0x{evt.Type:X} pid={evt.ProcessId} tid={evt.ThreadId} desc=\"{evt.Description}\"");
                 _log.LogInfo(_logStore, $"State: configDone={model.ConfigDone} hitUserBp={model.HitUserBreakpoint} stepping={model.Stepping} pause={model.PauseRequested}");
 
@@ -260,7 +259,7 @@ internal sealed class NativeDebuggerService(
 
                 if (reason != null)
                 {
-                    var threadId = _wrapper.GetCurrentThreadId(w);
+                    uint threadId = _wrapper.GetCurrentThreadId(w);
                     _log.LogInfo(_logStore, $"User stop: reason={reason} threadId={threadId}");
                     _server.SendEvent(_transport, "stopped", new StoppedEventBody
                     {
@@ -313,7 +312,7 @@ internal sealed class NativeDebuggerService(
             _log.LogInfo(_logStore, "ProcessCommandsUntilResume: executing command");
             cmd();
 
-            var status = _wrapper.GetExecutionStatus(model.Wrapper);
+            EngineExecutionStatus status = _wrapper.GetExecutionStatus(model.Wrapper);
             _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: execStatus={status}");
             if (status != EngineExecutionStatus.Break
                 && status != EngineExecutionStatus.NoDebuggee)
@@ -336,12 +335,12 @@ internal sealed class NativeDebuggerService(
         if (model.HitUserBreakpoint)
         {
             // Find the source:line for this breakpoint ID
-            var entry = model.BreakpointIds.FirstOrDefault(kv => kv.Value == bpId);
+            KeyValuePair<string, uint> entry = model.BreakpointIds.FirstOrDefault(kv => kv.Value == bpId);
             if (entry.Key != null)
             {
-                var parts = entry.Key.Split(':', 2);
-                var path = parts[0];
-                var line = int.TryParse(parts[1], out var l) ? l : 0;
+                string[] parts = entry.Key.Split(':', 2);
+                string path = parts[0];
+                int line = int.TryParse(parts[1], out int l) ? l : 0;
                 _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
                 {
                     Reason = "changed",
@@ -374,7 +373,7 @@ internal sealed class NativeDebuggerService(
     public Breakpoint[] SetBreakpointsOnEngine(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
     {
         _log.LogInfo(_logStore, $"SetBreakpointsOnEngine: file={filePath} count={requested.Length}");
-        foreach (var r in requested)
+        foreach (SourceBreakpoint r in requested)
             _log.LogInfo(_logStore, $"  requested: line={r.Line}");
 
         // Delegate managed files to the managed debugger.
@@ -393,52 +392,50 @@ internal sealed class NativeDebuggerService(
                 Source = new Source { Name = Path.GetFileName(filePath), Path = filePath },
                 Breakpoints = requested,
             });
-            return requested.Select((bp, i) => new Breakpoint
+            return [.. requested.Select((bp, i) => new Breakpoint
             {
                 Id = ++model.NextBpId,
                 Verified = true,
                 Line = bp.Line,
                 Source = new Source { Name = Path.GetFileName(filePath), Path = filePath },
                 Message = "Pending — managed debugger not yet initialized",
-            }).ToArray();
+            })];
         }
 
-        var w = model.Wrapper;
+        DbgEngWrapperModel w = model.Wrapper;
 
         // Remove old breakpoints for this file
-        var keysToRemove = model.BreakpointIds.Keys
-            .Where(k => k.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        foreach (var key in keysToRemove)
+        List<string> keysToRemove = [.. model.BreakpointIds.Keys.Where(k => k.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase))];
+        foreach (string key in keysToRemove)
         {
-            if (model.BreakpointIds.TryGetValue(key, out var oldId))
+            if (model.BreakpointIds.TryGetValue(key, out uint oldId))
             {
-                _wrapper.RemoveBreakpoint(w, oldId);
-                model.UserBreakpointIds.Remove(oldId);
-                model.BreakpointIds.Remove(key);
+                _ = _wrapper.RemoveBreakpoint(w, oldId);
+                _ = model.UserBreakpointIds.Remove(oldId);
+                _ = model.BreakpointIds.Remove(key);
             }
         }
 
-        var results = new Breakpoint[requested.Length];
+        Breakpoint[] results = new Breakpoint[requested.Length];
         for (int i = 0; i < requested.Length; i++)
         {
-            var req = requested[i];
-            var key = $"{filePath}:{req.Line}";
+            SourceBreakpoint req = requested[i];
+            string key = $"{filePath}:{req.Line}";
 
-            var (offset, resolved) = _wrapper.GetOffsetByLine(w, (uint)req.Line, filePath);
+            (ulong offset, bool resolved) = _wrapper.GetOffsetByLine(w, (uint)req.Line, filePath);
             _log.LogInfo(_logStore, $"  GetOffsetByLine({req.Line}, {filePath}) -> resolved={resolved} offset=0x{offset:X}");
             if (!resolved)
             {
                 // GetOffsetByLine failed — module probably not loaded yet.
                 // Use deferred breakpoint via bu command instead.
                 _log.LogInfo(_logStore, $"  Trying deferred breakpoint: bu `{filePath}:{req.Line}`");
-                var (deferredId, buOk) = _wrapper.AddDeferredBreakpoint(w, filePath, req.Line);
+                (uint deferredId, bool buOk) = _wrapper.AddDeferredBreakpoint(w, filePath, req.Line);
                 _log.LogInfo(_logStore, $"  bu result: ok={buOk} id={deferredId}");
 
                 if (buOk)
                 {
                     model.BreakpointIds[key] = deferredId;
-                    model.UserBreakpointIds.Add(deferredId);
+                    _ = model.UserBreakpointIds.Add(deferredId);
                     results[i] = new Breakpoint
                     {
                         Id = (int)deferredId,
@@ -464,7 +461,7 @@ internal sealed class NativeDebuggerService(
                 continue;
             }
 
-            var (bpId, bpOk) = _wrapper.AddCodeBreakpoint(w, offset);
+            (uint bpId, bool bpOk) = _wrapper.AddCodeBreakpoint(w, offset);
             if (!bpOk)
             {
                 results[i] = new Breakpoint
@@ -478,11 +475,11 @@ internal sealed class NativeDebuggerService(
             }
 
             model.BreakpointIds[key] = bpId;
-            model.UserBreakpointIds.Add(bpId);
+            _ = model.UserBreakpointIds.Add(bpId);
 
             // Resolve back to verify the actual line
             int actualLine = req.Line;
-            var lineInfo = _wrapper.GetLineByOffset(w, offset);
+            (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(w, offset);
             if (lineInfo != null)
                 actualLine = (int)lineInfo.Value.Line;
 
@@ -510,21 +507,21 @@ internal sealed class NativeDebuggerService(
         if (model.CachedStackTraceResult != null)
             return model.CachedStackTraceResult;
 
-        var w = model.Wrapper;
-        var nativeFrames = _wrapper.GetStackTrace(w, maxFrames);
+        DbgEngWrapperModel w = model.Wrapper;
+        NativeStackFrame[] nativeFrames = _wrapper.GetStackTrace(w, maxFrames);
         if (nativeFrames.Length == 0)
             return [];
 
-        var result = new StackFrame[nativeFrames.Length];
+        StackFrame[] result = new StackFrame[nativeFrames.Length];
         for (int i = 0; i < nativeFrames.Length; i++)
         {
-            var ip = nativeFrames[i].InstructionOffset;
+            ulong ip = nativeFrames[i].InstructionOffset;
             string name = $"0x{ip:X}";
             Source? source = null;
             int line = 0;
 
             // Try to resolve function name
-            var nameInfo = _wrapper.GetNameByOffset(w, ip);
+            (string Name, ulong Displacement)? nameInfo = _wrapper.GetNameByOffset(w, ip);
             if (nameInfo != null)
             {
                 name = nameInfo.Value.Displacement > 0
@@ -533,7 +530,7 @@ internal sealed class NativeDebuggerService(
             }
 
             // Try to resolve source location
-            var lineInfo = _wrapper.GetLineByOffset(w, ip);
+            (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(w, ip);
             if (lineInfo != null)
             {
                 line = (int)lineInfo.Value.Line;
@@ -549,7 +546,7 @@ internal sealed class NativeDebuggerService(
             {
                 try
                 {
-                    var profilerFrame = _managedDebugger.ResolveFrameFromProfilerData(model, ip);
+                    (string Name, Source? Source, int Line)? profilerFrame = _managedDebugger.ResolveFrameFromProfilerData(model, ip);
                     if (profilerFrame != null)
                     {
                         name = profilerFrame.Value.Name;
@@ -584,11 +581,9 @@ internal sealed class NativeDebuggerService(
     {
         int localsRef = _wrapper.SetScopeAndGetLocals(model.Wrapper, frameId);
         _log.LogInfo(_logStore, $"SetScopeAndGetLocals(frameId={frameId}) -> ref={localsRef}");
-        if (localsRef == 0)
-            return [];
-
-        return
-        [
+        return localsRef == 0
+            ? []
+            : [
             new Scope
             {
                 Name = "Locals",
@@ -601,12 +596,12 @@ internal sealed class NativeDebuggerService(
     public Variable[] GetVariablesOnEngine(NativeDebuggerModel model, int variablesReference)
     {
         _log.LogInfo(_logStore, $"GetVariables: ref={variablesReference}");
-        var vars = _wrapper.GetVariables(model.Wrapper, variablesReference);
+        VariableInfo[] vars = _wrapper.GetVariables(model.Wrapper, variablesReference);
 
-        var result = new Variable[vars.Length];
+        Variable[] result = new Variable[vars.Length];
         for (int i = 0; i < vars.Length; i++)
         {
-            var v = vars[i];
+            VariableInfo v = vars[i];
             _log.LogInfo(_logStore, $"  Var: name=\"{v.Name}\" type=\"{v.Type}\" value=\"{v.Value}\" childRef={v.VariablesReference}");
             result[i] = new Variable
             {
@@ -621,11 +616,11 @@ internal sealed class NativeDebuggerService(
 
     public DapThread[] GetThreadsOnEngine(NativeDebuggerModel model)
     {
-        var threads = _wrapper.GetThreads(model.Wrapper);
+        (uint EngineId, uint SystemId)[] threads = _wrapper.GetThreads(model.Wrapper);
         if (threads.Length == 0)
             return [new DapThread { Id = 1, Name = "Main Thread" }];
 
-        var result = new DapThread[threads.Length];
+        DapThread[] result = new DapThread[threads.Length];
         for (int i = 0; i < threads.Length; i++)
         {
             result[i] = new DapThread
@@ -649,7 +644,7 @@ internal sealed class NativeDebuggerService(
     {
         _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
         _managedDebugger.RemoveTransientManagedBreakpoints(model);
-        model.ProfilerRehookEvent?.Set();
+        _ = (model.ProfilerRehookEvent?.Set());
         model.ConfigDone = true;
         model.CachedStackTraceResult = null;
         _wrapper.ClearVariables(model.Wrapper);
@@ -668,12 +663,9 @@ internal sealed class NativeDebuggerService(
     public void ExecuteStepOutOnEngine(NativeDebuggerModel model)
     {
         _wrapper.ClearVariables(model.Wrapper);
-        _wrapper.ExecuteCommand(model.Wrapper, "gu");
+        _ = _wrapper.ExecuteCommand(model.Wrapper, "gu");
     }
 
     /// <summary>Gets the engine thread ID of the last event.</summary>
-    public int GetStoppedThreadIdOnEngine(NativeDebuggerModel model)
-    {
-        return (int)_wrapper.GetEventThreadId(model.Wrapper);
-    }
+    public int GetStoppedThreadIdOnEngine(NativeDebuggerModel model) => (int)_wrapper.GetEventThreadId(model.Wrapper);
 }

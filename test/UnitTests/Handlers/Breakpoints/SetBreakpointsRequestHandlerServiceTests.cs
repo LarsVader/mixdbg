@@ -1,7 +1,8 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
 using MixDbg.Services.Handlers.Breakpoints;
+
 using NSubstitute;
 
 namespace MixDbg.Tests.Handlers.Breakpoints;
@@ -45,21 +46,14 @@ public sealed class SetBreakpointsRequestHandlerServiceTests : IDisposable
 
     private void GivenAnEngineIsRunning() => _session.Engine = _engineModel;
 
-    private void GivenBreakpointsArgs(string filePath, int[] lines)
+    private void GivenBreakpointsArgs(string filePath, int[] lines) => _args = new SetBreakpointsArguments
     {
-        _args = new SetBreakpointsArguments
-        {
-            Source = new Source { Path = filePath },
-            Breakpoints = lines.Select(l => new SourceBreakpoint { Line = l }).ToArray(),
-        };
-    }
+        Source = new Source { Path = filePath },
+        Breakpoints = [.. lines.Select(l => new SourceBreakpoint { Line = l })],
+    };
 
-    private void GivenNativeDebuggerReturnsBreakpoints()
-    {
-        _engine.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
-            .Returns(ci => ci.ArgAt<SourceBreakpoint[]>(2)
-                .Select((bp, i) => new Breakpoint { Id = i + 1, Verified = true, Line = bp.Line }).ToArray());
-    }
+    private void GivenNativeDebuggerReturnsBreakpoints() => _ = _engine.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
+            .Returns(ci => [.. ci.ArgAt<SourceBreakpoint[]>(2).Select((bp, i) => new Breakpoint { Id = i + 1, Verified = true, Line = bp.Line })]);
 
     #endregion
 
@@ -69,14 +63,15 @@ public sealed class SetBreakpointsRequestHandlerServiceTests : IDisposable
 
     private void WhenExecutingWithDrain()
     {
-        var drainThread = new Thread(() =>
+        Thread drainThread = new(() =>
         {
-            if (_engineModel.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
+            if (_engineModel.Commands.TryTake(out Action? cmd, TimeSpan.FromSeconds(5)))
                 cmd();
-        }) { IsBackground = true };
+        })
+        { IsBackground = true };
         drainThread.Start();
         _response = _testee.ExecuteInternal(_args!);
-        drainThread.Join(TimeSpan.FromSeconds(5));
+        _ = drainThread.Join(TimeSpan.FromSeconds(5));
     }
 
     #endregion
@@ -100,10 +95,7 @@ public sealed class SetBreakpointsRequestHandlerServiceTests : IDisposable
     private SetBreakpointsArguments? _args;
     private SetBreakpointsResponseBody? _response;
 
-    public SetBreakpointsRequestHandlerServiceTests()
-    {
-        _testee = new SetBreakpointsRequestHandlerService(_engine, _session);
-    }
+    public SetBreakpointsRequestHandlerServiceTests() => _testee = new SetBreakpointsRequestHandlerService(_engine, _session);
 
     public void Dispose()
     {

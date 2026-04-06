@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+
 using MixDbg.Models.Interfaces;
 
 namespace MixDbg.Models.Dap;

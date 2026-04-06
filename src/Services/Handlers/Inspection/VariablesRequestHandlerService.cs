@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Inspection;
 
@@ -17,11 +17,11 @@ public class VariablesRequestHandlerService(
 
     public override VariablesResponseBody ExecuteInternal(VariablesArguments args)
     {
-		if (sessionModel.Engine is not NativeDebuggerModel model)
-			return new VariablesResponseBody { Variables = [] };
+        if (sessionModel.Engine is not NativeDebuggerModel model)
+            return new VariablesResponseBody { Variables = [] };
 
-		var vars = model.QueueEngineQuery(
-			() => nativeDebugger.GetVariablesOnEngine(model, args.VariablesReference));
-		return new VariablesResponseBody { Variables = vars };
+        Variable[] vars = model.QueueEngineQuery(
+            () => nativeDebugger.GetVariablesOnEngine(model, args.VariablesReference));
+        return new VariablesResponseBody { Variables = vars };
     }
 }

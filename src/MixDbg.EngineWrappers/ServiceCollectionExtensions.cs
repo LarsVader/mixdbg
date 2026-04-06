@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+
 using MixDbg.Engine.Sos;
 using MixDbg.Services;
 
@@ -14,9 +15,9 @@ public static class EngineWrappersServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddEngineWrappers(this IServiceCollection services)
     {
-        services.AddSingleton<IDbgEngWrapper, DbgEngWrapperService>();
-        services.AddSingleton<ICorDebugWrapper, CorDebugWrapperService>();
-        services.AddSingleton<IPdbSourceMapper, PdbSourceMapperService>();
+        _ = services.AddSingleton<IDbgEngWrapper, DbgEngWrapperService>();
+        _ = services.AddSingleton<ICorDebugWrapper, CorDebugWrapperService>();
+        _ = services.AddSingleton<IPdbSourceMapper, PdbSourceMapperService>();
         return services;
     }
 }

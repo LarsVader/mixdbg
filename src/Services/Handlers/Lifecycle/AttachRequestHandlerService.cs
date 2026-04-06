@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Lifecycle;
 
@@ -17,25 +17,25 @@ public class AttachRequestHandlerService(
 
     public override void ExecuteInternal(AttachRequestArguments args)
     {
-		sessionModel.Engine = nativeDebugger.CreateModel();
+        sessionModel.Engine = nativeDebugger.CreateModel();
 
-		if (args.Pid.HasValue
-			&& sessionModel.Engine is NativeDebuggerModel debuggerModel)
-		{
-			debuggerModel.IsAttach = true;
-			debuggerModel.AttachPid = (uint)args.Pid.Value;
-			debuggerModel.SymbolPath = null;
-			nativeDebugger.StartEngineThread(debuggerModel);
-			debuggerModel.EngineReady.Wait();
-			if (debuggerModel.EngineInitError != null)
-				throw debuggerModel.EngineInitError;
-			// nativeDebugger.Attach(sessionModel.Engine, (uint)args.Pid.Value, null);
-		}
-		else
-		{
-			throw new InvalidOperationException("PID is required for attach");
-		}
+        if (args.Pid.HasValue
+            && sessionModel.Engine is NativeDebuggerModel debuggerModel)
+        {
+            debuggerModel.IsAttach = true;
+            debuggerModel.AttachPid = (uint)args.Pid.Value;
+            debuggerModel.SymbolPath = null;
+            nativeDebugger.StartEngineThread(debuggerModel);
+            debuggerModel.EngineReady.Wait();
+            if (debuggerModel.EngineInitError != null)
+                throw debuggerModel.EngineInitError;
+            // nativeDebugger.Attach(sessionModel.Engine, (uint)args.Pid.Value, null);
+        }
+        else
+        {
+            throw new InvalidOperationException("PID is required for attach");
+        }
 
-		sessionModel.State = SessionState.Running;
+        sessionModel.State = SessionState.Running;
     }
 }

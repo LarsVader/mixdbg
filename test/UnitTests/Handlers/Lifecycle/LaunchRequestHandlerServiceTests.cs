@@ -1,7 +1,8 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
 using MixDbg.Services.Handlers.Lifecycle;
+
 using NSubstitute;
 
 namespace MixDbg.Tests.Handlers.Lifecycle;
@@ -44,43 +45,25 @@ public sealed class LaunchRequestHandlerServiceTests
 
     #region Given
 
-    private void GivenLaunchArgs(string program, string? cwd)
-    {
-        _launchArgs = new LaunchRequestArguments { Program = program, Cwd = cwd };
-    }
+    private void GivenLaunchArgs(string program, string? cwd) => _launchArgs = new LaunchRequestArguments { Program = program, Cwd = cwd };
 
-    private void GivenLaunchArgsWithSymbolPath(string program, string[] symbolPath)
-    {
-        _launchArgs = new LaunchRequestArguments { Program = program, SymbolPath = symbolPath };
-    }
+    private void GivenLaunchArgsWithSymbolPath(string program, string[] symbolPath) => _launchArgs = new LaunchRequestArguments { Program = program, SymbolPath = symbolPath };
 
     #endregion
 
     #region When
 
-    private void WhenExecuting()
-    {
-        _testee.ExecuteInternal(_launchArgs!);
-    }
+    private void WhenExecuting() => _testee.ExecuteInternal(_launchArgs!);
 
     #endregion
 
     #region Then
 
-    private void ThenSessionStateIs(SessionState expected)
-    {
-        Assert.Equal(expected, _session.State);
-    }
+    private void ThenSessionStateIs(SessionState expected) => Assert.Equal(expected, _session.State);
 
-    private void ThenEngineWasCreated()
-    {
-        _engine.Received(1).CreateModel();
-    }
+    private void ThenEngineWasCreated() => _ = _engine.Received(1).CreateModel();
 
-    private void ThenStartEngineThreadWasCalled()
-    {
-        _engine.Received(1).StartEngineThread(Arg.Any<NativeDebuggerModel>());
-    }
+    private void ThenStartEngineThreadWasCalled() => _engine.Received(1).StartEngineThread(Arg.Any<NativeDebuggerModel>());
 
     #endregion
 
@@ -94,7 +77,7 @@ public sealed class LaunchRequestHandlerServiceTests
 
     public LaunchRequestHandlerServiceTests()
     {
-        _engine.CreateModel().Returns(_engineModel);
+        _ = _engine.CreateModel().Returns(_engineModel);
         _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
             .Do(ci => ci.ArgAt<NativeDebuggerModel>(0).EngineReady.Set());
         _testee = new LaunchRequestHandlerService(_engine, _session);

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+
 using MixDbg.Services;
 using MixDbg.Services.Interfaces;
 
@@ -10,30 +11,30 @@ public static class ServiceCollectionExtensions
         Stream input, Stream output, string? logPath = null)
     {
         // Stateless services
-        services.AddSingleton<ILoggingService, LoggingService>();
-        services.AddSingleton<ISourceFileService, SourceFileService>();
-        services.AddSingleton<IDapServer, DapServerService>();
-        services.AddSingleton<IDapDispatcher, DapDispatcherService>();
-        services.AddEngineWrappers();
-        services.AddSingleton<INativeDebugger, NativeDebuggerService>();
-        services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();
-        services.AddSingleton<IProfilerPipeService, ProfilerPipeService>();
+        _ = services.AddSingleton<ILoggingService, LoggingService>();
+        _ = services.AddSingleton<ISourceFileService, SourceFileService>();
+        _ = services.AddSingleton<IDapServer, DapServerService>();
+        _ = services.AddSingleton<IDapDispatcher, DapDispatcherService>();
+        _ = services.AddEngineWrappers();
+        _ = services.AddSingleton<INativeDebugger, NativeDebuggerService>();
+        _ = services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();
+        _ = services.AddSingleton<IProfilerPipeService, ProfilerPipeService>();
 
         // State models (singletons created by services)
-        services.AddSingleton(sp =>
+        _ = services.AddSingleton(sp =>
             logPath != null ? new Models.LogStore(logPath)
                             : sp.GetRequiredService<ILoggingService>().CreateStore());
-        services.AddSingleton(sp =>
+        _ = services.AddSingleton(sp =>
             sp.GetRequiredService<IDapServer>().CreateModel(input, output));
-        services.AddSingleton(new Models.DebugSessionModel());
+        _ = services.AddSingleton(new Models.DebugSessionModel());
 
-		// Register all IDapHandlerService implementations
+        // Register all IDapHandlerService implementations
         typeof(ServiceCollectionExtensions)
-			.Assembly
-			.GetTypes()
-			.Where(t => t.IsClass && !t.IsAbstract && typeof(IDapHandlerService).IsAssignableFrom(t))
-			.ToList()
-			.ForEach(serviceType => services.AddSingleton(typeof(IDapHandlerService), serviceType));
+            .Assembly
+            .GetTypes()
+            .Where(t => t.IsClass && !t.IsAbstract && typeof(IDapHandlerService).IsAssignableFrom(t))
+            .ToList()
+            .ForEach(serviceType => services.AddSingleton(typeof(IDapHandlerService), serviceType));
 
         return services;
     }

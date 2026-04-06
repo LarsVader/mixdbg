@@ -1,7 +1,8 @@
 using System.Text;
 using System.Text.Json;
-using MixDbg.Models.Dap;
+
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
 
 namespace MixDbg.Tests;
@@ -154,11 +155,11 @@ public sealed class DapServerServiceTests
 
     private void GivenADapRequest(string command, int seq)
     {
-        var request = new RequestMessage { Seq = seq, Command = command };
-        var json = JsonSerializer.Serialize(request, _jsonOpts);
-        var body = Encoding.UTF8.GetBytes(json);
-        var header = $"Content-Length: {body.Length}\r\n\r\n";
-        var full = Encoding.ASCII.GetBytes(header).Concat(body).ToArray();
+        RequestMessage request = new() { Seq = seq, Command = command };
+        string json = JsonSerializer.Serialize(request, _jsonOpts);
+        byte[] body = Encoding.UTF8.GetBytes(json);
+        string header = $"Content-Length: {body.Length}\r\n\r\n";
+        byte[] full = [.. Encoding.ASCII.GetBytes(header), .. body];
 
         _inputStream = new MemoryStream(full);
         _outputStream = new MemoryStream();
@@ -167,13 +168,13 @@ public sealed class DapServerServiceTests
 
     private void GivenMultipleDapRequests(params string[] commands)
     {
-        var ms = new MemoryStream();
-        foreach (var (cmd, i) in commands.Select((c, i) => (c, i)))
+        MemoryStream ms = new();
+        foreach ((string? cmd, int i) in commands.Select((c, i) => (c, i)))
         {
-            var request = new RequestMessage { Seq = i + 1, Command = cmd };
-            var json = JsonSerializer.Serialize(request, _jsonOpts);
-            var body = Encoding.UTF8.GetBytes(json);
-            var header = Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n");
+            RequestMessage request = new() { Seq = i + 1, Command = cmd };
+            string json = JsonSerializer.Serialize(request, _jsonOpts);
+            byte[] body = Encoding.UTF8.GetBytes(json);
+            byte[] header = Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n");
             ms.Write(header);
             ms.Write(body);
         }
@@ -191,15 +192,9 @@ public sealed class DapServerServiceTests
         _model = _testee.CreateModel(_inputStream, _outputStream);
     }
 
-    private void GivenARequestMessage(string command, int seq)
-    {
-        _requestMessage = new RequestMessage { Seq = seq, Command = command };
-    }
+    private void GivenARequestMessage(string command, int seq) => _requestMessage = new RequestMessage { Seq = seq, Command = command };
 
-    private void GivenAResponseBody(object body)
-    {
-        _responseBody = body;
-    }
+    private void GivenAResponseBody(object body) => _responseBody = body;
 
     private void GivenRawInput(string raw)
     {
@@ -212,35 +207,17 @@ public sealed class DapServerServiceTests
 
     #region When
 
-    private void WhenCreatingModel()
-    {
-        _model = _testee.CreateModel(_inputStream!, _outputStream!);
-    }
+    private void WhenCreatingModel() => _model = _testee.CreateModel(_inputStream!, _outputStream!);
 
-    private void WhenReadingRequest()
-    {
-        _readResult = _testee.ReadRequest(_model!);
-    }
+    private void WhenReadingRequest() => _readResult = _testee.ReadRequest(_model!);
 
-    private void WhenSendingResponse()
-    {
-        _testee.SendResponse(_model!, _requestMessage!);
-    }
+    private void WhenSendingResponse() => _testee.SendResponse(_model!, _requestMessage!);
 
-    private void WhenSendingResponseWithBody()
-    {
-        _testee.SendResponse(_model!, _requestMessage!, _responseBody);
-    }
+    private void WhenSendingResponseWithBody() => _testee.SendResponse(_model!, _requestMessage!, _responseBody);
 
-    private void WhenSendingErrorResponse(string message)
-    {
-        _testee.SendErrorResponse(_model!, _requestMessage!, message);
-    }
+    private void WhenSendingErrorResponse(string message) => _testee.SendErrorResponse(_model!, _requestMessage!, message);
 
-    private void WhenSendingEvent(string eventName, object? body)
-    {
-        _testee.SendEvent(_model!, eventName, body);
-    }
+    private void WhenSendingEvent(string eventName, object? body) => _testee.SendEvent(_model!, eventName, body);
 
     private void WhenReadingRequestExpectingException()
     {
@@ -252,52 +229,31 @@ public sealed class DapServerServiceTests
 
     #region Then
 
-    private void ThenModelInputIs(Stream expected)
-    {
-        Assert.Same(expected, _model!.Input);
-    }
+    private void ThenModelInputIs(Stream expected) => Assert.Same(expected, _model!.Input);
 
-    private void ThenModelOutputIs(Stream expected)
-    {
-        Assert.Same(expected, _model!.Output);
-    }
+    private void ThenModelOutputIs(Stream expected) => Assert.Same(expected, _model!.Output);
 
-    private void ThenRequestIsNotNull()
-    {
-        Assert.NotNull(_readResult);
-    }
+    private void ThenRequestIsNotNull() => Assert.NotNull(_readResult);
 
-    private void ThenRequestIsNull()
-    {
-        Assert.Null(_readResult);
-    }
+    private void ThenRequestIsNull() => Assert.Null(_readResult);
 
-    private void ThenRequestCommandIs(string expected)
-    {
-        Assert.Equal(expected, _readResult!.Command);
-    }
+    private void ThenRequestCommandIs(string expected) => Assert.Equal(expected, _readResult!.Command);
 
-    private void ThenRequestSeqIs(int expected)
-    {
-        Assert.Equal(expected, _readResult!.Seq);
-    }
+    private void ThenRequestSeqIs(int expected) => Assert.Equal(expected, _readResult!.Seq);
 
     private void ThenOutputContains(string expected)
     {
-        var output = GetOutputString();
+        string output = GetOutputString();
         Assert.Contains(expected, output);
     }
 
     private void ThenOutputContainsSeq(int seq)
     {
-        var output = GetOutputString();
+        string output = GetOutputString();
         Assert.Contains($"\"seq\":{seq}", output);
     }
 
-    private void ThenInvalidOperationExceptionWasThrown()
-    {
-        Assert.IsType<InvalidOperationException>(_thrownException);
-    }
+    private void ThenInvalidOperationExceptionWasThrown() => _ = Assert.IsType<InvalidOperationException>(_thrownException);
 
     #endregion
 
@@ -317,10 +273,7 @@ public sealed class DapServerServiceTests
     private object? _responseBody;
     private Exception? _thrownException;
 
-    private string GetOutputString()
-    {
-        return Encoding.UTF8.GetString(_outputStream!.ToArray());
-    }
+    private string GetOutputString() => Encoding.UTF8.GetString(_outputStream!.ToArray());
 
     #endregion
 }

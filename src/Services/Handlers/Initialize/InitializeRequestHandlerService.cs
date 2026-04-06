@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Initialize;
 
@@ -18,15 +18,15 @@ public class InitializeRequestHandlerService(
 
     public override Capabilities ExecuteInternal(InitializeRequestArguments args)
     {
-		sessionModel.State = SessionState.Initialized;
-		server.SendEvent(transport, "initialized", new InitializedEventBody());
+        sessionModel.State = SessionState.Initialized;
+        server.SendEvent(transport, "initialized", new InitializedEventBody());
 
-		return new Capabilities
-		{
-			SupportsConfigurationDoneRequest = true,
-			SupportsFunctionBreakpoints = false,
-			SupportsEvaluateForHovers = true,
-			SupportsTerminateRequest = true,
-		};
+        return new Capabilities
+        {
+            SupportsConfigurationDoneRequest = true,
+            SupportsFunctionBreakpoints = false,
+            SupportsEvaluateForHovers = true,
+            SupportsTerminateRequest = true,
+        };
     }
 }

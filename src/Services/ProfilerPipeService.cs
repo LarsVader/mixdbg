@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+
 using MixDbg.Models;
 
 namespace MixDbg.Services;
@@ -22,15 +23,15 @@ internal sealed class ProfilerPipeService(
     public void SetupProfilerPipe(NativeDebuggerModel model)
     {
         // Find MixDbgProfiler.dll next to MixDbg.exe.
-        var exeDir = AppContext.BaseDirectory;
-        var profilerPath = Path.Combine(exeDir, "MixDbgProfiler.dll");
+        string exeDir = AppContext.BaseDirectory;
+        string profilerPath = Path.Combine(exeDir, "MixDbgProfiler.dll");
 
         // Also check profiler/x64/Debug/ relative to the repo root (dev builds).
         // Exe is at src/bin/Debug/net10.0/win-x64/ — 5 levels up to repo root.
         if (!File.Exists(profilerPath))
         {
-            var repoRoot = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "..", ".."));
-            var devPath = Path.Combine(repoRoot, "profiler", "x64", "Debug", "MixDbgProfiler.dll");
+            string repoRoot = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "..", ".."));
+            string devPath = Path.Combine(repoRoot, "profiler", "x64", "Debug", "MixDbgProfiler.dll");
             if (File.Exists(devPath))
                 profilerPath = devPath;
         }
@@ -42,7 +43,7 @@ internal sealed class ProfilerPipeService(
         }
 
         // Create a named pipe for the profiler to connect to.
-        var pipeName = $"MixDbgProfiler-{Environment.ProcessId}-{Guid.NewGuid():N}";
+        string pipeName = $"MixDbgProfiler-{Environment.ProcessId}-{Guid.NewGuid():N}";
         model.ProfilerPipeName = pipeName;
         model.ProfilerPipe = new NamedPipeServerStream(
             pipeName,
@@ -56,7 +57,7 @@ internal sealed class ProfilerPipeService(
         // Create a named event for ACK signaling. The profiler blocks on this event
         // after writing a JIT notification, ensuring the hardware breakpoint is set
         // before the method body executes (first-click breakpoints).
-        var ackEventName = $"MixDbgProfilerAck-{pipeName}";
+        string ackEventName = $"MixDbgProfilerAck-{pipeName}";
         model.ProfilerAckEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ackEventName);
 
         // Resolve exact method tokens from pending breakpoints so the profiler only
@@ -64,7 +65,7 @@ internal sealed class ProfilerPipeService(
         string? watchTokens = null;
         if (model.ProfilerBreakpointHints.Count > 0)
         {
-            var tokens = _managedDebugger.ResolveTokensFromBreakpoints(model.ProfilerBreakpointHints);
+            List<(string Assembly, int Token)> tokens = _managedDebugger.ResolveTokensFromBreakpoints(model.ProfilerBreakpointHints);
             if (tokens.Count > 0)
             {
                 watchTokens = string.Join(",", tokens.Select(t => $"{t.Assembly}:{t.Token:X8}"));
@@ -80,7 +81,7 @@ internal sealed class ProfilerPipeService(
         Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", ackEventName);
 
         // REHOOK event — signaled on Continue to re-enable enter/leave hooks in the profiler.
-        var rehookEventName = $"MixDbgProfilerRehook-{pipeName}";
+        string rehookEventName = $"MixDbgProfilerRehook-{pipeName}";
         model.ProfilerRehookEvent = new EventWaitHandle(false, EventResetMode.AutoReset, rehookEventName);
         Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", rehookEventName);
 
@@ -93,10 +94,10 @@ internal sealed class ProfilerPipeService(
         // so the profiler hooks ALL methods from these assemblies.
         if (model.ProfilerBreakpointHints.Count > 0)
         {
-            var watchAssemblies = _managedDebugger.ResolveWatchAssemblies(model.ProfilerBreakpointHints);
+            List<string> watchAssemblies = _managedDebugger.ResolveWatchAssemblies(model.ProfilerBreakpointHints);
             if (watchAssemblies.Count > 0)
             {
-                var asmList = string.Join(",", watchAssemblies);
+                string asmList = string.Join(",", watchAssemblies);
                 Environment.SetEnvironmentVariable("MIXDBG_WATCH_ASSEMBLIES", asmList);
                 _log.LogInfo(_logStore, $"Profiler watch assemblies: {asmList}");
             }
@@ -143,7 +144,7 @@ internal sealed class ProfilerPipeService(
 
             while (!model.Terminated)
             {
-                var line = model.ProfilerPipeReader.ReadLine();
+                string? line = model.ProfilerPipeReader.ReadLine();
                 if (line == null)
                 {
                     _log.LogInfo(_logStore, "ProfilerReader: pipe closed (EOF)");
@@ -158,22 +159,22 @@ internal sealed class ProfilerPipeService(
 
                 if (line.StartsWith("READY:"))
                 {
-                    _log.LogInfo(_logStore, $"ProfilerReader: profiler ready ({line.Substring(6)})");
+                    _log.LogInfo(_logStore, $"ProfilerReader: profiler ready ({line[6..]})");
                     continue;
                 }
                 if (line.StartsWith("JIT:"))
                 {
-                    ParseJitNotification(model, line.Substring(4));
+                    ParseJitNotification(model, line[4..]);
                     model.ProfilerHooksActive = true;
                     continue;
                 }
                 if (line.StartsWith("ENTER:"))
                 {
-                    payload = line.Substring(6);
+                    payload = line[6..];
                     isEnterNotification = true;
                 }
 
-                var parts = payload.Split(':');
+                string[] parts = payload.Split(':');
 
                 if (isEnterNotification)
                 {
@@ -194,34 +195,36 @@ internal sealed class ProfilerPipeService(
     private void ParseJitNotification(NativeDebuggerModel model, string data)
     {
         // Format: TOKEN:ADDRESS:SIZE:ASSEMBLY[:IL0=N0,IL1=N1,...]
-        var jitParts = data.Split(':');
+        string[] jitParts = data.Split(':');
         if (jitParts.Length < 4 ||
-            !int.TryParse(jitParts[0], System.Globalization.NumberStyles.HexNumber, null, out var jToken) ||
-            !ulong.TryParse(jitParts[1], System.Globalization.NumberStyles.HexNumber, null, out var jAddr) ||
-            !uint.TryParse(jitParts[2], System.Globalization.NumberStyles.HexNumber, null, out var jSize))
+            !int.TryParse(jitParts[0], System.Globalization.NumberStyles.HexNumber, null, out int jToken) ||
+            !ulong.TryParse(jitParts[1], System.Globalization.NumberStyles.HexNumber, null, out ulong jAddr) ||
+            !uint.TryParse(jitParts[2], System.Globalization.NumberStyles.HexNumber, null, out uint jSize))
+        {
             return;
+        }
 
-        var jAsm = jitParts[3];
+        string jAsm = jitParts[3];
         lock (model.JitMethodMap)
             model.JitMethodMap[jAddr] = new JitMethodInfo(jToken, jAddr, jSize, jAsm);
 
         // Parse IL-to-native mapping if present (5th field).
         if (jitParts.Length >= 5 && jitParts[4].Length > 0)
         {
-            var mapEntries = new List<(int ILOffset, int NativeOffset)>();
-            foreach (var entry in jitParts[4].Split(','))
+            List<(int ILOffset, int NativeOffset)> mapEntries = [];
+            foreach (string entry in jitParts[4].Split(','))
             {
-                var eqParts = entry.Split('=');
+                string[] eqParts = entry.Split('=');
                 if (eqParts.Length == 2 &&
-                    int.TryParse(eqParts[0], System.Globalization.NumberStyles.HexNumber, null, out var il) &&
-                    int.TryParse(eqParts[1], System.Globalization.NumberStyles.HexNumber, null, out var nat))
+                    int.TryParse(eqParts[0], System.Globalization.NumberStyles.HexNumber, null, out int il) &&
+                    int.TryParse(eqParts[1], System.Globalization.NumberStyles.HexNumber, null, out int nat))
                 {
                     mapEntries.Add((il, nat));
                 }
             }
             if (mapEntries.Count > 0)
             {
-                var key = $"{jAsm}:{jToken:X8}";
+                string key = $"{jAsm}:{jToken:X8}";
                 model.JitMethodMappings[key] = new JitMethodMapping
                 {
                     CodeStart = jAddr,
@@ -245,10 +248,10 @@ internal sealed class ProfilerPipeService(
     {
         // ENTER:TOKEN:ADDRESS:THREADID:ASSEMBLY — method frozen in enter hook.
         if (parts.Length < 4) return;
-        if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out var eToken)) return;
-        if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var eAddr)) return;
-        if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out var eTid)) return;
-        var eAsm = parts[3];
+        if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out int eToken)) return;
+        if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out ulong eAddr)) return;
+        if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out uint eTid)) return;
+        string eAsm = parts[3];
 
         // Don't queue another ENTER breakpoint if one is already pending
         // (prevents duplicate stops from repeated calls before user continues).
@@ -266,17 +269,17 @@ internal sealed class ProfilerPipeService(
         else
         {
             // Already have a pending BP — ACK immediately so profiler doesn't block.
-            model.ProfilerAckEvent?.Set();
+            _ = (model.ProfilerAckEvent?.Set());
         }
     }
 
     private void ParseOldFormatJitNotification(NativeDebuggerModel model, string[] parts)
     {
         if (parts.Length < 4) return;
-        if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out var token)) return;
-        if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var address)) return;
-        if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out var codeSize)) return;
-        var assembly = parts[3];
+        if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out int token)) return;
+        if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out ulong address)) return;
+        if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out uint codeSize)) return;
+        string assembly = parts[3];
 
         // Store in sorted map for stack trace resolution.
         lock (model.JitMethodMap)
@@ -293,7 +296,7 @@ internal sealed class ProfilerPipeService(
 
     private static bool MatchesDeferredBreakpoint(NativeDebuggerModel model, int token, string assembly)
     {
-        foreach (var deferred in model.DeferredManagedBreakpoints)
+        foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
         {
             if (deferred.MethodToken == token &&
                 deferred.AssemblyName != null &&

@@ -1,10 +1,13 @@
 using System.Text;
 using System.Text.Json;
+
 using Microsoft.Extensions.DependencyInjection;
-using MixDbg.Models.Dap;
+
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
 using MixDbg.Services.Interfaces;
+
 using NSubstitute;
 
 namespace MixDbg.Tests;
@@ -406,11 +409,11 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void GivenDapRequests(params string[] requests)
     {
-        var ms = new MemoryStream();
-        foreach (var json in requests)
+        MemoryStream ms = new();
+        foreach (string json in requests)
         {
-            var body = Encoding.UTF8.GetBytes(json);
-            var header = Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n");
+            byte[] body = Encoding.UTF8.GetBytes(json);
+            byte[] header = Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n");
             ms.Write(header);
             ms.Write(body);
         }
@@ -418,54 +421,39 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         _inputStream = ms;
     }
 
-    private void GivenSourceFileIsNative(string path)
-    {
-        _sourceFiles.IsNativeFile(path).Returns(true);
-    }
+    private void GivenSourceFileIsNative(string path) => _ = _sourceFiles.IsNativeFile(path).Returns(true);
 
-    private void GivenSourceFileIsManaged(string path)
-    {
-        _sourceFiles.IsNativeFile(path).Returns(false);
-    }
+    private void GivenSourceFileIsManaged(string path) => _ = _sourceFiles.IsNativeFile(path).Returns(false);
 
-    private void GivenNativeDebuggerReturnsBreakpoints()
-    {
-        _engine.SetBreakpointsOnEngine(
+    private void GivenNativeDebuggerReturnsBreakpoints() => _ = _engine.SetBreakpointsOnEngine(
             Arg.Any<NativeDebuggerModel>(),
             Arg.Any<string>(),
             Arg.Any<SourceBreakpoint[]>())
             .Returns(ci =>
             {
-                var bps = ci.ArgAt<SourceBreakpoint[]>(2);
-                return bps.Select((bp, i) => new Breakpoint
+                SourceBreakpoint[] bps = ci.ArgAt<SourceBreakpoint[]>(2);
+                return [.. bps.Select((bp, i) => new Breakpoint
                 {
                     Id = i + 1,
                     Verified = true,
                     Line = bp.Line,
-                }).ToArray();
+                })];
             });
-    }
 
-    private void GivenNativeDebuggerReturnsFrames(int count)
-    {
-        _engine.GetStackTraceOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
-            .Returns(Enumerable.Range(1, count).Select(i => new StackFrame
+    private void GivenNativeDebuggerReturnsFrames(int count) => _ = _engine.GetStackTraceOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+            .Returns([.. Enumerable.Range(1, count).Select(i => new StackFrame
             {
                 Id = i,
                 Name = $"func_{i}",
                 Line = i * 10,
-            }).ToArray());
-    }
+            })]);
 
-    private void GivenNativeDebuggerReturnsThreads(int count)
-    {
-        _engine.GetThreadsOnEngine(Arg.Any<NativeDebuggerModel>())
-            .Returns(Enumerable.Range(1, count).Select(i => new DapThread
+    private void GivenNativeDebuggerReturnsThreads(int count) => _ = _engine.GetThreadsOnEngine(Arg.Any<NativeDebuggerModel>())
+            .Returns([.. Enumerable.Range(1, count).Select(i => new DapThread
             {
                 Id = i,
                 Name = $"Thread {i}",
-            }).ToArray());
-    }
+            })]);
 
     #endregion
 
@@ -475,23 +463,23 @@ public sealed class DapPipelineIntegrationTests : IDisposable
     {
         _outputStream = new MemoryStream();
 
-        var services = new ServiceCollection();
+        ServiceCollection services = new();
 
         // Real services
-        services.AddSingleton<ILoggingService, LoggingService>();
-        services.AddSingleton<IDapServer, DapServerService>();
-        services.AddSingleton<IDapDispatcher, DapDispatcherService>();
+        _ = services.AddSingleton<ILoggingService, LoggingService>();
+        _ = services.AddSingleton<IDapServer, DapServerService>();
+        _ = services.AddSingleton<IDapDispatcher, DapDispatcherService>();
         // Mocked services
-        services.AddSingleton<INativeDebugger>(_engine);
-        services.AddSingleton(Substitute.For<IManagedDebugger>());
-        services.AddSingleton(_sourceFiles);
+        _ = services.AddSingleton<INativeDebugger>(_engine);
+        _ = services.AddSingleton(Substitute.For<IManagedDebugger>());
+        _ = services.AddSingleton(_sourceFiles);
 
         // Models
-        services.AddSingleton(sp =>
+        _ = services.AddSingleton(sp =>
             sp.GetRequiredService<ILoggingService>().CreateStore());
-        services.AddSingleton(sp =>
+        _ = services.AddSingleton(sp =>
             sp.GetRequiredService<IDapServer>().CreateModel(_inputStream!, _outputStream));
-        services.AddSingleton(new DebugSessionModel());
+        _ = services.AddSingleton(new DebugSessionModel());
 
         // Register all handler services via assembly scanning
         typeof(IDapHandlerService).Assembly
@@ -500,10 +488,10 @@ public sealed class DapPipelineIntegrationTests : IDisposable
             .ToList()
             .ForEach(t => services.AddSingleton(typeof(IDapHandlerService), t));
 
-        var provider = services.BuildServiceProvider();
+        ServiceProvider provider = services.BuildServiceProvider();
 
-        var dispatcher = provider.GetRequiredService<IDapDispatcher>();
-        var sessionModel = provider.GetRequiredService<DebugSessionModel>();
+        IDapDispatcher dispatcher = provider.GetRequiredService<IDapDispatcher>();
+        DebugSessionModel sessionModel = provider.GetRequiredService<DebugSessionModel>();
 
         dispatcher.Run();
         sessionModel.Dispose();
@@ -517,143 +505,112 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void ThenResponseExistsForCommand(string command, bool success)
     {
-        var resp = _responses.FirstOrDefault(r => r.Command == command);
+        ResponseMessage? resp = _responses.FirstOrDefault(r => r.Command == command);
         Assert.NotNull(resp);
         Assert.Equal(success, resp.Success);
     }
 
-    private void ThenEventWasSent(string eventName)
-    {
-        Assert.Contains(_events, e => e.Event == eventName);
-    }
+    private void ThenEventWasSent(string eventName) => Assert.Contains(_events, e => e.Event == eventName);
 
     private void ThenInitializeResponseHasCapabilities()
     {
-        var body = GetResponseBody<Capabilities>("initialize");
+        Capabilities body = GetResponseBody<Capabilities>("initialize");
         Assert.True(body.SupportsConfigurationDoneRequest);
         Assert.True(body.SupportsTerminateRequest);
     }
 
-    private void ThenNativeDebuggerStartEngineThreadWasCalled()
-    {
-        _engine.Received(1).StartEngineThread(Arg.Any<NativeDebuggerModel>());
-    }
+    private void ThenNativeDebuggerStartEngineThreadWasCalled() => _engine.Received(1).StartEngineThread(Arg.Any<NativeDebuggerModel>());
 
-    private void ThenNativeDebuggerSetBreakpointsWasCalled(string filePath)
-    {
-        _engine.Received().SetBreakpointsOnEngine(
+    private void ThenNativeDebuggerSetBreakpointsWasCalled(string filePath) => _ = _engine.Received().SetBreakpointsOnEngine(
             Arg.Any<NativeDebuggerModel>(),
             filePath,
             Arg.Any<SourceBreakpoint[]>());
-    }
 
-    private void ThenNativeDebuggerContinueWasCalled()
-    {
-        _engine.Received().ExecuteContinueOnEngine(Arg.Any<NativeDebuggerModel>());
-    }
+    private void ThenNativeDebuggerContinueWasCalled() => _engine.Received().ExecuteContinueOnEngine(Arg.Any<NativeDebuggerModel>());
 
-    private void ThenNativeDebuggerStepOverWasCalled()
-    {
-        _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepOver);
-    }
+    private void ThenNativeDebuggerStepOverWasCalled() => _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepOver);
 
-    private void ThenNativeDebuggerStepIntoWasCalled()
-    {
-        _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepInto);
-    }
+    private void ThenNativeDebuggerStepIntoWasCalled() => _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepInto);
 
-    private void ThenNativeDebuggerStepOutWasCalled()
-    {
-        _engine.Received(1).ExecuteStepOutOnEngine(Arg.Any<NativeDebuggerModel>());
-    }
+    private void ThenNativeDebuggerStepOutWasCalled() => _engine.Received(1).ExecuteStepOutOnEngine(Arg.Any<NativeDebuggerModel>());
 
-    private void ThenNativeDebuggerTerminateWasCalled()
-    {
-        _engine.Received().Terminate(Arg.Any<NativeDebuggerModel>());
-    }
+    private void ThenNativeDebuggerTerminateWasCalled() => _engine.Received().Terminate(Arg.Any<NativeDebuggerModel>());
 
-    private void ThenNativeDebuggerDetachWasCalled()
-    {
-        _engine.Received().Detach(Arg.Any<NativeDebuggerModel>());
-    }
+    private void ThenNativeDebuggerDetachWasCalled() => _engine.Received().Detach(Arg.Any<NativeDebuggerModel>());
 
     private void ThenSetBreakpointsResponseHasCount(int expected)
     {
-        var body = GetResponseBody<SetBreakpointsResponseBody>("setBreakpoints");
+        SetBreakpointsResponseBody body = GetResponseBody<SetBreakpointsResponseBody>("setBreakpoints");
         Assert.Equal(expected, body.Breakpoints.Length);
     }
 
     private void ThenSetBreakpointsResponseAllVerified(bool expected)
     {
-        var body = GetResponseBody<SetBreakpointsResponseBody>("setBreakpoints");
+        SetBreakpointsResponseBody body = GetResponseBody<SetBreakpointsResponseBody>("setBreakpoints");
         Assert.All(body.Breakpoints, bp => Assert.Equal(expected, bp.Verified));
     }
 
     private void ThenContinueResponseHasAllThreadsContinued()
     {
-        var body = GetResponseBody<ContinueResponseBody>("continue");
+        ContinueResponseBody body = GetResponseBody<ContinueResponseBody>("continue");
         Assert.True(body.AllThreadsContinued);
     }
 
     private void ThenStackTraceResponseHasFrameCount(int expected)
     {
-        var body = GetResponseBody<StackTraceResponseBody>("stackTrace");
+        StackTraceResponseBody body = GetResponseBody<StackTraceResponseBody>("stackTrace");
         Assert.Equal(expected, body.StackFrames.Length);
     }
 
     private void ThenThreadsResponseHasCount(int expected)
     {
-        var body = GetResponseBody<ThreadsResponseBody>("threads");
+        ThreadsResponseBody body = GetResponseBody<ThreadsResponseBody>("threads");
         Assert.Equal(expected, body.Threads.Length);
     }
 
     private void ThenEvaluateResponseContains(string expected)
     {
-        var body = GetResponseBody<EvaluateResponseBody>("evaluate");
+        EvaluateResponseBody body = GetResponseBody<EvaluateResponseBody>("evaluate");
         Assert.Contains(expected, body.Result);
     }
 
     private void ThenAllResponsesAreSuccessful(params string[] commands)
     {
-        foreach (var cmd in commands)
+        foreach (string cmd in commands)
         {
-            var resp = _responses.FirstOrDefault(r => r.Command == cmd);
+            ResponseMessage? resp = _responses.FirstOrDefault(r => r.Command == cmd);
             Assert.NotNull(resp);
             Assert.True(resp.Success, $"Expected success for '{cmd}' but got failure: {resp.Message}");
         }
     }
 
-    private void ThenResponseCountIs(int expected)
-    {
-        Assert.Equal(expected, _responses.Count);
-    }
+    private void ThenResponseCountIs(int expected) => Assert.Equal(expected, _responses.Count);
 
     private void ThenResponseRequestSeqMatches(string command, int expectedRequestSeq)
     {
-        var resp = _responses.First(r => r.Command == command);
+        ResponseMessage resp = _responses.First(r => r.Command == command);
         Assert.Equal(expectedRequestSeq, resp.RequestSeq);
     }
 
     private void ThenAllResponseSeqsAreUnique()
     {
-        var seqs = _responses.Select(r => r.Seq)
-            .Concat(_events.Select(e => e.Seq))
-            .ToList();
+        List<int> seqs = [.. _responses.Select(r => r.Seq)
+, .. _events.Select(e => e.Seq)];
         Assert.Equal(seqs.Count, seqs.Distinct().Count());
     }
 
     private void ThenRawOutputIsValidDapFraming()
     {
-        var raw = Encoding.UTF8.GetString(_outputStream!.ToArray());
-        var parts = raw.Split("Content-Length: ", StringSplitOptions.RemoveEmptyEntries);
-        foreach (var part in parts)
+        string raw = Encoding.UTF8.GetString(_outputStream!.ToArray());
+        string[] parts = raw.Split("Content-Length: ", StringSplitOptions.RemoveEmptyEntries);
+        foreach (string part in parts)
         {
-            var headerEnd = part.IndexOf("\r\n\r\n");
+            int headerEnd = part.IndexOf("\r\n\r\n");
             Assert.True(headerEnd > 0, "Missing \\r\\n\\r\\n after Content-Length");
-            var lengthStr = part[..headerEnd];
-            Assert.True(int.TryParse(lengthStr, out var length), $"Invalid Content-Length: {lengthStr}");
-            var body = part[(headerEnd + 4)..];
-            var bodyBytes = Encoding.UTF8.GetBytes(body);
+            string lengthStr = part[..headerEnd];
+            Assert.True(int.TryParse(lengthStr, out int length), $"Invalid Content-Length: {lengthStr}");
+            string body = part[(headerEnd + 4)..];
+            byte[] bodyBytes = Encoding.UTF8.GetBytes(body);
             Assert.True(bodyBytes.Length >= length,
                 $"Body too short: expected {length}, got {bodyBytes.Length}");
         }
@@ -678,14 +635,14 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private T GetResponseBody<T>(string command)
     {
-        var resp = _responses.First(r => r.Command == command);
-        var element = (JsonElement)resp.Body!;
+        ResponseMessage resp = _responses.First(r => r.Command == command);
+        JsonElement element = (JsonElement)resp.Body!;
         return element.Deserialize<T>(JsonOpts)!;
     }
 
     public DapPipelineIntegrationTests()
     {
-        _engine.CreateModel().Returns(_ => new NativeDebuggerModel
+        _ = _engine.CreateModel().Returns(_ => new NativeDebuggerModel
         {
             Wrapper = new DbgEngWrapperModel(),
             CorWrapper = new CorDebugWrapperModel(),
@@ -693,14 +650,14 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
             .Do(ci =>
             {
-                var model = ci.ArgAt<NativeDebuggerModel>(0);
+                NativeDebuggerModel model = ci.ArgAt<NativeDebuggerModel>(0);
                 model.EngineReady.Set();
                 // Start a drain thread so QueueEngineQuery calls don't block.
-                var drainThread = new Thread(() =>
+                Thread drainThread = new(() =>
                 {
                     try
                     {
-                        foreach (var cmd in model.Commands.GetConsumingEnumerable())
+                        foreach (Action cmd in model.Commands.GetConsumingEnumerable())
                             cmd();
                     }
                     catch (OperationCanceledException) { }
@@ -712,7 +669,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private static string MakeRequest(int seq, string command, object? args = null)
     {
-        var obj = new Dictionary<string, object?>
+        Dictionary<string, object?> obj = new()
         {
             ["seq"] = seq,
             ["type"] = "request",
@@ -728,49 +685,49 @@ public sealed class DapPipelineIntegrationTests : IDisposable
     {
         _responses.Clear();
         _events.Clear();
-        var raw = Encoding.UTF8.GetString(_outputStream!.ToArray());
+        string raw = Encoding.UTF8.GetString(_outputStream!.ToArray());
 
         // Split by Content-Length framing
-        var stream = new MemoryStream(Encoding.UTF8.GetBytes(raw));
-        var reader = new DapServerService();
-        var model = reader.CreateModel(stream, Stream.Null);
+        MemoryStream stream = new(Encoding.UTF8.GetBytes(raw));
+        DapServerService reader = new();
+        _ = reader.CreateModel(stream, Stream.Null);
 
         // Re-parse as generic messages
-        var parts = raw.Split("Content-Length: ", StringSplitOptions.RemoveEmptyEntries);
-        foreach (var part in parts)
+        string[] parts = raw.Split("Content-Length: ", StringSplitOptions.RemoveEmptyEntries);
+        foreach (string part in parts)
         {
-            var headerEnd = part.IndexOf("\r\n\r\n");
+            int headerEnd = part.IndexOf("\r\n\r\n");
             if (headerEnd < 0) continue;
-            var lengthStr = part[..headerEnd];
-            if (!int.TryParse(lengthStr, out var length)) continue;
-            var bodyStr = part.Substring(headerEnd + 4, length);
+            string lengthStr = part[..headerEnd];
+            if (!int.TryParse(lengthStr, out int length)) continue;
+            string bodyStr = part.Substring(headerEnd + 4, length);
 
-            var doc = JsonDocument.Parse(bodyStr);
-            var type = doc.RootElement.GetProperty("type").GetString();
+            JsonDocument doc = JsonDocument.Parse(bodyStr);
+            string? type = doc.RootElement.GetProperty("type").GetString();
 
             if (type == "response")
             {
-                var resp = new ResponseMessage
+                ResponseMessage resp = new()
                 {
                     Seq = doc.RootElement.GetProperty("seq").GetInt32(),
                     RequestSeq = doc.RootElement.GetProperty("request_seq").GetInt32(),
                     Success = doc.RootElement.GetProperty("success").GetBoolean(),
                     Command = doc.RootElement.GetProperty("command").GetString() ?? "",
                 };
-                if (doc.RootElement.TryGetProperty("message", out var msg))
+                if (doc.RootElement.TryGetProperty("message", out JsonElement msg))
                     resp.Message = msg.GetString();
-                if (doc.RootElement.TryGetProperty("body", out var body))
+                if (doc.RootElement.TryGetProperty("body", out JsonElement body))
                     resp.Body = body.Clone();
                 _responses.Add(resp);
             }
             else if (type == "event")
             {
-                var evt = new EventMessage
+                EventMessage evt = new()
                 {
                     Seq = doc.RootElement.GetProperty("seq").GetInt32(),
                     Event = doc.RootElement.GetProperty("event").GetString() ?? "",
                 };
-                if (doc.RootElement.TryGetProperty("body", out var body))
+                if (doc.RootElement.TryGetProperty("body", out JsonElement body))
                     evt.Body = body.Clone();
                 _events.Add(evt);
             }

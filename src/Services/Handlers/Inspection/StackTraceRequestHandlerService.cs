@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Inspection;
 
@@ -17,16 +17,16 @@ public class StackTraceRequestHandlerService(
 
     public override StackTraceResponseBody ExecuteInternal(StackTraceArguments args)
     {
-		if (sessionModel.Engine is not NativeDebuggerModel model)
-			return new StackTraceResponseBody { StackFrames = [] };
+        if (sessionModel.Engine is not NativeDebuggerModel model)
+            return new StackTraceResponseBody { StackFrames = [] };
 
-		var maxFrames = args.Levels > 0 ? args.Levels : 50;
-		var frames = model.QueueEngineQuery(
-			() => nativeDebugger.GetStackTraceOnEngine(model, maxFrames));
-		return new StackTraceResponseBody
-		{
-			StackFrames = frames,
-			TotalFrames = frames.Length,
-		};
+        int maxFrames = args.Levels > 0 ? args.Levels : 50;
+        StackFrame[] frames = model.QueueEngineQuery(
+            () => nativeDebugger.GetStackTraceOnEngine(model, maxFrames));
+        return new StackTraceResponseBody
+        {
+            StackFrames = frames,
+            TotalFrames = frames.Length,
+        };
     }
 }

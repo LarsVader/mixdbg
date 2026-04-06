@@ -1,7 +1,8 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
 using MixDbg.Services.Handlers.Lifecycle;
+
 using NSubstitute;
 
 namespace MixDbg.Tests.Handlers.Lifecycle;
@@ -45,21 +46,14 @@ public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
 
     private void GivenAnEngineIsRunning() => _session.Engine = _engineModel;
 
-    private void GivenPendingBreakpointsExist(string filePath, int[] lines)
+    private void GivenPendingBreakpointsExist(string filePath, int[] lines) => _session.PendingBreakpoints.Add(new SetBreakpointsArguments
     {
-        _session.PendingBreakpoints.Add(new SetBreakpointsArguments
-        {
-            Source = new Source { Path = filePath },
-            Breakpoints = lines.Select(l => new SourceBreakpoint { Line = l }).ToArray(),
-        });
-    }
+        Source = new Source { Path = filePath },
+        Breakpoints = [.. lines.Select(l => new SourceBreakpoint { Line = l })],
+    });
 
-    private void GivenNativeDebuggerReturnsBreakpoints()
-    {
-        _engine.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
-            .Returns(ci => ci.ArgAt<SourceBreakpoint[]>(2)
-                .Select((bp, i) => new Breakpoint { Id = i + 1, Verified = true, Line = bp.Line }).ToArray());
-    }
+    private void GivenNativeDebuggerReturnsBreakpoints() => _ = _engine.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
+            .Returns(ci => [.. ci.ArgAt<SourceBreakpoint[]>(2).Select((bp, i) => new Breakpoint { Id = i + 1, Verified = true, Line = bp.Line })]);
 
     #endregion
 
@@ -70,21 +64,22 @@ public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
     private void WhenExecutingWithDrain()
     {
         // Start a background drain thread to process QueueEngineQuery commands.
-        var drainThread = new Thread(() =>
+        Thread drainThread = new(() =>
         {
             try
             {
-                foreach (var cmd in _engineModel.Commands.GetConsumingEnumerable())
+                foreach (Action cmd in _engineModel.Commands.GetConsumingEnumerable())
                     cmd();
             }
             catch (OperationCanceledException) { }
-        }) { IsBackground = true };
+        })
+        { IsBackground = true };
         drainThread.Start();
 
         _testee.ExecuteInternal(new EmptyArguments());
 
         _engineModel.Commands.CompleteAdding();
-        drainThread.Join(TimeSpan.FromSeconds(5));
+        _ = drainThread.Join(TimeSpan.FromSeconds(5));
     }
 
     #endregion
@@ -108,13 +103,10 @@ public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly ConfigurationDoneHandlerService _testee;
 
-    public ConfigurationDoneHandlerServiceTests()
-    {
-        _testee = new ConfigurationDoneHandlerService(
+    public ConfigurationDoneHandlerServiceTests() => _testee = new ConfigurationDoneHandlerService(
             Substitute.For<ILoggingService>(),
             new LogStore(Path.Combine(Path.GetTempPath(), "test.log")),
             _engine, _server, _transport, _session);
-    }
 
     public void Dispose()
     {

@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Lifecycle;
 
@@ -17,14 +17,16 @@ public class ThreadsRequestHandlerService(
 
     public override ThreadsResponseBody ExecuteInternal(EmptyArguments args)
     {
-		if (sessionModel.Engine is not NativeDebuggerModel model)
-			return new ThreadsResponseBody
-			{
-				Threads = [new DapThread { Id = 1, Name = "Main Thread" }],
-			};
+        if (sessionModel.Engine is not NativeDebuggerModel model)
+        {
+            return new ThreadsResponseBody
+            {
+                Threads = [new DapThread { Id = 1, Name = "Main Thread" }],
+            };
+        }
 
-		var threads = model.QueueEngineQuery(
-			() => nativeDebugger.GetThreadsOnEngine(model));
-		return new ThreadsResponseBody { Threads = threads };
+        DapThread[] threads = model.QueueEngineQuery(
+            () => nativeDebugger.GetThreadsOnEngine(model));
+        return new ThreadsResponseBody { Threads = threads };
     }
 }

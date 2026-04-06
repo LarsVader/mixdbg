@@ -1,7 +1,8 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
 using MixDbg.Services.Handlers.Execution;
+
 using NSubstitute;
 
 namespace MixDbg.Tests.Handlers.Execution;
@@ -13,7 +14,7 @@ public sealed class ContinueRequestHandlerServiceTests
     {
         _session.Engine = _engineModel;
 
-        _testee.ExecuteInternal(new ContinueArguments());
+        _ = _testee.ExecuteInternal(new ContinueArguments());
 
         Assert.True(_engineModel.Commands.Count > 0);
         Assert.Equal(SessionState.Running, _session.State);
@@ -22,7 +23,7 @@ public sealed class ContinueRequestHandlerServiceTests
     [Fact]
     public void Execute_WhenNoEngine_DoesNothing()
     {
-        _testee.ExecuteInternal(new ContinueArguments());
+        _ = _testee.ExecuteInternal(new ContinueArguments());
 
         _engine.DidNotReceive().ExecuteContinueOnEngine(Arg.Any<NativeDebuggerModel>());
     }
@@ -32,13 +33,10 @@ public sealed class ContinueRequestHandlerServiceTests
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly ContinueRequestHandlerService _testee;
 
-    public ContinueRequestHandlerServiceTests()
-    {
-        _testee = new ContinueRequestHandlerService(
+    public ContinueRequestHandlerServiceTests() => _testee = new ContinueRequestHandlerService(
             Substitute.For<ILoggingService>(),
             new LogStore(Path.Combine(Path.GetTempPath(), "test.log")),
             _engine, _session);
-    }
 }
 
 public sealed class NextRequestHandlerServiceTests
@@ -60,10 +58,7 @@ public sealed class NextRequestHandlerServiceTests
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly NextRequestHandlerService _testee;
 
-    public NextRequestHandlerServiceTests()
-    {
-        _testee = new NextRequestHandlerService(_engine, _session);
-    }
+    public NextRequestHandlerServiceTests() => _testee = new NextRequestHandlerService(_engine, _session);
 }
 
 public sealed class StepInRequestHandlerServiceTests
@@ -85,10 +80,7 @@ public sealed class StepInRequestHandlerServiceTests
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly StepInRequestHandlerService _testee;
 
-    public StepInRequestHandlerServiceTests()
-    {
-        _testee = new StepInRequestHandlerService(_engine, _session);
-    }
+    public StepInRequestHandlerServiceTests() => _testee = new StepInRequestHandlerService(_engine, _session);
 }
 
 public sealed class StepOutRequestHandlerServiceTests
@@ -109,10 +101,7 @@ public sealed class StepOutRequestHandlerServiceTests
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly StepOutRequestHandlerService _testee;
 
-    public StepOutRequestHandlerServiceTests()
-    {
-        _testee = new StepOutRequestHandlerService(_engine, _session);
-    }
+    public StepOutRequestHandlerServiceTests() => _testee = new StepOutRequestHandlerService(_engine, _session);
 }
 
 public sealed class PauseRequestHandlerServiceTests
@@ -132,8 +121,5 @@ public sealed class PauseRequestHandlerServiceTests
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly PauseRequestHandlerService _testee;
 
-    public PauseRequestHandlerServiceTests()
-    {
-        _testee = new PauseRequestHandlerService(_engine, _session);
-    }
+    public PauseRequestHandlerServiceTests() => _testee = new PauseRequestHandlerService(_engine, _session);
 }

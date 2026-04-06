@@ -145,49 +145,25 @@ public sealed class LoggingServiceTests : IDisposable
 
     #region Given
 
-    private void GivenCallerPath(string path)
-    {
-        _callerPath = path;
-    }
+    private void GivenCallerPath(string path) => _callerPath = path;
 
     #endregion
 
     #region When
 
-    private void WhenLoggingInfo(string message)
-    {
-        _testee.LogInfo(_logStore, message);
-    }
+    private void WhenLoggingInfo(string message) => _testee.LogInfo(_logStore, message);
 
-    private void WhenLoggingWarning(string message)
-    {
-        _testee.LogWarning(_logStore, message);
-    }
+    private void WhenLoggingWarning(string message) => _testee.LogWarning(_logStore, message);
 
-    private void WhenLoggingError(string message)
-    {
-        _testee.LogError(_logStore, message);
-    }
+    private void WhenLoggingError(string message) => _testee.LogError(_logStore, message);
 
-    private void WhenGettingEntries()
-    {
-        _entries = _testee.GetEntries(_logStore);
-    }
+    private void WhenGettingEntries() => _entries = _testee.GetEntries(_logStore);
 
-    private void WhenClearing()
-    {
-        _testee.Clear(_logStore);
-    }
+    private void WhenClearing() => _testee.Clear(_logStore);
 
-    private void WhenExtractingSender()
-    {
-        _extractedSender = LoggingService.ExtractSender(_callerPath);
-    }
+    private void WhenExtractingSender() => _extractedSender = LoggingService.ExtractSender(_callerPath);
 
-    private void WhenCreatingDefaultStore()
-    {
-        _defaultStore = _testee.CreateStore();
-    }
+    private void WhenCreatingDefaultStore() => _defaultStore = _testee.CreateStore();
 
     #endregion
 
@@ -195,52 +171,37 @@ public sealed class LoggingServiceTests : IDisposable
 
     private void ThenEntryCountIs(int expected)
     {
-        var entries = _testee.GetEntries(_logStore);
+        IReadOnlyList<LogEntry> entries = _testee.GetEntries(_logStore);
         Assert.Equal(expected, entries.Count);
     }
 
-    private void ThenSnapshotCountIs(int expected)
-    {
-        Assert.Equal(expected, _entries!.Count);
-    }
+    private void ThenSnapshotCountIs(int expected) => Assert.Equal(expected, _entries!.Count);
 
     private void ThenLastEntryLevelIs(LogLevel expected)
     {
-        var entries = _testee.GetEntries(_logStore);
+        IReadOnlyList<LogEntry> entries = _testee.GetEntries(_logStore);
         Assert.Equal(expected, entries[^1].Level);
     }
 
     private void ThenLastEntryMessageIs(string expected)
     {
-        var entries = _testee.GetEntries(_logStore);
+        IReadOnlyList<LogEntry> entries = _testee.GetEntries(_logStore);
         Assert.Equal(expected, entries[^1].Message);
     }
 
-    private void ThenLastEntrySenderIs(string expected)
-    {
-        Assert.Equal(expected, _entries![^1].Sender);
-    }
+    private void ThenLastEntrySenderIs(string expected) => Assert.Equal(expected, _entries![^1].Sender);
 
-    private void ThenSenderIs(string expected)
-    {
-        Assert.Equal(expected, _extractedSender);
-    }
+    private void ThenSenderIs(string expected) => Assert.Equal(expected, _extractedSender);
 
-    private void ThenLogFileExists()
-    {
-        Assert.True(File.Exists(_logFilePath));
-    }
+    private void ThenLogFileExists() => Assert.True(File.Exists(_logFilePath));
 
     private void ThenLogFileContains(string expected)
     {
-        var content = File.ReadAllText(_logFilePath);
+        string content = File.ReadAllText(_logFilePath);
         Assert.Contains(expected, content);
     }
 
-    private void ThenDefaultStorePathContains(string expected)
-    {
-        Assert.Contains(expected, _defaultStore!.FilePath);
-    }
+    private void ThenDefaultStorePathContains(string expected) => Assert.Contains(expected, _defaultStore!.FilePath);
 
     #endregion
 
@@ -254,10 +215,7 @@ public sealed class LoggingServiceTests : IDisposable
     private string? _extractedSender;
     private LogStore? _defaultStore;
 
-    public LoggingServiceTests()
-    {
-        _logStore = new LogStore(_logFilePath);
-    }
+    public LoggingServiceTests() => _logStore = new LogStore(_logFilePath);
 
     public void Dispose()
     {

@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using ClrDebug;
 
 namespace MixDbg.Engine.Clr;
@@ -21,38 +23,35 @@ internal sealed class UnmanagedCallbackHandler
     /// <summary>Optional logger for debugging interop mode issues.</summary>
     public Action<string>? Log { get; set; }
 
-    public UnmanagedCallbackHandler()
-    {
-        Callback.OnDebugEvent += (s, e) =>
-        {
-            var evt = e.DebugEvent;
-            int code = (int)evt.dwDebugEventCode;
-            bool oob = e.OutOfBand;
+    public UnmanagedCallbackHandler() => Callback.OnDebugEvent += (s, e) =>
+                                              {
+                                                  DEBUG_EVENT evt = e.DebugEvent;
+                                                  int code = (int)evt.dwDebugEventCode;
+                                                  bool oob = e.OutOfBand;
 
-            Log?.Invoke($"Unmanaged event: code={code} ({DebugEventName(code)}) oob={oob}");
+                                                  Log?.Invoke($"Unmanaged event: code={code} ({DebugEventName(code)}) oob={oob}");
 
-            ulong exAddr = 0;
-            if (code == 1) // EXCEPTION_DEBUG_EVENT
-            {
-                try
-                {
-                    var exField = evt.GetType().GetField("u");
-                    if (exField != null)
-                    {
-                        var u = exField.GetValue(evt);
-                        var exDbgInfo = u?.GetType().GetField("Exception")?.GetValue(u);
-                        var exRecord = exDbgInfo?.GetType().GetField("ExceptionRecord")?.GetValue(exDbgInfo);
-                        var addrField = exRecord?.GetType().GetField("ExceptionAddress");
-                        if (addrField != null)
-                            exAddr = (ulong)(IntPtr)addrField.GetValue(exRecord)!;
-                    }
-                }
-                catch { }
-            }
+                                                  ulong exAddr = 0;
+                                                  if (code == 1) // EXCEPTION_DEBUG_EVENT
+                                                  {
+                                                      try
+                                                      {
+                                                          FieldInfo? exField = evt.GetType().GetField("u");
+                                                          if (exField != null)
+                                                          {
+                                                              object? u = exField.GetValue(evt);
+                                                              object? exDbgInfo = u?.GetType().GetField("Exception")?.GetValue(u);
+                                                              object? exRecord = exDbgInfo?.GetType().GetField("ExceptionRecord")?.GetValue(exDbgInfo);
+                                                              FieldInfo? addrField = exRecord?.GetType().GetField("ExceptionAddress");
+                                                              if (addrField != null)
+                                                                  exAddr = (ulong)(IntPtr)addrField.GetValue(exRecord)!;
+                                                          }
+                                                      }
+                                                      catch { }
+                                                  }
 
-            DebugEvent?.Invoke(code, exAddr, oob);
-        };
-    }
+                                                  DebugEvent?.Invoke(code, exAddr, oob);
+                                              };
 
     private static string DebugEventName(int code) => code switch
     {

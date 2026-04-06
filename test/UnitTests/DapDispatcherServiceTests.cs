@@ -1,9 +1,11 @@
 using System.Text;
 using System.Text.Json;
-using MixDbg.Models.Dap;
+
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 using MixDbg.Services;
 using MixDbg.Services.Interfaces;
+
 using NSubstitute;
 
 namespace MixDbg.Tests;
@@ -78,22 +80,19 @@ public sealed class DapDispatcherServiceTests
 
     private void GivenAHandler(string command, Func<JsonElement?, IDapMessage?> execute)
     {
-        var handler = Substitute.For<IDapHandlerService>();
-        handler.Command.Returns(command);
-        handler.Execute(Arg.Any<JsonElement?>()).Returns(ci => execute(ci.ArgAt<JsonElement?>(0)));
+        IDapHandlerService handler = Substitute.For<IDapHandlerService>();
+        _ = handler.Command.Returns(command);
+        _ = handler.Execute(Arg.Any<JsonElement?>()).Returns(ci => execute(ci.ArgAt<JsonElement?>(0)));
         _handlers.Add(handler);
     }
 
     private void GivenServerReturnsRequests(params RequestMessage[] requests)
     {
-        var queue = new Queue<RequestMessage?>(requests.Cast<RequestMessage?>().Append(null));
-        _server.ReadRequest(_transport).Returns(_ => queue.Dequeue());
+        Queue<RequestMessage?> queue = new(requests.Cast<RequestMessage?>().Append(null));
+        _ = _server.ReadRequest(_transport).Returns(_ => queue.Dequeue());
     }
 
-    private void GivenServerReturnsEof()
-    {
-        _server.ReadRequest(_transport).Returns((RequestMessage?)null);
-    }
+    private void GivenServerReturnsEof() => _ = _server.ReadRequest(_transport).Returns((RequestMessage?)null);
 
     #endregion
 
@@ -101,7 +100,7 @@ public sealed class DapDispatcherServiceTests
 
     private void WhenRunning()
     {
-        var testee = new DapDispatcherService(_handlers, _server, _transport, _log, _logStore);
+        DapDispatcherService testee = new(_handlers, _server, _transport, _log, _logStore);
         testee.Run();
     }
 
@@ -109,53 +108,35 @@ public sealed class DapDispatcherServiceTests
 
     #region Then
 
-    private void ThenResponseWasSentFor(string command)
-    {
-        _server.Received(1).SendResponse(
+    private void ThenResponseWasSentFor(string command) => _server.Received(1).SendResponse(
             _transport,
             Arg.Is<RequestMessage>(r => r.Command == command),
             Arg.Any<object?>());
-    }
 
-    private void ThenErrorResponseWasSent()
-    {
-        _server.Received(1).SendErrorResponse(
+    private void ThenErrorResponseWasSent() => _server.Received(1).SendErrorResponse(
             _transport,
             Arg.Any<RequestMessage>(),
             Arg.Is<string>(s => s.Contains("Unknown command")));
-    }
 
-    private void ThenErrorResponseWasSentWithMessage(string message)
-    {
-        _server.Received(1).SendErrorResponse(
+    private void ThenErrorResponseWasSentWithMessage(string message) => _server.Received(1).SendErrorResponse(
             _transport,
             Arg.Any<RequestMessage>(),
             Arg.Is<string>(s => s.Contains(message)));
-    }
 
-    private void ThenResponseWasSentForDisconnect()
-    {
-        _server.Received(1).SendResponse(
+    private void ThenResponseWasSentForDisconnect() => _server.Received(1).SendResponse(
             _transport,
             Arg.Is<RequestMessage>(r => r.Command == "disconnect"),
             Arg.Any<object?>());
-    }
 
-    private void ThenNoResponseWasSent()
-    {
-        _server.DidNotReceive().SendResponse(
+    private void ThenNoResponseWasSent() => _server.DidNotReceive().SendResponse(
             Arg.Any<DapServerModel>(),
             Arg.Any<RequestMessage>(),
             Arg.Any<object?>());
-    }
 
-    private void ThenResponseWasSentWithNullBody(string command)
-    {
-        _server.Received(1).SendResponse(
+    private void ThenResponseWasSentWithNullBody(string command) => _server.Received(1).SendResponse(
             _transport,
             Arg.Is<RequestMessage>(r => r.Command == command),
             null);
-    }
 
     #endregion
 
@@ -173,10 +154,7 @@ public sealed class DapDispatcherServiceTests
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
     }
 
-    private static RequestMessage MakeRequest(string command, int seq)
-    {
-        return new RequestMessage { Seq = seq, Command = command };
-    }
+    private static RequestMessage MakeRequest(string command, int seq) => new() { Seq = seq, Command = command };
 
     private record TestResponse : IDapMessage;
 

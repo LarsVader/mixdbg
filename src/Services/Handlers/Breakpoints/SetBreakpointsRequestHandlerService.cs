@@ -1,5 +1,5 @@
-using MixDbg.Models.Dap;
 using MixDbg.Models;
+using MixDbg.Models.Dap;
 
 namespace MixDbg.Services.Handlers.Breakpoints;
 
@@ -18,25 +18,25 @@ public class SetBreakpointsRequestHandlerService(
 
     public override SetBreakpointsResponseBody ExecuteInternal(SetBreakpointsArguments args)
     {
-		if (sessionModel.Engine is not NativeDebuggerModel model || args.Source.Path == null)
-		{
-			if (args.Source.Path != null)
-				sessionModel.PendingBreakpoints.Add(args);
+        if (sessionModel.Engine is not NativeDebuggerModel model || args.Source.Path == null)
+        {
+            if (args.Source.Path != null)
+                sessionModel.PendingBreakpoints.Add(args);
 
-			return new SetBreakpointsResponseBody
-			{
-				Breakpoints = args.Breakpoints.Select((bp, i) => new Breakpoint
-				{
-					Id = sessionModel.NextPendingBpId++,
-					Verified = true,
-					Line = bp.Line,
-					Source = args.Source,
-				}).ToArray(),
-			};
-		}
+            return new SetBreakpointsResponseBody
+            {
+                Breakpoints = [.. args.Breakpoints.Select((bp, i) => new Breakpoint
+                {
+                    Id = sessionModel.NextPendingBpId++,
+                    Verified = true,
+                    Line = bp.Line,
+                    Source = args.Source,
+                })],
+            };
+        }
 
-		var bps = model.QueueEngineQuery(
-			() => nativeDebugger.SetBreakpointsOnEngine(model, args.Source.Path, args.Breakpoints));
-		return new SetBreakpointsResponseBody { Breakpoints = bps };
+        Breakpoint[] bps = model.QueueEngineQuery(
+            () => nativeDebugger.SetBreakpointsOnEngine(model, args.Source.Path, args.Breakpoints));
+        return new SetBreakpointsResponseBody { Breakpoints = bps };
     }
 }

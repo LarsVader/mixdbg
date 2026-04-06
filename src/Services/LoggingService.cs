@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+
 using MixDbg.Models;
 
 namespace MixDbg.Services;
@@ -54,12 +55,12 @@ internal sealed class LoggingService : ILoggingService
     {
         string senderName = ExtractSender(callerFilePath);
 
-        var entry = new LogEntry(DateTime.Now, level, senderName, message);
+        LogEntry entry = new(DateTime.Now, level, senderName, message);
 
         lock (store.Lock)
         {
             store.Entries.Add(entry);
-            var line = $"[{entry.Timestamp:HH:mm:ss.fff}] [{entry.Level}] [{entry.Sender}] {entry.Message}";
+            string line = $"[{entry.Timestamp:HH:mm:ss.fff}] [{entry.Level}] [{entry.Sender}] {entry.Message}";
             File.AppendAllText(store.FilePath, line + Environment.NewLine);
         }
     }

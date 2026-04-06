@@ -1,6 +1,7 @@
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
+
 using MixDbg.Services;
 
 namespace MixDbg.Engine.Sos;
@@ -15,11 +16,10 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     private readonly Dictionary<string, MetadataReaderProvider> _providers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MetadataReader> _readers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (PEReader Pe, MetadataReader Reader)> _peReaders = new(StringComparer.OrdinalIgnoreCase);
-    private readonly List<FileStream> _peStreams = new();
+    private readonly List<FileStream> _peStreams = [];
 
     /// <summary>Last error from PDB/PE loading, for diagnostics.</summary>
-    internal string? LastError => _lastError;
-    private string? _lastError;
+    internal string? LastError { get; private set; }
 
     /// <summary>
     /// Resolves a method token and IL offset to a source file and line number
@@ -28,11 +28,11 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     /// <returns>Source file path and line, or <c>null</c> if not found.</returns>
     public (string File, int Line)? GetSourceLocation(string assemblyPath, int methodToken, int ilOffset)
     {
-        var reader = GetOrLoadReader(assemblyPath);
+        MetadataReader? reader = GetOrLoadReader(assemblyPath);
         if (reader == null)
             return null;
 
-        var handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        MethodDefinitionHandle handle = MetadataTokens.MethodDefinitionHandle(methodToken);
         if (handle.IsNil)
             return null;
 
@@ -54,7 +54,7 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
         int bestLine = 0;
         int bestOffset = -1;
 
-        foreach (var sp in debugInfo.GetSequencePoints())
+        foreach (SequencePoint sp in debugInfo.GetSequencePoints())
         {
             // Skip hidden sequence points (line 0xFEEFEE).
             if (sp.IsHidden)
@@ -69,10 +69,7 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
             }
         }
 
-        if (bestFile != null)
-            return (bestFile, bestLine);
-
-        return null;
+        return bestFile != null ? (bestFile, bestLine) : null;
     }
 
     /// <summary>
@@ -83,39 +80,39 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     public (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? FindMethodAtLine(
         string assemblyPath, string sourceFile, int line)
     {
-        var reader = GetOrLoadReader(assemblyPath);
+        MetadataReader? reader = GetOrLoadReader(assemblyPath);
         if (reader == null)
             return null;
 
         // We need the corresponding assembly metadata reader for type/method names.
-        var peReaderAndStream = GetOrLoadPeReader(assemblyPath);
+        (PEReader Pe, MetadataReader Reader)? peReaderAndStream = GetOrLoadPeReader(assemblyPath);
         if (peReaderAndStream == null)
             return null;
 
-        var peReader = peReaderAndStream.Value.Reader;
-        var assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
+        MetadataReader peReader = peReaderAndStream.Value.Reader;
+        string assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
 
-        foreach (var mdHandle in reader.MethodDebugInformation)
+        foreach (MethodDebugInformationHandle mdHandle in reader.MethodDebugInformation)
         {
-            var debugInfo = reader.GetMethodDebugInformation(mdHandle);
+            MethodDebugInformation debugInfo = reader.GetMethodDebugInformation(mdHandle);
             if (debugInfo.SequencePointsBlob.IsNil)
                 continue;
 
-            foreach (var sp in debugInfo.GetSequencePoints())
+            foreach (SequencePoint sp in debugInfo.GetSequencePoints())
             {
                 if (sp.IsHidden)
                     continue;
 
-                var docName = reader.GetString(reader.GetDocument(sp.Document).Name);
+                string docName = reader.GetString(reader.GetDocument(sp.Document).Name);
                 if (!Path.GetFullPath(docName).Equals(Path.GetFullPath(sourceFile), StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 if (sp.StartLine <= line && line <= sp.EndLine)
                 {
-                    var methodHandle = mdHandle.ToDefinitionHandle();
-                    var token = MetadataTokens.GetToken(methodHandle);
+                    MethodDefinitionHandle methodHandle = mdHandle.ToDefinitionHandle();
+                    int token = MetadataTokens.GetToken(methodHandle);
 
-                    var methodName = GetFullMethodName(peReader, methodHandle);
+                    string? methodName = GetFullMethodName(peReader, methodHandle);
                     if (methodName != null)
                         return (assemblyName, methodName, token, sp.Offset);
                 }
@@ -132,11 +129,11 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     /// <returns>The method name, or <c>null</c> if the token cannot be resolved.</returns>
     public string? GetMethodName(string assemblyPath, int methodToken)
     {
-        var peReaderAndStream = GetOrLoadPeReader(assemblyPath);
+        (PEReader Pe, MetadataReader Reader)? peReaderAndStream = GetOrLoadPeReader(assemblyPath);
         if (peReaderAndStream == null)
             return null;
 
-        var handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        MethodDefinitionHandle handle = MetadataTokens.MethodDefinitionHandle(methodToken);
         return GetFullMethodName(peReaderAndStream.Value.Reader, handle);
     }
 
@@ -144,19 +141,19 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     {
         try
         {
-            var method = peReader.GetMethodDefinition(handle);
-            var methodName = peReader.GetString(method.Name);
+            MethodDefinition method = peReader.GetMethodDefinition(handle);
+            string methodName = peReader.GetString(method.Name);
 
-            var typeHandle = method.GetDeclaringType();
-            var type = peReader.GetTypeDefinition(typeHandle);
-            var typeName = peReader.GetString(type.Name);
-            var namespaceName = peReader.GetString(type.Namespace);
+            TypeDefinitionHandle typeHandle = method.GetDeclaringType();
+            TypeDefinition type = peReader.GetTypeDefinition(typeHandle);
+            string typeName = peReader.GetString(type.Name);
+            string namespaceName = peReader.GetString(type.Namespace);
 
             // Build nested type chain if needed.
-            var declaringType = type.GetDeclaringType();
+            TypeDefinitionHandle declaringType = type.GetDeclaringType();
             while (!declaringType.IsNil)
             {
-                var outer = peReader.GetTypeDefinition(declaringType);
+                TypeDefinition outer = peReader.GetTypeDefinition(declaringType);
                 typeName = peReader.GetString(outer.Name) + "+" + typeName;
                 declaringType = outer.GetDeclaringType();
             }
@@ -173,19 +170,19 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
 
     private MetadataReader? GetOrLoadReader(string assemblyPath)
     {
-        if (_readers.TryGetValue(assemblyPath, out var cached))
+        if (_readers.TryGetValue(assemblyPath, out MetadataReader? cached))
             return cached;
 
         // Look for the portable PDB next to the assembly.
-        var pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
+        string pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
         if (!File.Exists(pdbPath))
             return null;
 
         try
         {
-            var stream = File.OpenRead(pdbPath);
-            var provider = MetadataReaderProvider.FromPortablePdbStream(stream);
-            var reader = provider.GetMetadataReader();
+            FileStream stream = File.OpenRead(pdbPath);
+            MetadataReaderProvider provider = MetadataReaderProvider.FromPortablePdbStream(stream);
+            MetadataReader reader = provider.GetMetadataReader();
 
             _providers[assemblyPath] = provider;
             _readers[assemblyPath] = reader;
@@ -194,14 +191,14 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
         catch (Exception ex)
         {
             // Not a portable PDB, or corrupted — skip.
-            _lastError = $"PDB load failed for {pdbPath}: {ex.GetType().Name}: {ex.Message}";
+            LastError = $"PDB load failed for {pdbPath}: {ex.GetType().Name}: {ex.Message}";
             return null;
         }
     }
 
     private (PEReader Pe, MetadataReader Reader)? GetOrLoadPeReader(string assemblyPath)
     {
-        if (_peReaders.TryGetValue(assemblyPath, out var cached))
+        if (_peReaders.TryGetValue(assemblyPath, out (PEReader Pe, MetadataReader Reader) cached))
             return cached;
 
         if (!File.Exists(assemblyPath))
@@ -209,10 +206,10 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
 
         try
         {
-            var stream = File.OpenRead(assemblyPath);
+            FileStream stream = File.OpenRead(assemblyPath);
             _peStreams.Add(stream);
-            var pe = new PEReader(stream);
-            var reader = pe.GetMetadataReader();
+            PEReader pe = new(stream);
+            MetadataReader reader = pe.GetMetadataReader();
             _peReaders[assemblyPath] = (pe, reader);
             return (pe, reader);
         }
@@ -230,18 +227,18 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     /// </summary>
     public int? FindTokenByRva(string assemblyPath, int rva)
     {
-        var peReaderAndStream = GetOrLoadPeReader(assemblyPath);
+        (PEReader Pe, MetadataReader Reader)? peReaderAndStream = GetOrLoadPeReader(assemblyPath);
         if (peReaderAndStream == null)
             return null;
 
-        var reader = peReaderAndStream.Value.Reader;
+        MetadataReader reader = peReaderAndStream.Value.Reader;
         try
         {
             int bestRva = -1;
             MethodDefinitionHandle bestHandle = default;
-            foreach (var handle in reader.MethodDefinitions)
+            foreach (MethodDefinitionHandle handle in reader.MethodDefinitions)
             {
-                var method = reader.GetMethodDefinition(handle);
+                MethodDefinition method = reader.GetMethodDefinition(handle);
                 int methodRva = method.RelativeVirtualAddress;
                 if (methodRva > 0 && methodRva <= rva && methodRva > bestRva)
                 {
@@ -258,13 +255,13 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
 
     public void Dispose()
     {
-        foreach (var (pe, _) in _peReaders.Values)
+        foreach ((PEReader? pe, MetadataReader _) in _peReaders.Values)
             pe.Dispose();
 
-        foreach (var provider in _providers.Values)
+        foreach (MetadataReaderProvider provider in _providers.Values)
             provider.Dispose();
 
-        foreach (var stream in _peStreams)
+        foreach (FileStream stream in _peStreams)
             stream.Dispose();
 
         _peReaders.Clear();

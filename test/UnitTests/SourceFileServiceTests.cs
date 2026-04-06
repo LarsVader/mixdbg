@@ -219,52 +219,31 @@ public sealed class SourceFileServiceTests : IDisposable
         File.WriteAllText(_filePath, "// source");
     }
 
-    private void GivenACppCliVcxproj()
-    {
-        File.WriteAllText(
+    private void GivenACppCliVcxproj() => File.WriteAllText(
             Path.Combine(_tempDir, "project.vcxproj"),
             "<Project><PropertyGroup><CLRSupport>true</CLRSupport></PropertyGroup></Project>");
-    }
 
-    private void GivenANativeVcxproj()
-    {
-        File.WriteAllText(
+    private void GivenANativeVcxproj() => File.WriteAllText(
             Path.Combine(_tempDir, "project.vcxproj"),
             "<Project><PropertyGroup><RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary></PropertyGroup></Project>");
-    }
 
     #endregion
 
     #region When
 
-    private void WhenCheckingIsNativeFile()
-    {
-        _result = _testee.IsNativeFile(_filePath);
-    }
+    private void WhenCheckingIsNativeFile() => _result = _testee.IsNativeFile(_filePath);
 
-    private void WhenCheckingIsManagedFile()
-    {
-        _result = _testee.IsManagedFile(_filePath);
-    }
+    private void WhenCheckingIsManagedFile() => _result = _testee.IsManagedFile(_filePath);
 
-    private void WhenCheckingIsCliFile()
-    {
-        _result = _testee.IsCliFile(_filePath);
-    }
+    private void WhenCheckingIsCliFile() => _result = _testee.IsCliFile(_filePath);
 
     #endregion
 
     #region Then
 
-    private void ThenResultIsTrue()
-    {
-        Assert.True(_result);
-    }
+    private void ThenResultIsTrue() => Assert.True(_result);
 
-    private void ThenResultIsFalse()
-    {
-        Assert.False(_result);
-    }
+    private void ThenResultIsFalse() => Assert.False(_result);
 
     #endregion
 
@@ -275,10 +254,7 @@ public sealed class SourceFileServiceTests : IDisposable
     private string _filePath = "";
     private bool _result;
 
-    public SourceFileServiceTests()
-    {
-        Directory.CreateDirectory(_tempDir);
-    }
+    public SourceFileServiceTests() => _ = Directory.CreateDirectory(_tempDir);
 
     public void Dispose()
     {

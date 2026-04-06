@@ -134,10 +134,7 @@ public sealed class SosOutputParserTests
 
     private string _bpmdOutput = "";
 
-    private void GivenBpmdOutput(string output)
-    {
-        _bpmdOutput = output;
-    }
+    private void GivenBpmdOutput(string output) => _bpmdOutput = output;
 
     #endregion
 
@@ -145,10 +142,7 @@ public sealed class SosOutputParserTests
 
     private (bool Success, uint? BpId, string? Message) _bpmdResult;
 
-    private void WhenParsingBpmdOutput()
-    {
-        _bpmdResult = SosOutputParser.ParseBpmdOutput(_bpmdOutput);
-    }
+    private void WhenParsingBpmdOutput() => _bpmdResult = SosOutputParser.ParseBpmdOutput(_bpmdOutput);
 
     #endregion
 

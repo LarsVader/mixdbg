@@ -40,10 +40,7 @@ internal sealed class ManagedCallbackHandler
             e.Process.Continue(false);
         };
 
-        Callback.OnExitProcess += (s, e) =>
-        {
-            ProcessExited?.Invoke();
-        };
+        Callback.OnExitProcess += (s, e) => ProcessExited?.Invoke();
 
         Callback.OnLoadModule += (s, e) =>
         {

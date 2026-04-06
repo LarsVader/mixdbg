@@ -23,12 +23,12 @@ public sealed class PdbSourceMapperTests
         if (!File.Exists(_wpfAppDll)) return; // WpfApp not built — skip
 
         // nvim-dap on Windows sends paths with mixed slashes: D:\foo\bar/baz/file.cs
-        var mixedSlashPath = _sourceFile.Replace("\\test\\TestApp\\", "/test/TestApp/");
+        string mixedSlashPath = _sourceFile.Replace("\\test\\TestApp\\", "/test/TestApp/");
 
-        using var mapper = new PdbSourceMapperService();
-        var result = mapper.FindMethodAtLine(_wpfAppDll, mixedSlashPath, 63);
+        using PdbSourceMapperService mapper = new();
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = mapper.FindMethodAtLine(_wpfAppDll, mixedSlashPath, 63);
 
-        Assert.NotNull(result);
+        _ = Assert.NotNull(result);
         Assert.Equal("WpfApp", result.Value.AssemblyName);
         Assert.Contains("OnAddClick", result.Value.MethodName);
     }
@@ -38,10 +38,10 @@ public sealed class PdbSourceMapperTests
     {
         if (!File.Exists(_wpfAppDll)) return; // WpfApp not built — skip
 
-        using var mapper = new PdbSourceMapperService();
-        var result = mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 63);
+        using PdbSourceMapperService mapper = new();
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 63);
 
-        Assert.NotNull(result);
+        _ = Assert.NotNull(result);
         Assert.Equal("WpfApp", result.Value.AssemblyName);
         Assert.Contains("OnAddClick", result.Value.MethodName);
     }

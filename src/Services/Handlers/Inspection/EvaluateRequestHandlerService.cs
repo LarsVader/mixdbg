@@ -12,12 +12,9 @@ public class EvaluateRequestHandlerService
 
     public override string Command => DapMessage;
 
-    public override EvaluateResponseBody ExecuteInternal(EvaluateArguments args)
+    public override EvaluateResponseBody ExecuteInternal(EvaluateArguments args) => new()
     {
-		return new EvaluateResponseBody
-		{
-			Result = $"[not implemented] {args.Expression}",
-			VariablesReference = 0,
-		};
-    }
+        Result = $"[not implemented] {args.Expression}",
+        VariablesReference = 0,
+    };
 }

@@ -29,13 +29,13 @@ internal static partial class SosOutputParser
         //   "Setting breakpoint: bp 5 ..."
 
         // Pattern 1: "Breakpoint <id> set."
-        var setMatch = BpSetRegex().Match(output);
-        if (setMatch.Success && uint.TryParse(setMatch.Groups[1].Value, out var setId))
+        Match setMatch = BpSetRegex().Match(output);
+        if (setMatch.Success && uint.TryParse(setMatch.Groups[1].Value, out uint setId))
             return (true, setId, null);
 
         // Pattern 2: "Setting breakpoint: bp <id>"
-        var settingMatch = BpSettingRegex().Match(output);
-        if (settingMatch.Success && uint.TryParse(settingMatch.Groups[1].Value, out var settingId))
+        Match settingMatch = BpSettingRegex().Match(output);
+        if (settingMatch.Success && uint.TryParse(settingMatch.Groups[1].Value, out uint settingId))
             return (true, settingId, null);
 
         // Pattern 3: Pending breakpoint — no ID yet, but considered success
@@ -46,7 +46,9 @@ internal static partial class SosOutputParser
         if (output.Contains("Error", StringComparison.OrdinalIgnoreCase) ||
             output.Contains("Failed", StringComparison.OrdinalIgnoreCase) ||
             output.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
             return (false, null, output.Trim());
+        }
 
         // Unknown output — treat as potential success (bpmd may have deferred)
         return (true, null, output.Trim());

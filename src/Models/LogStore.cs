@@ -5,16 +5,11 @@ namespace MixDbg.Models;
 /// log entries, a lock for thread safety, and the file path for
 /// persistent log output (~\mixdbg.log).
 /// </summary>
-public sealed class LogStore
+public sealed class LogStore(string filePath)
 {
     internal List<LogEntry> Entries { get; } = [];
 
     internal Lock Lock { get; } = new();
 
-    internal string FilePath { get; }
-
-    public LogStore(string filePath)
-    {
-        FilePath = filePath;
-    }
+    internal string FilePath { get; } = filePath;
 }
