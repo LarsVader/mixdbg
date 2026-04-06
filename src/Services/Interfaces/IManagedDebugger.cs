@@ -87,4 +87,34 @@ public interface IManagedDebugger
     /// from these assemblies (enabling first-click breakpoints).
     /// </summary>
     List<string> ResolveWatchAssemblies(IEnumerable<(string FilePath, int Line)> breakpoints);
+
+    /// <summary>
+    /// Initializes managed debugging when the CLR is detected. Applies pending managed
+    /// breakpoints and optionally starts the deferred breakpoint poller.
+    /// </summary>
+    void TryInitializeManaged(NativeDebuggerModel model);
+
+    /// <summary>
+    /// Called on managed module loads. Re-enumerates ICorDebug modules and tries
+    /// to bind any pending managed breakpoints against newly loaded assemblies.
+    /// </summary>
+    void TryBindManagedBreakpointsOnModuleLoad(NativeDebuggerModel model);
+
+    /// <summary>
+    /// Removes transient hardware breakpoints set by enter hook notifications.
+    /// Only active when profiler hooks are in use.
+    /// </summary>
+    void RemoveTransientManagedBreakpoints(NativeDebuggerModel model);
+
+    /// <summary>
+    /// Overlays managed frame info (method names, source locations) onto native stack frames
+    /// that lack source information.
+    /// </summary>
+    void MergeManagedFrames(NativeDebuggerModel model, StackFrame[] nativeFrames);
+
+    /// <summary>
+    /// Starts a timer that periodically interrupts the target to check if deferred
+    /// managed breakpoints can be resolved after JIT compilation.
+    /// </summary>
+    void StartDeferredBreakpointPoller(NativeDebuggerModel model);
 }

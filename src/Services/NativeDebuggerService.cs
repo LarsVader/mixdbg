@@ -90,7 +90,7 @@ internal sealed class NativeDebuggerService(
         model.Commands.Add(() =>
         {
             _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
-            RemoveTransientManagedBreakpoints(model);
+            _managedDebugger.RemoveTransientManagedBreakpoints(model);
             // Re-enable enter/leave hooks in the profiler for the next method call.
             model.ProfilerRehookEvent?.Set();
             model.ConfigDone = true;
@@ -298,7 +298,7 @@ internal sealed class NativeDebuggerService(
                 (img.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
                  img.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
             {
-                TryBindManagedBreakpointsOnModuleLoad(model);
+                _managedDebugger.TryBindManagedBreakpointsOnModuleLoad(model);
             }
         };
         model.Callbacks.OnClrNotification += () =>
@@ -399,7 +399,7 @@ internal sealed class NativeDebuggerService(
 
                 // Initialize managed debugging when CLR is first detected.
                 if (model.ClrLoaded && !model.ManagedInitialized)
-                    TryInitializeManaged(model);
+                    _managedDebugger.TryInitializeManaged(model);
 
                 if (model.TargetExited)
                 {
@@ -578,39 +578,6 @@ internal sealed class NativeDebuggerService(
     }
 
     /// <summary>
-    /// Removes all transient managed hardware breakpoints. Called on Continue/Step
-    /// to free debug registers. The profiler's enter hook will re-set them on the
-    /// next call to each breakpointed method.
-    /// </summary>
-    private void RemoveTransientManagedBreakpoints(NativeDebuggerModel model)
-    {
-        // Only remove BPs when using enter/leave hooks (BPs are transient per-call).
-        // With JIT-blocking fallback, BPs are permanent and must persist.
-        if (!model.ProfilerHooksActive || model.ManagedBreakpointIds.Count == 0)
-            return;
-
-        var idsToRemove = new List<uint>(model.ManagedBreakpointIds);
-        foreach (var hwBpId in idsToRemove)
-        {
-            int hr = model.Control.GetBreakpointById(hwBpId, out var hwBp);
-            if (hr >= 0)
-            {
-                model.Control.RemoveBreakpoint(hwBp);
-                _log.LogInfo(_logStore, $"Removed transient managed hw bp #{hwBpId}");
-            }
-            model.UserBreakpointIds.Remove(hwBpId);
-        }
-        model.ManagedBreakpointIds.Clear();
-        model.ManagedBreakpointAddresses.Clear();
-
-        // Clear the key→id mappings for managed breakpoints.
-        var keysToRemove = model.BreakpointIds
-            .Where(kv => idsToRemove.Contains(kv.Value))
-            .Select(kv => kv.Key).ToList();
-        foreach (var key in keysToRemove)
-            model.BreakpointIds.Remove(key);
-    }
-
     private void ProcessCommandsUntilResume(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "ProcessCommandsUntilResume: waiting for commands");
@@ -642,98 +609,6 @@ internal sealed class NativeDebuggerService(
         }
     }
 
-    private void TryInitializeManaged(NativeDebuggerModel model)
-    {
-        _log.LogInfo(_logStore, "Initializing managed debugging (CLR detected)...");
-        if (_managedDebugger.InitializeRuntime(model))
-        {
-            // Apply any managed breakpoints that were pending before CLR loaded.
-            foreach (var pending in model.PendingManagedBreakpoints)
-            {
-                var bps = _managedDebugger.SetManagedBreakpoints(
-                    model, pending.Source.Path!, pending.Breakpoints);
-                foreach (var bp in bps)
-                {
-                    _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
-                    {
-                        Reason = "changed",
-                        Breakpoint = bp,
-                    });
-                }
-            }
-            model.PendingManagedBreakpoints.Clear();
-            _log.LogInfo(_logStore, "Managed debugging initialized (ICorDebug V4)");
-
-            // Start polling for deferred managed breakpoint resolution.
-            // Skip when profiler is connected — profiler JIT notifications are real-time
-            // and don't starve the WPF UI thread like the 2s SetInterrupt polling does.
-            // Only start the DAC poller if no profiler pipe exists.
-            // With the profiler, ENTER hooks or JIT-blocking handle BP timing.
-            // The poller would resolve and remove deferred BPs via DAC before
-            // the profiler can use them.
-            if (model.DeferredManagedBreakpoints.Count > 0 && model.ProfilerPipe == null)
-                StartDeferredBreakpointPoller(model);
-        }
-    }
-
-    /// <summary>
-    /// Starts a timer that periodically interrupts the target so the engine loop
-    /// can check if deferred managed breakpoints can be resolved (via
-    /// <c>GetOffsetByLine</c> after JIT compilation). Stops automatically when
-    /// all deferred breakpoints are resolved or the session terminates.
-    /// </summary>
-    private void StartDeferredBreakpointPoller(NativeDebuggerModel model)
-    {
-        _log.LogInfo(_logStore, $"Starting deferred BP poller ({model.DeferredManagedBreakpoints.Count} deferred)");
-        var timer = new System.Threading.Timer(_ =>
-        {
-            if (model.Terminated || model.DeferredManagedBreakpoints.Count == 0)
-                return;
-            try
-            {
-                model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
-            }
-            catch { }
-        }, null, 2000, 2000);
-
-        // Store the timer so it can be disposed.
-        model.DisposeAction = () =>
-        {
-            timer.Dispose();
-            model.Terminated = true;
-            model.Commands.CompleteAdding();
-            model.EngineThread?.Join(3000);
-            model.Commands.Dispose();
-            model.Stopped.Dispose();
-            model.EngineReady.Dispose();
-        };
-    }
-
-    /// <summary>
-    /// Called on managed module loads. Re-enumerates ICorDebug modules and tries
-    /// to bind any pending managed breakpoints against newly loaded assemblies.
-    /// </summary>
-    private void TryBindManagedBreakpointsOnModuleLoad(NativeDebuggerModel model)
-    {
-        try
-        {
-            var resolved = _managedDebugger.OnModuleLoad(model);
-            foreach (var bp in resolved)
-            {
-                _log.LogInfo(_logStore, $"Managed bp bound on module load: id={bp.Id} line={bp.Line}");
-                _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
-                {
-                    Reason = "changed",
-                    Breakpoint = bp,
-                });
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.LogInfo(_logStore, $"TryBindManagedBreakpointsOnModuleLoad failed: {ex.Message}");
-        }
-    }
-
     private void QueueStep(NativeDebuggerModel model, uint stepKind)
     {
         model.Stepping = true;
@@ -741,7 +616,7 @@ internal sealed class NativeDebuggerService(
         _cachedStackTraceResult = null;
         model.Commands.Add(() =>
         {
-            RemoveTransientManagedBreakpoints(model);
+            _managedDebugger.RemoveTransientManagedBreakpoints(model);
             Check(model.Control.SetExecutionStatus(stepKind));
         });
     }
@@ -1044,7 +919,7 @@ internal sealed class NativeDebuggerService(
 
         // Merge managed frame info from ClrMD.
         if (model.ManagedInitialized)
-            MergeManagedFrames(model, result);
+            _managedDebugger.MergeManagedFrames(model, result);
 
         _cachedStackTraceResult = result;
         return result;
@@ -1052,56 +927,6 @@ internal sealed class NativeDebuggerService(
         finally
         {
             Marshal.FreeHGlobal(buf);
-        }
-    }
-
-    private void MergeManagedFrames(NativeDebuggerModel model, StackFrame[] nativeFrames)
-    {
-        var managedFrames = _managedDebugger.GetManagedStackFrames(model);
-        if (managedFrames.Length == 0)
-            return;
-
-        // ClrMD GetManagedStackFrames returns frames with sequential IDs starting at 1.
-        // We stored the IP in the frame temporarily via the managed service. Instead,
-        // we match by walking both stacks: for each native frame without source info
-        // that looks like managed code, try to find a managed frame with the same IP.
-
-        // Build a set of managed frame IPs for lookup.
-        // The managed frames use the same IPs as the native stack since both read
-        // the physical stack. Store managed info keyed by position for sequential match.
-
-        // Best-effort merge: for each native frame without source info, if the
-        // next managed frame has a name, overlay it.
-        int managedIdx = 0;
-        for (int i = 0; i < nativeFrames.Length && managedIdx < managedFrames.Length; i++)
-        {
-            var nf = nativeFrames[i];
-
-            // Skip frames that already resolved to native source.
-            if (nf.Source != null)
-                continue;
-
-            // Check if this looks like a JIT-compiled or CLR infrastructure frame.
-            var name = nf.Name ?? "";
-            bool looksManaged = name.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-                || name.Contains("coreclr!", StringComparison.OrdinalIgnoreCase)
-                || name.Contains("clrjit!", StringComparison.OrdinalIgnoreCase)
-                || name.Contains("clr!", StringComparison.OrdinalIgnoreCase);
-
-            if (!looksManaged)
-                continue;
-
-            // Overlay with the next managed frame.
-            var mf = managedFrames[managedIdx++];
-            nativeFrames[i] = new StackFrame
-            {
-                Id = nf.Id,
-                Name = mf.Name,
-                Source = mf.Source,
-                Line = mf.Line,
-                Column = 0,
-            };
-            _log.LogInfo(_logStore, $"  Merged managed frame into slot {i}: {mf.Name}");
         }
     }
 

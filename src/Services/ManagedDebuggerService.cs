@@ -20,11 +20,15 @@ namespace MixDbg.Services;
 internal sealed class ManagedDebuggerService(
     ILoggingService log,
     LogStore logStore,
-    ISourceFileService sourceFiles) : IManagedDebugger
+    ISourceFileService sourceFiles,
+    IDapServer server,
+    DapServerModel transport) : IManagedDebugger
 {
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
     private readonly ISourceFileService _sourceFiles = sourceFiles;
+    private readonly IDapServer _server = server;
+    private readonly DapServerModel _transport = transport;
     private IntPtr _dacHandle;
 
     public bool IsInitialized(NativeDebuggerModel model) => model.ManagedInitialized;
@@ -1245,5 +1249,155 @@ internal sealed class ManagedDebuggerService(
         {
             Marshal.Release(pDataTarget);
         }
+    }
+
+    // ── Methods moved from NativeDebuggerService ────────────────────
+
+    public void TryInitializeManaged(NativeDebuggerModel model)
+    {
+        _log.LogInfo(_logStore, "Initializing managed debugging (CLR detected)...");
+        if (InitializeRuntime(model))
+        {
+            // Apply any managed breakpoints that were pending before CLR loaded.
+            foreach (var pending in model.PendingManagedBreakpoints)
+            {
+                var bps = SetManagedBreakpoints(
+                    model, pending.Source.Path!, pending.Breakpoints);
+                foreach (var bp in bps)
+                {
+                    _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
+                    {
+                        Reason = "changed",
+                        Breakpoint = bp,
+                    });
+                }
+            }
+            model.PendingManagedBreakpoints.Clear();
+            _log.LogInfo(_logStore, "Managed debugging initialized (ICorDebug V4)");
+
+            // Start polling for deferred managed breakpoint resolution.
+            // Skip when profiler is connected — profiler JIT notifications are real-time
+            // and don't starve the WPF UI thread like the 2s SetInterrupt polling does.
+            if (model.DeferredManagedBreakpoints.Count > 0 && model.ProfilerPipe == null)
+                StartDeferredBreakpointPoller(model);
+        }
+    }
+
+    public void TryBindManagedBreakpointsOnModuleLoad(NativeDebuggerModel model)
+    {
+        try
+        {
+            var resolved = OnModuleLoad(model);
+            foreach (var bp in resolved)
+            {
+                _log.LogInfo(_logStore, $"Managed bp bound on module load: id={bp.Id} line={bp.Line}");
+                _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
+                {
+                    Reason = "changed",
+                    Breakpoint = bp,
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogInfo(_logStore, $"TryBindManagedBreakpointsOnModuleLoad failed: {ex.Message}");
+        }
+    }
+
+    public void RemoveTransientManagedBreakpoints(NativeDebuggerModel model)
+    {
+        // Only remove BPs when using enter/leave hooks (BPs are transient per-call).
+        // With JIT-blocking fallback, BPs are permanent and must persist.
+        if (!model.ProfilerHooksActive || model.ManagedBreakpointIds.Count == 0)
+            return;
+
+        var idsToRemove = new List<uint>(model.ManagedBreakpointIds);
+        foreach (var hwBpId in idsToRemove)
+        {
+            int hr = model.Control.GetBreakpointById(hwBpId, out var hwBp);
+            if (hr >= 0)
+            {
+                model.Control.RemoveBreakpoint(hwBp);
+                _log.LogInfo(_logStore, $"Removed transient managed hw bp #{hwBpId}");
+            }
+            model.UserBreakpointIds.Remove(hwBpId);
+        }
+        model.ManagedBreakpointIds.Clear();
+        model.ManagedBreakpointAddresses.Clear();
+
+        // Clear the key→id mappings for managed breakpoints.
+        var keysToRemove = model.BreakpointIds
+            .Where(kv => idsToRemove.Contains(kv.Value))
+            .Select(kv => kv.Key).ToList();
+        foreach (var key in keysToRemove)
+            model.BreakpointIds.Remove(key);
+    }
+
+    public void MergeManagedFrames(NativeDebuggerModel model, StackFrame[] nativeFrames)
+    {
+        var managedFrames = GetManagedStackFrames(model);
+        if (managedFrames.Length == 0)
+            return;
+
+        // Best-effort merge: for each native frame without source info, if the
+        // next managed frame has a name, overlay it.
+        int managedIdx = 0;
+        for (int i = 0; i < nativeFrames.Length && managedIdx < managedFrames.Length; i++)
+        {
+            var nf = nativeFrames[i];
+
+            // Skip frames that already resolved to native source.
+            if (nf.Source != null)
+                continue;
+
+            // Check if this looks like a JIT-compiled or CLR infrastructure frame.
+            var name = nf.Name ?? "";
+            bool looksManaged = name.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("coreclr!", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("clrjit!", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("clr!", StringComparison.OrdinalIgnoreCase);
+
+            if (!looksManaged)
+                continue;
+
+            // Overlay with the next managed frame.
+            var mf = managedFrames[managedIdx++];
+            nativeFrames[i] = new StackFrame
+            {
+                Id = nf.Id,
+                Name = mf.Name,
+                Source = mf.Source,
+                Line = mf.Line,
+                Column = 0,
+            };
+            _log.LogInfo(_logStore, $"  Merged managed frame into slot {i}: {mf.Name}");
+        }
+    }
+
+    public void StartDeferredBreakpointPoller(NativeDebuggerModel model)
+    {
+        _log.LogInfo(_logStore, $"Starting deferred BP poller ({model.DeferredManagedBreakpoints.Count} deferred)");
+        var timer = new System.Threading.Timer(_ =>
+        {
+            if (model.Terminated || model.DeferredManagedBreakpoints.Count == 0)
+                return;
+            try
+            {
+                model.Control.SetInterrupt(0); // DEBUG_INTERRUPT_ACTIVE
+            }
+            catch { }
+        }, null, 2000, 2000);
+
+        // Store the timer so it can be disposed.
+        model.DisposeAction = () =>
+        {
+            timer.Dispose();
+            model.Terminated = true;
+            model.Commands.CompleteAdding();
+            model.EngineThread?.Join(3000);
+            model.Commands.Dispose();
+            model.Stopped.Dispose();
+            model.EngineReady.Dispose();
+        };
     }
 }
