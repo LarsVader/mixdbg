@@ -494,6 +494,15 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         DebugSessionModel sessionModel = provider.GetRequiredService<DebugSessionModel>();
 
         dispatcher.Run();
+
+        // Drain and execute any queued engine commands (normally consumed by the engine thread).
+        if (sessionModel.Engine is NativeDebuggerModel engineModel)
+        {
+            engineModel.Commands.CompleteAdding();
+            foreach (Action command in engineModel.Commands.GetConsumingEnumerable())
+                command();
+        }
+
         sessionModel.Dispose();
 
         ParseOutput();
