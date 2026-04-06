@@ -426,106 +426,19 @@ internal sealed class NativeDebuggerService(
                     continue;
                 }
 
-                // Process JIT notifications from the CLR profiler pipe.
-                // JIT notifications: set hardware BP at exact line on first JIT.
-                // Works with both hooks-active and fallback modes.
-                if (model.DeferredManagedBreakpoints.Count > 0 && !model.JitNotifications.IsEmpty)
-                {
-                    try
-                    {
-                        var jitResolved = _managedDebugger.HandleJitNotifications(model);
-                        foreach (var bp in jitResolved)
-                        {
-                            _log.LogInfo(_logStore, $"Profiler JIT bp resolved: id={bp.Id} verified={bp.Verified}");
-                            _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
-                            {
-                                Reason = "changed",
-                                Breakpoint = bp,
-                            });
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.LogInfo(_logStore, $"HandleJitNotifications failed: {ex.Message}");
-                    }
-                }
+                // Process JIT notifications and resolve deferred managed breakpoints.
+                _managedDebugger.ProcessPendingManagedBreakpoints(model);
 
-                // Fallback: try to resolve deferred managed breakpoints via DAC/XCLRData.
-                // Skip when hooks are active — deferred BPs are consumed by ENTER notifications.
-                if (!model.ProfilerHooksActive &&
-                    model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
+                // Handle ENTER notification from profiler — set transient BP, ACK, auto-continue.
+                if (_managedDebugger.HandleEnterBreakpoint(model))
                 {
-                    try
-                    {
-                        var resolved = _managedDebugger.TryResolveDeferredBreakpoints(model);
-                        foreach (var bp in resolved)
-                        {
-                            _log.LogInfo(_logStore, $"Deferred managed bp resolved: id={bp.Id} verified={bp.Verified}");
-                            _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
-                            {
-                                Reason = "changed",
-                                Breakpoint = bp,
-                            });
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.LogInfo(_logStore, $"TryResolveDeferredBreakpoints failed: {ex.Message}");
-                    }
-                }
-
-                // After configurationDone: determine stop reason.
-                string? reason = null;
-
-                // With enter/leave hooks: ENTER freezes the thread before the method body.
-                // Set a transient hardware BP at the exact breakpointed LINE, then resume.
-                // The method runs and hits the BP at the correct source location.
-                // With enter hooks: the profiler disabled hooks and is blocking.
-                // Set transient hardware BP at the resolved line address, ACK,
-                // and auto-continue. The method runs without hooks → BP fires at the line.
-                // The profiler re-enables hooks after ACK.
-                if (model.ProfilerHooksActive && model.PendingEnterBreakpoint)
-                {
-                    model.PendingEnterBreakpoint = false;
-                    // Find the matching deferred BP and compute exact native address
-                    // from the IL-to-native mapping (resolves breakpoint line → native offset).
-                    var bpKey = $"{model.EnterBreakpointAssembly}:{model.EnterBreakpointToken:X8}";
-                    bool matched = false;
-                    foreach (var deferred in model.DeferredManagedBreakpoints)
-                    {
-                        if (deferred.MethodToken == model.EnterBreakpointToken &&
-                            deferred.AssemblyName != null &&
-                            deferred.AssemblyName.Equals(model.EnterBreakpointAssembly, StringComparison.OrdinalIgnoreCase))
-                        {
-                            // Use IL-to-native mapping to get the exact address for the BP line.
-                            ulong addr = model.EnterBreakpointAddress; // fallback: body entry
-                            if (model.JitMethodMappings.TryGetValue(bpKey, out var mapping))
-                            {
-                                addr = mapping.GetNativeAddress(deferred.ILOffset);
-                                _log.LogInfo(_logStore,
-                                    $"  ENTER: IL offset {deferred.ILOffset} -> native 0x{addr:X}");
-                            }
-                            _managedDebugger.SetTransientBreakpoint(model, addr, deferred.FilePath, deferred.Line);
-                            _log.LogInfo(_logStore, $"  ENTER: transient hw BP at 0x{addr:X} for {deferred.FilePath}:{deferred.Line}");
-                            matched = true;
-                            break;
-                        }
-                    }
-                    // ACK unblocks the profiler (hooks disabled during method body).
-                    model.ProfilerAckEvent?.Set();
-                    if (!matched)
-                    {
-                        // Non-BP method from assembly-level watch — re-enable hooks
-                        // immediately so the next method call also fires ENTER.
-                        _log.LogInfo(_logStore, $"  ENTER: no match for token=0x{model.EnterBreakpointToken:X8} — rehooking");
-                        model.ProfilerRehookEvent?.Set();
-                    }
-                    // Matched: hooks stay disabled until user continues (hw BP fires first).
                     model.Stopped.Reset();
                     model.Control.SetExecutionStatus(DebugStatus.Go);
                     continue;
                 }
 
+                // After configurationDone: determine stop reason.
+                string? reason = null;
                 if (model.HitUserBreakpoint)
                 {
                     model.HitUserBreakpoint = false;

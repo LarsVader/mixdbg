@@ -117,4 +117,18 @@ public interface IManagedDebugger
     /// managed breakpoints can be resolved after JIT compilation.
     /// </summary>
     void StartDeferredBreakpointPoller(NativeDebuggerModel model);
+
+    /// <summary>
+    /// Processes pending JIT notifications and attempts to resolve deferred managed
+    /// breakpoints. Sends DAP breakpoint events for each resolved breakpoint.
+    /// Called from the engine loop on each stop.
+    /// </summary>
+    void ProcessPendingManagedBreakpoints(NativeDebuggerModel model);
+
+    /// <summary>
+    /// Handles a pending ENTER notification from the profiler. Sets a transient hardware
+    /// breakpoint at the exact source line, ACKs the profiler, and resumes execution.
+    /// Returns <c>true</c> if an ENTER was handled (caller should auto-continue).
+    /// </summary>
+    bool HandleEnterBreakpoint(NativeDebuggerModel model);
 }

@@ -1400,4 +1400,95 @@ internal sealed class ManagedDebuggerService(
             model.EngineReady.Dispose();
         };
     }
+
+    public void ProcessPendingManagedBreakpoints(NativeDebuggerModel model)
+    {
+        // Process JIT notifications from the CLR profiler pipe.
+        if (model.DeferredManagedBreakpoints.Count > 0 && !model.JitNotifications.IsEmpty)
+        {
+            try
+            {
+                var jitResolved = HandleJitNotifications(model);
+                foreach (var bp in jitResolved)
+                {
+                    _log.LogInfo(_logStore, $"Profiler JIT bp resolved: id={bp.Id} verified={bp.Verified}");
+                    _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
+                    {
+                        Reason = "changed",
+                        Breakpoint = bp,
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogInfo(_logStore, $"HandleJitNotifications failed: {ex.Message}");
+            }
+        }
+
+        // Fallback: try to resolve deferred managed breakpoints via DAC/XCLRData.
+        // Skip when hooks are active — deferred BPs are consumed by ENTER notifications.
+        if (!model.ProfilerHooksActive &&
+            model.ManagedInitialized && model.DeferredManagedBreakpoints.Count > 0)
+        {
+            try
+            {
+                var resolved = TryResolveDeferredBreakpoints(model);
+                foreach (var bp in resolved)
+                {
+                    _log.LogInfo(_logStore, $"Deferred managed bp resolved: id={bp.Id} verified={bp.Verified}");
+                    _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
+                    {
+                        Reason = "changed",
+                        Breakpoint = bp,
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogInfo(_logStore, $"TryResolveDeferredBreakpoints failed: {ex.Message}");
+            }
+        }
+    }
+
+    public bool HandleEnterBreakpoint(NativeDebuggerModel model)
+    {
+        if (!model.ProfilerHooksActive || !model.PendingEnterBreakpoint)
+            return false;
+
+        model.PendingEnterBreakpoint = false;
+        // Find the matching deferred BP and compute exact native address
+        // from the IL-to-native mapping (resolves breakpoint line → native offset).
+        var bpKey = $"{model.EnterBreakpointAssembly}:{model.EnterBreakpointToken:X8}";
+        bool matched = false;
+        foreach (var deferred in model.DeferredManagedBreakpoints)
+        {
+            if (deferred.MethodToken == model.EnterBreakpointToken &&
+                deferred.AssemblyName != null &&
+                deferred.AssemblyName.Equals(model.EnterBreakpointAssembly, StringComparison.OrdinalIgnoreCase))
+            {
+                // Use IL-to-native mapping to get the exact address for the BP line.
+                ulong addr = model.EnterBreakpointAddress; // fallback: body entry
+                if (model.JitMethodMappings.TryGetValue(bpKey, out var mapping))
+                {
+                    addr = mapping.GetNativeAddress(deferred.ILOffset);
+                    _log.LogInfo(_logStore,
+                        $"  ENTER: IL offset {deferred.ILOffset} -> native 0x{addr:X}");
+                }
+                SetTransientBreakpoint(model, addr, deferred.FilePath, deferred.Line);
+                _log.LogInfo(_logStore, $"  ENTER: transient hw BP at 0x{addr:X} for {deferred.FilePath}:{deferred.Line}");
+                matched = true;
+                break;
+            }
+        }
+        // ACK unblocks the profiler (hooks disabled during method body).
+        model.ProfilerAckEvent?.Set();
+        if (!matched)
+        {
+            // Non-BP method from assembly-level watch — re-enable hooks
+            // immediately so the next method call also fires ENTER.
+            _log.LogInfo(_logStore, $"  ENTER: no match for token=0x{model.EnterBreakpointToken:X8} — rehooking");
+            model.ProfilerRehookEvent?.Set();
+        }
+        return true;
+    }
 }
