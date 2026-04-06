@@ -1,7 +1,9 @@
 using MixDbg.Models;
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Breakpoints;
+using MixDbg.Models.DapMessages.Inspection;
+using MixDbg.Models.DapMessages.Protocol;
 
-namespace MixDbg.Services;
+namespace MixDbg.Services.Interfaces;
 
 /// <summary>
 /// Stateless managed debugging service using ICorDebug V4

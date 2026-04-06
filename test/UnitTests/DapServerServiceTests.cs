@@ -2,7 +2,9 @@ using System.Text;
 using System.Text.Json;
 
 using MixDbg.Models;
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Events;
+using MixDbg.Models.DapMessages.Initialize;
+using MixDbg.Models.DapMessages.Protocol;
 using MixDbg.Services;
 
 namespace MixDbg.Tests;

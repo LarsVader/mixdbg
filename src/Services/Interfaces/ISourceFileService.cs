@@ -1,4 +1,4 @@
-namespace MixDbg.Services;
+namespace MixDbg.Services.Interfaces;
 
 /// <summary>
 /// Determines whether a source file is debuggable via dbgeng (native C/C++)

@@ -1,4 +1,4 @@
-namespace MixDbg.Services;
+namespace MixDbg.Services.Interfaces;
 
 /// <summary>
 /// Reads portable PDB files to map between method tokens, IL offsets, and

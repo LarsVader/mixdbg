@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MixDbg.Engine.DbgEng;
+namespace MixDbg.Engine.DbgEng.Constants;
 
 /// <summary>
 /// Native DEBUG_SYMBOL_PARAMETERS struct from dbgeng.h.

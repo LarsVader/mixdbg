@@ -4,7 +4,14 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 
 using MixDbg.Models;
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Breakpoints;
+using MixDbg.Models.DapMessages.Events;
+using MixDbg.Models.DapMessages.Execution;
+using MixDbg.Models.DapMessages.Initialize;
+using MixDbg.Models.DapMessages.Inspection;
+using MixDbg.Models.DapMessages.Lifecycle;
+using MixDbg.Models.DapMessages.Protocol;
+using MixDbg.Models.DapMessages.Threads;
 using MixDbg.Services;
 using MixDbg.Services.Interfaces;
 

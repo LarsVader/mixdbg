@@ -1,7 +1,9 @@
 using MixDbg.Models;
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Execution;
+using MixDbg.Models.DapMessages.Protocol;
 using MixDbg.Services;
 using MixDbg.Services.Handlers.Execution;
+using MixDbg.Services.Interfaces;
 
 using NSubstitute;
 

@@ -2,7 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 using MixDbg;
 using MixDbg.Models;
-using MixDbg.Services;
+using MixDbg.Services.Interfaces;
 
 // DAP adapters communicate over stdin/stdout.
 using Stream stdin = Console.OpenStandardInput();

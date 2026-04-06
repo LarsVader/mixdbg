@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace MixDbg.Models.Dap;
+namespace MixDbg.Models.DapMessages.Protocol;
 
 public record RequestMessage : ProtocolMessage
 {

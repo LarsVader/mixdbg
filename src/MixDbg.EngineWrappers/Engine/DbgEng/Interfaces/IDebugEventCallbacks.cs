@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MixDbg.Engine.DbgEng;
+namespace MixDbg.Engine.DbgEng.Interfaces;
 
 // GUID: 337be28b-5036-4d72-b6bf-c45fbb9f2eaa
 // We implement this interface to receive debug events.

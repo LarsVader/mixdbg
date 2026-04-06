@@ -1,4 +1,4 @@
-namespace MixDbg.Services;
+namespace MixDbg.Services.Interfaces;
 
 /// <summary>
 /// Stateless DAP request dispatcher. Routes incoming DAP commands to

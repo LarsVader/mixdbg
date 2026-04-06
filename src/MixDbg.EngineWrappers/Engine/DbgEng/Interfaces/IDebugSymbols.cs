@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MixDbg.Engine.DbgEng;
+namespace MixDbg.Engine.DbgEng.Interfaces;
 
 // GUID: 8c31e98c-983a-48a5-9016-6fe5d667a950
 

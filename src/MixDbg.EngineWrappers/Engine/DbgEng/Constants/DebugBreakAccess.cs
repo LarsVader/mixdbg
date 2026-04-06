@@ -1,4 +1,4 @@
-namespace MixDbg.Engine.DbgEng;
+namespace MixDbg.Engine.DbgEng.Constants;
 
 /// <summary>
 /// Access type flags for hardware (data/processor) breakpoints.

@@ -1,5 +1,7 @@
 using MixDbg.Models;
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Events;
+using MixDbg.Models.DapMessages.Initialize;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Services.Handlers.Initialize;
 

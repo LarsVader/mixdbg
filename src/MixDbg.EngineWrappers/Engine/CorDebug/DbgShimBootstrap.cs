@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 using ClrDebug;
 
-namespace MixDbg.Engine.Clr;
+namespace MixDbg.Engine.CorDebug;
 
 /// <summary>
 /// Bootstraps ICorDebug via dbgshim.dll. Handles process launch (suspended)

@@ -1,7 +1,8 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
 
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Breakpoints;
+using MixDbg.Models.DapMessages.Inspection;
 
 namespace MixDbg.Models;
 

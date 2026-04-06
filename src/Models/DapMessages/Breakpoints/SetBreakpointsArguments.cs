@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
 
+using MixDbg.Models.DapMessages.Protocol;
 using MixDbg.Models.Interfaces;
 
-namespace MixDbg.Models.Dap;
+namespace MixDbg.Models.DapMessages.Breakpoints;
 
 public record SetBreakpointsArguments : IDapMessageArguments
 {

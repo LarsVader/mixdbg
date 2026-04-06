@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 
 using MixDbg.Models;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Services;
 

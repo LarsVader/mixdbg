@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 using MixDbg.Services.Interfaces;
 
-namespace MixDbg.Models.Dap;
+namespace MixDbg.Models.DapMessages.Execution;
 
 public record ContinueResponseBody : IDapMessage
 {

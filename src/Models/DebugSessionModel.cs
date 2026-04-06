@@ -1,4 +1,4 @@
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Breakpoints;
 
 namespace MixDbg.Models;
 

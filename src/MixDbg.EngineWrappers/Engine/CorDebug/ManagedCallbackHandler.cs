@@ -1,6 +1,6 @@
 using ClrDebug;
 
-namespace MixDbg.Engine.Clr;
+namespace MixDbg.Engine.CorDebug;
 
 /// <summary>
 /// Wraps <see cref="CorDebugManagedCallback"/> from ClrDebug, subscribing to its

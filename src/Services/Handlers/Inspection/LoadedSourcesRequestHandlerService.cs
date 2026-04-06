@@ -1,4 +1,4 @@
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Protocol;
 
 namespace MixDbg.Services.Handlers.Inspection;
 

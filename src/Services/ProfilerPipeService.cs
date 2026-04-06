@@ -1,6 +1,7 @@
 using System.IO.Pipes;
 
 using MixDbg.Models;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Services;
 

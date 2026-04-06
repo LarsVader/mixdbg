@@ -1,6 +1,6 @@
 using MixDbg.Models;
 
-namespace MixDbg.Services;
+namespace MixDbg.Services.Interfaces;
 
 /// <summary>
 /// Stateless wrapper around the dbgeng COM interfaces. All mutable state lives

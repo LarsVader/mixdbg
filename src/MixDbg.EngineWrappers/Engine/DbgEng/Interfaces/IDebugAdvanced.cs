@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MixDbg.Engine.DbgEng;
+namespace MixDbg.Engine.DbgEng.Interfaces;
 
 /// <summary>
 /// Minimal COM interface for <c>IDebugAdvanced</c>. Exposes thread context

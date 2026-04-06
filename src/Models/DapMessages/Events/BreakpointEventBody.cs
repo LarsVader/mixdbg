@@ -1,6 +1,8 @@
 using System.Text.Json.Serialization;
 
-namespace MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Breakpoints;
+
+namespace MixDbg.Models.DapMessages.Events;
 
 public record BreakpointEventBody
 {

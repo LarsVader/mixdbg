@@ -3,7 +3,11 @@ using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 
 using MixDbg.Models;
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Breakpoints;
+using MixDbg.Models.DapMessages.Events;
+using MixDbg.Models.DapMessages.Inspection;
+using MixDbg.Models.DapMessages.Protocol;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Services;
 

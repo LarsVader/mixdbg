@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace MixDbg.Models.Dap;
+namespace MixDbg.Models.DapMessages.Breakpoints;
 
 public record SourceBreakpoint
 {

@@ -1,5 +1,7 @@
 using MixDbg.Models;
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Protocol;
+using MixDbg.Models.DapMessages.Threads;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Services.Handlers.Lifecycle;
 

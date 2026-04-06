@@ -1,6 +1,6 @@
 using MixDbg.Models;
 
-namespace MixDbg.Services;
+namespace MixDbg.Services.Interfaces;
 
 /// <summary>
 /// Stateless wrapper around ICorDebug V4 (piggybacked on the dbgeng session).

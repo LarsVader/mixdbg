@@ -1,4 +1,4 @@
-using MixDbg.Engine.DbgEng;
+using MixDbg.Engine.DbgEng.Interfaces;
 using MixDbg.Models;
 
 using NSubstitute;

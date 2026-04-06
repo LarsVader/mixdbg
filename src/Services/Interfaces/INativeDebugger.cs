@@ -1,7 +1,9 @@
 using MixDbg.Models;
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Breakpoints;
+using MixDbg.Models.DapMessages.Inspection;
+using MixDbg.Models.DapMessages.Threads;
 
-namespace MixDbg.Services;
+namespace MixDbg.Services.Interfaces;
 
 /// <summary>
 /// Stateless dbgeng wrapper service. All mutable state lives in

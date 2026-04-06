@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 
 using MixDbg.Models;
-using MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Protocol;
 using MixDbg.Services;
 using MixDbg.Services.Interfaces;
 

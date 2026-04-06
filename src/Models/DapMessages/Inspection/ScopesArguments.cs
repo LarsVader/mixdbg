@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 using MixDbg.Models.Interfaces;
 
-namespace MixDbg.Models.Dap;
+namespace MixDbg.Models.DapMessages.Inspection;
 
 public record ScopesArguments : IDapMessageArguments
 {

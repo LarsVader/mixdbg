@@ -1,3 +1,3 @@
-namespace MixDbg.Models.Dap;
+namespace MixDbg.Models.DapMessages.Events;
 
 public record InitializedEventBody;

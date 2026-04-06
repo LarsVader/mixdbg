@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 
 using MixDbg.Models;
 
-namespace MixDbg.Services;
+namespace MixDbg.Services.Interfaces;
 
 /// <summary>
 /// Stateless logging service. All mutable state lives in

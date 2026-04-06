@@ -1,4 +1,4 @@
-namespace MixDbg.Models.Dap;
+namespace MixDbg.Models.DapMessages.Protocol;
 
 /// <summary>
 /// Thrown by the disconnect handler to cleanly exit the dispatch loop.

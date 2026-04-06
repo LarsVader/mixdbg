@@ -1,6 +1,6 @@
 using MixDbg.Models;
 
-namespace MixDbg.Services;
+namespace MixDbg.Services.Interfaces;
 
 /// <summary>
 /// Manages the named pipe connection to the CLR profiler DLL running in the target process.

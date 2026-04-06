@@ -1,6 +1,8 @@
 using System.Text.Json.Serialization;
 
-namespace MixDbg.Models.Dap;
+using MixDbg.Models.DapMessages.Protocol;
+
+namespace MixDbg.Models.DapMessages.Inspection;
 
 public record StackFrame
 {

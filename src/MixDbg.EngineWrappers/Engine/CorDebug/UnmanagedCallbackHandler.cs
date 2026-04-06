@@ -2,7 +2,7 @@ using System.Reflection;
 
 using ClrDebug;
 
-namespace MixDbg.Engine.Clr;
+namespace MixDbg.Engine.CorDebug;
 
 /// <summary>
 /// Wraps <see cref="CorDebugUnmanagedCallback"/> from ClrDebug for receiving
