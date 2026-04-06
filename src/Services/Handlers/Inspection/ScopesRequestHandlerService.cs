@@ -1,0 +1,22 @@
+using MixDbg.Dap;
+using MixDbg.Models;
+
+namespace MixDbg.Services.Handlers.Inspection;
+
+/// <summary>
+/// Handles the DAP scopes request by returning locals/arguments for a stack frame.
+/// </summary>
+public class ScopesRequestHandlerService(
+        IDebugSession session,
+        DebugSessionModel sessionModel)
+    : DapHandlerServiceBase<ScopesResponseBody, ScopesArguments>
+{
+    public const string DapMessage = "scopes";
+
+    public override string Command => DapMessage;
+
+    public override ScopesResponseBody ExecuteInternal(ScopesArguments args)
+    {
+		return session.GetScopes(sessionModel, args);
+    }
+}

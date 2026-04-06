@@ -1,7 +1,7 @@
 using MixDbg.Dap;
 using MixDbg.Models;
 
-namespace MixDbg.Services.Handlers;
+namespace MixDbg.Services.Handlers.Breakpoints;
 
 public class SetBreakpointsRequestHandlerService(
         IDebugSession session,

@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Dap;
 
-public record EvaluateResponseBody
+public record EvaluateResponseBody : IDapMessage
 {
     [JsonPropertyName("result")]
     public string Result { get; set; } = "";

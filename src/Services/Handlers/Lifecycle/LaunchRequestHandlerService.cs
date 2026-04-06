@@ -1,7 +1,7 @@
 using MixDbg.Dap;
 using MixDbg.Models;
 
-namespace MixDbg.Services.Handlers;
+namespace MixDbg.Services.Handlers.Lifecycle;
 
 /// <summary>
 /// Handles the DAP launch request by starting a new debug target process.

@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using MixDbg.Models.Interfaces;
 
 namespace MixDbg.Dap;
 
-public record AttachRequestArguments
+public record AttachRequestArguments : IDapMessageArguments
 {
     [JsonPropertyName("pid")]
     public int? Pid { get; set; }

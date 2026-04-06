@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using MixDbg.Models.Interfaces;
 
 namespace MixDbg.Dap;
 
-public record StepArguments
+public record StepArguments : IDapMessageArguments
 {
     [JsonPropertyName("threadId")]
     public int ThreadId { get; set; }

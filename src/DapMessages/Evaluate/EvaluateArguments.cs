@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using MixDbg.Models.Interfaces;
 
 namespace MixDbg.Dap;
 
-public record EvaluateArguments
+public record EvaluateArguments : IDapMessageArguments
 {
     [JsonPropertyName("expression")]
     public string Expression { get; set; } = "";

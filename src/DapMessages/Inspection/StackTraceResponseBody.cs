@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Dap;
 
-public record StackTraceResponseBody
+public record StackTraceResponseBody : IDapMessage
 {
     [JsonPropertyName("stackFrames")]
     public StackFrame[] StackFrames { get; set; } = [];
