@@ -17,9 +17,11 @@ public class ScopesRequestHandlerService(
 
     public override ScopesResponseBody ExecuteInternal(ScopesArguments args)
     {
-		if (sessionModel.Engine == null)
+		if (sessionModel.Engine is not NativeDebuggerModel model)
 			return new ScopesResponseBody { Scopes = [] };
 
-		return new ScopesResponseBody { Scopes = nativeDebugger.GetScopes(sessionModel.Engine, args.FrameId) };
+		var scopes = model.QueueEngineQuery(
+			() => nativeDebugger.GetScopesOnEngine(model, args.FrameId));
+		return new ScopesResponseBody { Scopes = scopes };
     }
 }

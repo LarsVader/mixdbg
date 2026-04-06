@@ -1,3 +1,4 @@
+using MixDbg.Engine.DbgEng;
 using MixDbg.Models.Dap;
 using MixDbg.Models;
 
@@ -17,8 +18,13 @@ public class NextRequestHandlerService(
 
     public override void ExecuteInternal(StepArguments args)
     {
-		if (sessionModel.Engine != null)
-			nativeDebugger.StepOver(sessionModel.Engine);
+		if (sessionModel.Engine is NativeDebuggerModel model)
+		{
+			model.Stepping = true;
+			model.Variables.Clear();
+			model.CachedStackTraceResult = null;
+			model.Commands.Add(() => nativeDebugger.ExecuteStepOnEngine(model, DebugStatus.StepOver));
+		}
 		sessionModel.State = SessionState.Running;
     }
 }

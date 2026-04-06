@@ -114,6 +114,7 @@ public sealed class NativeDebuggerModel : IDisposable
     // Variable inspection — invalidated on continue/step.
     internal VariableStore Variables { get; } = new();
     internal DEBUG_STACK_FRAME[] CachedStackFrames { get; set; } = [];
+    internal StackFrame[]? CachedStackTraceResult { get; set; }
 
     // Signaled when the target is stopped and ready for commands.
     internal ManualResetEventSlim Stopped { get; } = new(false);
@@ -138,6 +139,21 @@ public sealed class NativeDebuggerModel : IDisposable
     internal Action? DisposeAction { get; set; }
 
     public bool IsTargetStopped => Stopped.IsSet;
+
+    /// <summary>
+    /// Queues a query on the engine thread and blocks until it completes.
+    /// Used by handlers to marshal calls that return a result to the engine thread.
+    /// </summary>
+    public T QueueEngineQuery<T>(Func<T> engineCall)
+    {
+        var tcs = new TaskCompletionSource<T>();
+        Commands.Add(() =>
+        {
+            try { tcs.SetResult(engineCall()); }
+            catch (Exception ex) { tcs.SetException(ex); }
+        });
+        return tcs.Task.Result;
+    }
 
     public void Dispose() => DisposeAction?.Invoke();
 }

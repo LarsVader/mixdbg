@@ -9,14 +9,14 @@ namespace MixDbg.Tests.Handlers.Lifecycle;
 public sealed class LaunchRequestHandlerServiceTests
 {
     [Fact]
-    public void Execute_WhenCalled_CreatesEngineAndLaunches()
+    public void Execute_WhenCalled_CreatesEngineAndStartsThread()
     {
         GivenLaunchArgs("C:/app/test.exe", cwd: "C:/app");
 
         WhenExecuting();
 
         ThenEngineWasCreated();
-        ThenNativeDebuggerLaunchWasCalled();
+        ThenStartEngineThreadWasCalled();
         ThenSessionStateIs(SessionState.Running);
     }
 
@@ -27,18 +27,19 @@ public sealed class LaunchRequestHandlerServiceTests
 
         WhenExecuting();
 
-        ThenNativeDebuggerLaunchWasCalledWithCwd("C:/app/bin");
+        Assert.Equal("C:\\app\\bin", _engineModel.LaunchCwd);
     }
 
     [Fact]
-    public void Execute_WhenSymbolPathProvided_JoinsAndPasses()
+    public void Execute_WhenSymbolPathProvided_JoinsAndSetsOnModel()
     {
         GivenLaunchArgsWithSymbolPath("C:/app/test.exe", ["C:/symbols", "C:/other"]);
 
         WhenExecuting();
 
-        ThenNativeDebuggerLaunchWasCalledWithSymbolPathContaining("C:/symbols");
-        ThenNativeDebuggerLaunchWasCalledWithSymbolPathContaining("C:/other");
+        Assert.NotNull(_engineModel.SymbolPath);
+        Assert.Contains("C:/symbols", _engineModel.SymbolPath);
+        Assert.Contains("C:/other", _engineModel.SymbolPath);
     }
 
     #region Given
@@ -76,28 +77,9 @@ public sealed class LaunchRequestHandlerServiceTests
         _engine.Received(1).CreateModel();
     }
 
-    private void ThenNativeDebuggerLaunchWasCalled()
+    private void ThenStartEngineThreadWasCalled()
     {
-        _engine.Received(1).Launch(
-            Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string[]?>());
-    }
-
-    private void ThenNativeDebuggerLaunchWasCalledWithCwd(string expected)
-    {
-        _engine.Received(1).Launch(
-            Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(),
-            Arg.Is<string?>(s => s != null && Path.GetFullPath(s) == Path.GetFullPath(expected)),
-            Arg.Any<string?>(), Arg.Any<string[]?>());
-    }
-
-    private void ThenNativeDebuggerLaunchWasCalledWithSymbolPathContaining(string expected)
-    {
-        _engine.Received(1).Launch(
-            Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(),
-            Arg.Any<string?>(),
-            Arg.Is<string?>(s => s != null && s.Contains(expected)),
-            Arg.Any<string[]?>());
+        _engine.Received(1).StartEngineThread(Arg.Any<NativeDebuggerModel>());
     }
 
     #endregion
@@ -113,6 +95,8 @@ public sealed class LaunchRequestHandlerServiceTests
     public LaunchRequestHandlerServiceTests()
     {
         _engine.CreateModel().Returns(_engineModel);
+        _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
+            .Do(ci => ci.ArgAt<NativeDebuggerModel>(0).EngineReady.Set());
         _testee = new LaunchRequestHandlerService(_engine, _session);
     }
 

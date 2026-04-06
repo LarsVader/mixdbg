@@ -16,7 +16,9 @@ public sealed class AttachRequestHandlerServiceTests
         WhenExecuting();
 
         ThenEngineWasCreated();
-        ThenNativeDebuggerAttachWasCalledWithPid(1234);
+        ThenStartEngineThreadWasCalled();
+        Assert.True(_engineModel.IsAttach);
+        Assert.Equal(1234u, _engineModel.AttachPid);
         ThenSessionStateIs(SessionState.Running);
     }
 
@@ -51,11 +53,8 @@ public sealed class AttachRequestHandlerServiceTests
 
     private void ThenSessionStateIs(SessionState expected) => Assert.Equal(expected, _session.State);
     private void ThenEngineWasCreated() => _engine.Received(1).CreateModel();
-
-    private void ThenNativeDebuggerAttachWasCalledWithPid(uint expected)
-    {
-        _engine.Received(1).Attach(Arg.Any<NativeDebuggerModel>(), expected, Arg.Any<string?>());
-    }
+    private void ThenStartEngineThreadWasCalled() =>
+        _engine.Received(1).StartEngineThread(Arg.Any<NativeDebuggerModel>());
 
     #endregion
 
@@ -70,6 +69,8 @@ public sealed class AttachRequestHandlerServiceTests
     public AttachRequestHandlerServiceTests()
     {
         _engine.CreateModel().Returns(_engineModel);
+        _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
+            .Do(ci => ci.ArgAt<NativeDebuggerModel>(0).EngineReady.Set());
         _testee = new AttachRequestHandlerService(_engine, _session);
     }
 

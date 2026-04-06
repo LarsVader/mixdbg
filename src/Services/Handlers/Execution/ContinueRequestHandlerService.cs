@@ -7,6 +7,8 @@ namespace MixDbg.Services.Handlers.Execution;
 /// Handles the DAP continue request by resuming execution.
 /// </summary>
 public class ContinueRequestHandlerService(
+		ILoggingService log,
+		LogStore logStore,
         INativeDebugger nativeDebugger,
         DebugSessionModel sessionModel)
     : DapHandlerServiceBase<ContinueResponseBody, ContinueArguments>
@@ -17,9 +19,12 @@ public class ContinueRequestHandlerService(
 
     public override ContinueResponseBody ExecuteInternal(ContinueArguments args)
     {
-		if (sessionModel.Engine != null)
+		if (sessionModel.Engine is NativeDebuggerModel model)
 		{
-			nativeDebugger.Continue(sessionModel.Engine);
+			log.LogInfo(logStore, "Continue queued");
+			model.Variables.Clear();
+			model.CachedStackTraceResult = null;
+			model.Commands.Add(() => nativeDebugger.ExecuteContinueOnEngine(model));
 			sessionModel.State = SessionState.Running;
 		}
 		return new ContinueResponseBody { AllThreadsContinued = true };

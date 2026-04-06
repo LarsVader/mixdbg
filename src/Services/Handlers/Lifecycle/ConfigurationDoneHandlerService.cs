@@ -7,6 +7,8 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 /// Handles the DAP configurationDone request by applying pending breakpoints and resuming.
 /// </summary>
 public class ConfigurationDoneHandlerService(
+		ILoggingService log,
+		LogStore logStore,
         INativeDebugger nativeDebugger,
         IDapServer server,
         DapServerModel transport,
@@ -21,13 +23,13 @@ public class ConfigurationDoneHandlerService(
     {
 		sessionModel.State = SessionState.Configured;
 
-		if (sessionModel.Engine != null)
+		if (sessionModel.Engine is NativeDebuggerModel model)
 		{
 			// Apply breakpoints that arrived before launch.
 			foreach (var pending in sessionModel.PendingBreakpoints)
 			{
-				var bps = nativeDebugger.SetBreakpoints(
-					sessionModel.Engine, pending.Source.Path!, pending.Breakpoints);
+				var bps = model.QueueEngineQuery(
+					() => nativeDebugger.SetBreakpointsOnEngine(model, pending.Source.Path!, pending.Breakpoints));
 				foreach (var bp in bps)
 				{
 					server.SendEvent(transport, "breakpoint", new BreakpointEventBody
@@ -39,7 +41,10 @@ public class ConfigurationDoneHandlerService(
 			}
 			sessionModel.PendingBreakpoints.Clear();
 
-			nativeDebugger.Continue(sessionModel.Engine);
+			log.LogInfo(logStore, "Continue queued");
+			model.Variables.Clear();
+			model.CachedStackTraceResult = null;
+			model.Commands.Add(() => nativeDebugger.ExecuteContinueOnEngine(model));
 			sessionModel.State = SessionState.Running;
 		}
     }

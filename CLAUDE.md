@@ -112,7 +112,7 @@ test/
 
 Three threads, one command queue:
 
-- **Main thread**: reads DAP requests from stdin, dispatches to handlers. Handlers that need engine data queue a command + `TaskCompletionSource` and block.
+- **Main thread**: reads DAP requests from stdin, dispatches to handlers. Handlers own the dispatching to the engine thread: fire-and-forget via `model.Commands.Add(() => ...)`, or synchronous via `model.QueueEngineQuery(() => ...)` which queues a command + `TaskCompletionSource` and blocks until the engine thread executes it.
 - **Engine thread**: all dbgeng COM calls happen here (thread affinity required). Runs `WaitForEvent` loop. When target stops, processes queued commands, sends DAP events via `IDapServer`.
 - **Profiler reader thread**: reads JIT notifications from the named pipe connected to `MixDbgProfiler.dll` (running in-process in the target). Enqueues `JitNotification` records and calls `SetInterrupt` to wake the engine thread when a notification matches a deferred breakpoint.
 
@@ -142,7 +142,7 @@ Current settings: `Breakpoint` → BREAK, `CreateProcess` → BREAK, `ExitProces
 
 ### Thread Affinity
 
-ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace`, etc.) MUST happen on the engine thread. The `Launch`/`Attach` service methods save parameters in `NativeDebuggerModel` and signal the engine thread, which does the actual COM work. Main thread blocks on `model.EngineReady` until init completes.
+ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace`, etc.) MUST happen on the engine thread. `NativeDebuggerService` exposes only engine-thread methods (suffixed `OnEngine`) and thread-safe methods (`Break`, `Terminate`, `Detach`). Handlers set launch/attach parameters on `NativeDebuggerModel`, call `StartEngineThread`, and block on `model.EngineReady` until init completes. For engine queries, handlers use `model.QueueEngineQuery(() => nativeDebugger.GetStackTraceOnEngine(model, ...))` which marshals the call to the engine thread.
 
 ### Process Startup Sequence
 

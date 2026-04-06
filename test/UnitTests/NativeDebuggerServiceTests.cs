@@ -29,32 +29,32 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         ThenCreatedModelIsTerminated();
     }
 
-    // ── Continue ───────────────────────────────────────────
+    // ── ExecuteContinueOnEngine ──────────────────────────────
 
     [Fact]
-    public void Continue_WhenCalled_QueuesCommand()
+    public void ExecuteContinueOnEngine_WhenCalled_SetsConfigDone()
     {
-        WhenContinuing();
-
-        ThenCommandWasQueued();
-    }
-
-    [Fact]
-    public void Continue_WhenCommandExecuted_SetsConfigDone()
-    {
-        WhenContinuing();
-        WhenDrainingOneCommand();
+        WhenExecutingContinueOnEngine();
 
         ThenConfigDoneIsTrue();
     }
 
     [Fact]
-    public void Continue_WhenCommandExecuted_CallsSetExecutionStatusGo()
+    public void ExecuteContinueOnEngine_WhenCalled_CallsSetExecutionStatusGo()
     {
-        WhenContinuing();
-        WhenDrainingOneCommand();
+        WhenExecutingContinueOnEngine();
 
         ThenSetExecutionStatusWasCalledWith(DebugStatus.Go);
+    }
+
+    [Fact]
+    public void ExecuteContinueOnEngine_WhenCalled_ClearsCachedStackTrace()
+    {
+        _model.CachedStackTraceResult = [new StackFrame { Id = 1 }];
+
+        WhenExecutingContinueOnEngine();
+
+        Assert.Null(_model.CachedStackTraceResult);
     }
 
     // ── Break ──────────────────────────────────────────────
@@ -75,51 +75,30 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         ThenSetInterruptWasCalled();
     }
 
-    // ── StepOver ───────────────────────────────────────────
+    // ── ExecuteStepOnEngine ─────────────────────────────────
 
     [Fact]
-    public void StepOver_WhenCalled_SetsStepping()
+    public void ExecuteStepOnEngine_WhenStepOver_CallsSetExecutionStatusStepOver()
     {
-        WhenSteppingOver();
-
-        ThenSteppingIsTrue();
-    }
-
-    [Fact]
-    public void StepOver_WhenCommandExecuted_CallsSetExecutionStatusStepOver()
-    {
-        WhenSteppingOver();
-        WhenDrainingOneCommand();
+        WhenExecutingStepOnEngine(DebugStatus.StepOver);
 
         ThenSetExecutionStatusWasCalledWith(DebugStatus.StepOver);
     }
 
-    // ── StepInto ───────────────────────────────────────────
-
     [Fact]
-    public void StepInto_WhenCalled_SetsStepping()
+    public void ExecuteStepOnEngine_WhenStepInto_CallsSetExecutionStatusStepInto()
     {
-        WhenSteppingInto();
-
-        ThenSteppingIsTrue();
-    }
-
-    [Fact]
-    public void StepInto_WhenCommandExecuted_CallsSetExecutionStatusStepInto()
-    {
-        WhenSteppingInto();
-        WhenDrainingOneCommand();
+        WhenExecutingStepOnEngine(DebugStatus.StepInto);
 
         ThenSetExecutionStatusWasCalledWith(DebugStatus.StepInto);
     }
 
-    // ── StepOut ────────────────────────────────────────────
+    // ── ExecuteStepOutOnEngine ──────────────────────────────
 
     [Fact]
-    public void StepOut_WhenCommandExecuted_CallsExecuteGu()
+    public void ExecuteStepOutOnEngine_WhenCalled_CallsExecuteGu()
     {
-        WhenSteppingOut();
-        WhenDrainingOneCommand();
+        WhenExecutingStepOutOnEngine();
 
         ThenExecuteWasCalledWith("gu");
     }
@@ -194,25 +173,25 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         ThenEndSessionWasCalledWith(DebugEnd.ActiveDetach);
     }
 
-    // ── SetBreakpoints (managed file) ──────────────────────
+    // ── SetBreakpointsOnEngine (managed file) ──────────────
 
     [Fact]
-    public void SetBreakpoints_WhenManagedFile_ReturnsPendingVerifiedBreakpoints()
+    public void SetBreakpointsOnEngine_WhenManagedFile_ReturnsPendingVerifiedBreakpoints()
     {
         GivenSourceFileIsManaged(@"C:\src\Program.cs");
         GivenBreakpointRequest(@"C:\src\Program.cs", [10, 20]);
 
-        WhenSettingBreakpointsOnDrainThread();
+        WhenSettingBreakpointsOnEngine();
 
         ThenBreakpointResultCountIs(2);
         ThenAllBreakpointsAreVerified(true);
         ThenBreakpointsHaveMessage("Pending — managed debugger not yet initialized");
     }
 
-    // ── SetBreakpoints (native, offset resolved) ───────────
+    // ── SetBreakpointsOnEngine (native, offset resolved) ────
 
     [Fact]
-    public void SetBreakpoints_WhenOffsetResolved_CreatesDirectBreakpoint()
+    public void SetBreakpointsOnEngine_WhenOffsetResolved_CreatesDirectBreakpoint()
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenGetOffsetByLineSucceeds(@"C:\src\main.cpp", line: 42, offset: 0x1000);
@@ -220,7 +199,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         GivenGetLineByOffsetSucceeds(offset: 0x1000, resolvedLine: 42);
         GivenBreakpointRequest(@"C:\src\main.cpp", [42]);
 
-        WhenSettingBreakpointsOnDrainThread();
+        WhenSettingBreakpointsOnEngine();
 
         ThenBreakpointResultCountIs(1);
         ThenBreakpointAtIndexIsVerified(0, true);
@@ -230,7 +209,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void SetBreakpoints_WhenOffsetResolved_SetsOffsetAndEnablesBreakpoint()
+    public void SetBreakpointsOnEngine_WhenOffsetResolved_SetsOffsetAndEnablesBreakpoint()
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenGetOffsetByLineSucceeds(@"C:\src\main.cpp", line: 10, offset: 0x2000);
@@ -238,23 +217,23 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         GivenGetLineByOffsetSucceeds(offset: 0x2000, resolvedLine: 10);
         GivenBreakpointRequest(@"C:\src\main.cpp", [10]);
 
-        WhenSettingBreakpointsOnDrainThread();
+        WhenSettingBreakpointsOnEngine();
 
         ThenBreakpointSetOffsetWasCalled(0x2000);
         ThenBreakpointAddFlagsWasCalled(DebugBreakpointFlag.Enabled);
     }
 
-    // ── SetBreakpoints (native, deferred via bu) ───────────
+    // ── SetBreakpointsOnEngine (native, deferred via bu) ────
 
     [Fact]
-    public void SetBreakpoints_WhenOffsetFails_UsesDeferredBreakpoint()
+    public void SetBreakpointsOnEngine_WhenOffsetFails_UsesDeferredBreakpoint()
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenGetOffsetByLineFails(@"C:\src\main.cpp", line: 99);
         GivenBuCommandSucceeds(deferredBpId: 7);
         GivenBreakpointRequest(@"C:\src\main.cpp", [99]);
 
-        WhenSettingBreakpointsOnDrainThread();
+        WhenSettingBreakpointsOnEngine();
 
         ThenBreakpointResultCountIs(1);
         ThenBreakpointAtIndexIsVerified(0, true);
@@ -263,24 +242,24 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void SetBreakpoints_WhenBuCommandFails_ReturnsUnverified()
+    public void SetBreakpointsOnEngine_WhenBuCommandFails_ReturnsUnverified()
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenGetOffsetByLineFails(@"C:\src\main.cpp", line: 99);
         GivenBuCommandFails();
         GivenBreakpointRequest(@"C:\src\main.cpp", [99]);
 
-        WhenSettingBreakpointsOnDrainThread();
+        WhenSettingBreakpointsOnEngine();
 
         ThenBreakpointResultCountIs(1);
         ThenBreakpointAtIndexIsVerified(0, false);
         ThenBreakpointsHaveMessage("Could not resolve source line");
     }
 
-    // ── SetBreakpoints (removes old breakpoints) ───────────
+    // ── SetBreakpointsOnEngine (removes old breakpoints) ────
 
     [Fact]
-    public void SetBreakpoints_WhenCalledAgain_RemovesOldBreakpoints()
+    public void SetBreakpointsOnEngine_WhenCalledAgain_RemovesOldBreakpoints()
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenExistingBreakpointForFile(@"C:\src\main.cpp", line: 10, bpId: 3);
@@ -290,17 +269,17 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         GivenGetLineByOffsetSucceeds(offset: 0x3000, resolvedLine: 20);
         GivenBreakpointRequest(@"C:\src\main.cpp", [20]);
 
-        WhenSettingBreakpointsOnDrainThread();
+        WhenSettingBreakpointsOnEngine();
 
         ThenRemoveBreakpointWasCalled();
         ThenUserBreakpointIdsDoesNotContain(3);
         ThenUserBreakpointIdsContains(8);
     }
 
-    // ── SetBreakpoints (multiple breakpoints) ──────────────
+    // ── SetBreakpointsOnEngine (multiple breakpoints) ───────
 
     [Fact]
-    public void SetBreakpoints_WhenMultipleLines_ReturnsAllResults()
+    public void SetBreakpointsOnEngine_WhenMultipleLines_ReturnsAllResults()
     {
         GivenSourceFileIsNative(@"C:\src\main.cpp");
         GivenGetOffsetByLineSucceedsForMultiple(@"C:\src\main.cpp",
@@ -310,20 +289,20 @@ public sealed class NativeDebuggerServiceTests : IDisposable
             [(0x1000, 10), (0x2000, 20), (0x3000, 30)]);
         GivenBreakpointRequest(@"C:\src\main.cpp", [10, 20, 30]);
 
-        WhenSettingBreakpointsOnDrainThread();
+        WhenSettingBreakpointsOnEngine();
 
         ThenBreakpointResultCountIs(3);
         ThenAllBreakpointsAreVerified(true);
     }
 
-    // ── GetThreads ─────────────────────────────────────────
+    // ── GetThreadsOnEngine ──────────────────────────────────
 
     [Fact]
-    public void GetThreads_WhenThreadsExist_ReturnsThreadArray()
+    public void GetThreadsOnEngine_WhenThreadsExist_ReturnsThreadArray()
     {
         GivenThreadsExist(engineIds: [0, 1, 2], sysIds: [1000, 1001, 1002]);
 
-        WhenGettingThreadsOnDrainThread();
+        WhenGettingThreadsOnEngine();
 
         ThenThreadResultCountIs(3);
         ThenThreadAtIndexHasId(0, 0);
@@ -332,60 +311,60 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void GetThreads_WhenNoThreads_ReturnsDefaultThread()
+    public void GetThreadsOnEngine_WhenNoThreads_ReturnsDefaultThread()
     {
         GivenNoThreadsExist();
 
-        WhenGettingThreadsOnDrainThread();
+        WhenGettingThreadsOnEngine();
 
         ThenThreadResultCountIs(1);
         ThenThreadAtIndexNameContains(0, "Main Thread");
     }
 
-    // ── GetScopes ─────────────────────────────────────────
+    // ── GetScopesOnEngine ──────────────────────────────────
 
     [Fact]
-    public void GetScopes_WhenInvalidFrameId_ReturnsEmpty()
+    public void GetScopesOnEngine_WhenInvalidFrameId_ReturnsEmpty()
     {
         GivenCachedStackFrames(0);
 
-        WhenGettingScopesOnDrainThread(frameId: 99);
+        WhenGettingScopesOnEngine(frameId: 99);
 
         ThenScopeResultCountIs(0);
     }
 
     [Fact]
-    public void GetScopes_WhenValidFrame_CallsSetScope()
+    public void GetScopesOnEngine_WhenValidFrame_CallsSetScope()
     {
         GivenCachedStackFrames(2);
         GivenSetScopeSucceeds();
         GivenGetScopeSymbolGroupSucceeds(symbolCount: 3);
 
-        WhenGettingScopesOnDrainThread(frameId: 1);
+        WhenGettingScopesOnEngine(frameId: 1);
 
         ThenSetScopeWasCalled();
     }
 
     [Fact]
-    public void GetScopes_WhenSymbolGroupFails_ReturnsEmpty()
+    public void GetScopesOnEngine_WhenSymbolGroupFails_ReturnsEmpty()
     {
         GivenCachedStackFrames(1);
         GivenSetScopeSucceeds();
         GivenGetScopeSymbolGroupFails();
 
-        WhenGettingScopesOnDrainThread(frameId: 1);
+        WhenGettingScopesOnEngine(frameId: 1);
 
         ThenScopeResultCountIs(0);
     }
 
     [Fact]
-    public void GetScopes_WhenSymbolGroupHasSymbols_ReturnsLocalsScope()
+    public void GetScopesOnEngine_WhenSymbolGroupHasSymbols_ReturnsLocalsScope()
     {
         GivenCachedStackFrames(1);
         GivenSetScopeSucceeds();
         GivenGetScopeSymbolGroupSucceeds(symbolCount: 5);
 
-        WhenGettingScopesOnDrainThread(frameId: 1);
+        WhenGettingScopesOnEngine(frameId: 1);
 
         ThenScopeResultCountIs(1);
         ThenScopeAtIndexHasName(0, "Locals");
@@ -393,29 +372,29 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void GetScopes_WhenSymbolGroupIsEmpty_ReturnsEmpty()
+    public void GetScopesOnEngine_WhenSymbolGroupIsEmpty_ReturnsEmpty()
     {
         GivenCachedStackFrames(1);
         GivenSetScopeSucceeds();
         GivenGetScopeSymbolGroupSucceeds(symbolCount: 0);
 
-        WhenGettingScopesOnDrainThread(frameId: 1);
+        WhenGettingScopesOnEngine(frameId: 1);
 
         ThenScopeResultCountIs(0);
     }
 
-    // ── GetVariables ────────────────────────────────────────
+    // ── GetVariablesOnEngine ────────────────────────────────
 
     [Fact]
-    public void GetVariables_WhenUnknownRef_ReturnsEmpty()
+    public void GetVariablesOnEngine_WhenUnknownRef_ReturnsEmpty()
     {
-        WhenGettingVariablesOnDrainThread(variablesReference: 999);
+        WhenGettingVariablesOnEngine(variablesReference: 999);
 
         ThenVariableResultCountIs(0);
     }
 
     [Fact]
-    public void GetVariables_WhenValidRef_ReturnsSymbolsFromGroup()
+    public void GetVariablesOnEngine_WhenValidRef_ReturnsSymbolsFromGroup()
     {
         GivenCachedStackFrames(1);
         GivenSetScopeSucceeds();
@@ -424,8 +403,8 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         GivenSymbolGroupReturnsVariable(1, "y", "float", "3.14");
         GivenSymbolParametersWithNoChildren(2);
 
-        WhenGettingScopesOnDrainThread(frameId: 1);
-        WhenGettingVariablesOnDrainThread(variablesReference: _scopeResults![0].VariablesReference);
+        WhenGettingScopesOnEngine(frameId: 1);
+        WhenGettingVariablesOnEngine(variablesReference: _scopeResults![0].VariablesReference);
 
         ThenVariableResultCountIs(2);
         ThenVariableAtIndexHasName(0, "x");
@@ -436,7 +415,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void GetVariables_WhenSymbolHasSubElements_AllocatesChildReference()
+    public void GetVariablesOnEngine_WhenSymbolHasSubElements_AllocatesChildReference()
     {
         GivenCachedStackFrames(1);
         GivenSetScopeSucceeds();
@@ -445,69 +424,21 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         GivenSymbolParametersWithChildren(count: 1, subElements: 2);
         GivenExpandSymbolSucceeds(newTotal: 3);
 
-        WhenGettingScopesOnDrainThread(frameId: 1);
-        WhenGettingVariablesOnDrainThread(variablesReference: _scopeResults![0].VariablesReference);
+        WhenGettingScopesOnEngine(frameId: 1);
+        WhenGettingVariablesOnEngine(variablesReference: _scopeResults![0].VariablesReference);
 
         ThenVariableResultCountIs(1);
         ThenVariableAtIndexHasPositiveVariablesReference(0);
     }
 
-    // ── Continue clears variables ────────────────────────
+    // ── GetStoppedThreadIdOnEngine ──────────────────────────
 
     [Fact]
-    public void Continue_WhenCalled_ClearsVariableStore()
-    {
-        GivenVariableStoreHasEntries();
-
-        WhenContinuing();
-
-        ThenVariableStoreIsEmpty();
-    }
-
-    // ── StepOver clears variables ────────────────────────
-
-    [Fact]
-    public void StepOver_WhenCalled_ClearsVariableStore()
-    {
-        GivenVariableStoreHasEntries();
-
-        WhenSteppingOver();
-
-        ThenVariableStoreIsEmpty();
-    }
-
-    // ── StepInto clears variables ────────────────────────
-
-    [Fact]
-    public void StepInto_WhenCalled_ClearsVariableStore()
-    {
-        GivenVariableStoreHasEntries();
-
-        WhenSteppingInto();
-
-        ThenVariableStoreIsEmpty();
-    }
-
-    // ── StepOut clears variables ─────────────────────────
-
-    [Fact]
-    public void StepOut_WhenCalled_ClearsVariableStore()
-    {
-        GivenVariableStoreHasEntries();
-
-        WhenSteppingOut();
-
-        ThenVariableStoreIsEmpty();
-    }
-
-    // ── GetStoppedThreadId ─────────────────────────────────
-
-    [Fact]
-    public void GetStoppedThreadId_WhenCalled_ReturnsEventThread()
+    public void GetStoppedThreadIdOnEngine_WhenCalled_ReturnsEventThread()
     {
         GivenEventThreadId(42);
 
-        WhenGettingStoppedThreadIdOnDrainThread();
+        WhenGettingStoppedThreadIdOnEngine();
 
         ThenStoppedThreadIdIs(42);
     }
@@ -811,12 +742,6 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         _expandedTotal = newTotal;
     }
 
-    private void GivenVariableStoreHasEntries()
-    {
-        var group = Substitute.For<IDebugSymbolGroup2>();
-        _model.Variables.Allocate(group, 0, 1);
-    }
-
     private static void WriteAnsiString(IntPtr buffer, string value)
     {
         var bytes = System.Text.Encoding.ASCII.GetBytes(value + '\0');
@@ -837,9 +762,9 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         _createdModel!.Dispose();
     }
 
-    private void WhenContinuing()
+    private void WhenExecutingContinueOnEngine()
     {
-        _testee.Continue(_model);
+        _testee.ExecuteContinueOnEngine(_model);
     }
 
     private void WhenBreaking()
@@ -847,19 +772,14 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         _testee.Break(_model);
     }
 
-    private void WhenSteppingOver()
+    private void WhenExecutingStepOnEngine(uint stepKind)
     {
-        _testee.StepOver(_model);
+        _testee.ExecuteStepOnEngine(_model, stepKind);
     }
 
-    private void WhenSteppingInto()
+    private void WhenExecutingStepOutOnEngine()
     {
-        _testee.StepInto(_model);
-    }
-
-    private void WhenSteppingOut()
-    {
-        _testee.StepOut(_model);
+        _testee.ExecuteStepOutOnEngine(_model);
     }
 
     private void WhenTerminating()
@@ -872,65 +792,29 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         _testee.Detach(_model);
     }
 
-    private void WhenDrainingOneCommand()
+    private void WhenSettingBreakpointsOnEngine()
     {
-        if (_model.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(1)))
-            cmd();
+        _bpResults = _testee.SetBreakpointsOnEngine(_model, _bpFilePath!, _bpRequested!);
     }
 
-    private void WhenSettingBreakpointsOnDrainThread()
+    private void WhenGettingThreadsOnEngine()
     {
-        var drainTask = Task.Run(() =>
-        {
-            if (_model.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
-                cmd();
-        });
-        _bpResults = _testee.SetBreakpoints(_model, _bpFilePath!, _bpRequested!);
-        drainTask.Wait(TimeSpan.FromSeconds(5));
+        _threadResults = _testee.GetThreadsOnEngine(_model);
     }
 
-    private void WhenGettingThreadsOnDrainThread()
+    private void WhenGettingStoppedThreadIdOnEngine()
     {
-        var drainTask = Task.Run(() =>
-        {
-            if (_model.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
-                cmd();
-        });
-        _threadResults = _testee.GetThreads(_model);
-        drainTask.Wait(TimeSpan.FromSeconds(5));
+        _stoppedThreadId = _testee.GetStoppedThreadIdOnEngine(_model);
     }
 
-    private void WhenGettingStoppedThreadIdOnDrainThread()
+    private void WhenGettingScopesOnEngine(int frameId)
     {
-        var drainTask = Task.Run(() =>
-        {
-            if (_model.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
-                cmd();
-        });
-        _stoppedThreadId = _testee.GetStoppedThreadId(_model);
-        drainTask.Wait(TimeSpan.FromSeconds(5));
+        _scopeResults = _testee.GetScopesOnEngine(_model, frameId);
     }
 
-    private void WhenGettingScopesOnDrainThread(int frameId)
+    private void WhenGettingVariablesOnEngine(int variablesReference)
     {
-        var drainTask = Task.Run(() =>
-        {
-            if (_model.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
-                cmd();
-        });
-        _scopeResults = _testee.GetScopes(_model, frameId);
-        drainTask.Wait(TimeSpan.FromSeconds(5));
-    }
-
-    private void WhenGettingVariablesOnDrainThread(int variablesReference)
-    {
-        var drainTask = Task.Run(() =>
-        {
-            if (_model.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
-                cmd();
-        });
-        _variableResults = _testee.GetVariables(_model, variablesReference);
-        drainTask.Wait(TimeSpan.FromSeconds(5));
+        _variableResults = _testee.GetVariablesOnEngine(_model, variablesReference);
     }
 
     #endregion
@@ -975,11 +859,6 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     private void ThenSetInterruptWasCalled()
     {
         _control.Received(1).SetInterrupt(0);
-    }
-
-    private void ThenSteppingIsTrue()
-    {
-        Assert.True(_model.Stepping);
     }
 
     private void ThenExecuteWasCalledWith(string command)
@@ -1131,11 +1010,6 @@ public sealed class NativeDebuggerServiceTests : IDisposable
     private void ThenVariableAtIndexHasPositiveVariablesReference(int index)
     {
         Assert.True(_variableResults![index].VariablesReference > 0);
-    }
-
-    private void ThenVariableStoreIsEmpty()
-    {
-        Assert.Null(_model.Variables.Get(1));
     }
 
     #endregion

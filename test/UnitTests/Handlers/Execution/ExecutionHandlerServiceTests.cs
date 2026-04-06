@@ -1,3 +1,4 @@
+using MixDbg.Engine.DbgEng;
 using MixDbg.Models.Dap;
 using MixDbg.Models;
 using MixDbg.Services;
@@ -9,14 +10,26 @@ namespace MixDbg.Tests.Handlers.Execution;
 public sealed class ContinueRequestHandlerServiceTests
 {
     [Fact]
-    public void Execute_WhenEngineExists_DelegatesToNativeDebugger()
+    public void Execute_WhenEngineExists_QueuesCommand()
     {
         _session.Engine = _engineModel;
 
         _testee.ExecuteInternal(new ContinueArguments());
 
-        _engine.Received().Continue(Arg.Any<NativeDebuggerModel>());
+        Assert.True(_engineModel.Commands.Count > 0);
         Assert.Equal(SessionState.Running, _session.State);
+    }
+
+    [Fact]
+    public void Execute_WhenEngineExists_ClearsVariables()
+    {
+        _session.Engine = _engineModel;
+        var group = Substitute.For<IDebugSymbolGroup2>();
+        _engineModel.Variables.Allocate(group, 0, 1);
+
+        _testee.ExecuteInternal(new ContinueArguments());
+
+        Assert.Null(_engineModel.Variables.Get(1));
     }
 
     [Fact]
@@ -24,7 +37,7 @@ public sealed class ContinueRequestHandlerServiceTests
     {
         _testee.ExecuteInternal(new ContinueArguments());
 
-        _engine.DidNotReceive().Continue(Arg.Any<NativeDebuggerModel>());
+        _engine.DidNotReceive().ExecuteContinueOnEngine(Arg.Any<NativeDebuggerModel>());
     }
 
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
@@ -34,21 +47,37 @@ public sealed class ContinueRequestHandlerServiceTests
 
     public ContinueRequestHandlerServiceTests()
     {
-        _testee = new ContinueRequestHandlerService(_engine, _session);
+        _testee = new ContinueRequestHandlerService(
+            Substitute.For<ILoggingService>(),
+            new LogStore(Path.Combine(Path.GetTempPath(), "test.log")),
+            _engine, _session);
     }
 }
 
 public sealed class NextRequestHandlerServiceTests
 {
     [Fact]
-    public void Execute_WhenEngineExists_DelegatesToNativeDebugger()
+    public void Execute_WhenEngineExists_QueuesStepOverCommand()
     {
         _session.Engine = _engineModel;
 
         _testee.ExecuteInternal(new StepArguments());
 
-        _engine.Received(1).StepOver(Arg.Any<NativeDebuggerModel>());
+        Assert.True(_engineModel.Stepping);
+        Assert.True(_engineModel.Commands.Count > 0);
         Assert.Equal(SessionState.Running, _session.State);
+    }
+
+    [Fact]
+    public void Execute_WhenEngineExists_ClearsVariables()
+    {
+        _session.Engine = _engineModel;
+        var group = Substitute.For<IDebugSymbolGroup2>();
+        _engineModel.Variables.Allocate(group, 0, 1);
+
+        _testee.ExecuteInternal(new StepArguments());
+
+        Assert.Null(_engineModel.Variables.Get(1));
     }
 
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
@@ -65,14 +94,27 @@ public sealed class NextRequestHandlerServiceTests
 public sealed class StepInRequestHandlerServiceTests
 {
     [Fact]
-    public void Execute_WhenEngineExists_DelegatesToNativeDebugger()
+    public void Execute_WhenEngineExists_QueuesStepIntoCommand()
     {
         _session.Engine = _engineModel;
 
         _testee.ExecuteInternal(new StepArguments());
 
-        _engine.Received(1).StepInto(Arg.Any<NativeDebuggerModel>());
+        Assert.True(_engineModel.Stepping);
+        Assert.True(_engineModel.Commands.Count > 0);
         Assert.Equal(SessionState.Running, _session.State);
+    }
+
+    [Fact]
+    public void Execute_WhenEngineExists_ClearsVariables()
+    {
+        _session.Engine = _engineModel;
+        var group = Substitute.For<IDebugSymbolGroup2>();
+        _engineModel.Variables.Allocate(group, 0, 1);
+
+        _testee.ExecuteInternal(new StepArguments());
+
+        Assert.Null(_engineModel.Variables.Get(1));
     }
 
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
@@ -89,14 +131,26 @@ public sealed class StepInRequestHandlerServiceTests
 public sealed class StepOutRequestHandlerServiceTests
 {
     [Fact]
-    public void Execute_WhenEngineExists_DelegatesToNativeDebugger()
+    public void Execute_WhenEngineExists_QueuesCommand()
     {
         _session.Engine = _engineModel;
 
         _testee.ExecuteInternal(new StepArguments());
 
-        _engine.Received(1).StepOut(Arg.Any<NativeDebuggerModel>());
+        Assert.True(_engineModel.Commands.Count > 0);
         Assert.Equal(SessionState.Running, _session.State);
+    }
+
+    [Fact]
+    public void Execute_WhenEngineExists_ClearsVariables()
+    {
+        _session.Engine = _engineModel;
+        var group = Substitute.For<IDebugSymbolGroup2>();
+        _engineModel.Variables.Allocate(group, 0, 1);
+
+        _testee.ExecuteInternal(new StepArguments());
+
+        Assert.Null(_engineModel.Variables.Get(1));
     }
 
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();

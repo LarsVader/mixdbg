@@ -34,12 +34,17 @@ public class LaunchRequestHandlerService(
 		if (args.SymbolPath is { Length: > 0 })
 			symbolPath = string.Join(";", args.SymbolPath);
 
-		nativeDebugger.Launch(
-			sessionModel.Engine,
-			args.Program,
-			args.Cwd ?? Path.GetDirectoryName(args.Program),
-			symbolPath,
-			args.Args);
+
+		sessionModel.Engine.IsAttach = false;
+		sessionModel.Engine.LaunchProgram = args.Program;
+		sessionModel.Engine.LaunchCwd = args.Cwd ?? Path.GetDirectoryName(args.Program);
+        sessionModel.Engine.LaunchArgs = args.Args;
+        sessionModel.Engine.SymbolPath = symbolPath;
+        nativeDebugger.StartEngineThread(sessionModel.Engine);
+        sessionModel.Engine.EngineReady.Wait();
+        if (sessionModel.Engine.EngineInitError != null)
+            throw sessionModel.Engine.EngineInitError;
+
 		sessionModel.State = SessionState.Running;
     }
 }

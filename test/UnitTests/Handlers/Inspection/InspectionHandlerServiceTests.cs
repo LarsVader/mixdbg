@@ -6,7 +6,7 @@ using NSubstitute;
 
 namespace MixDbg.Tests.Handlers.Inspection;
 
-public sealed class StackTraceRequestHandlerServiceTests
+public sealed class StackTraceRequestHandlerServiceTests : IDisposable
 {
     [Fact]
     public void Execute_WhenNoEngine_ReturnsEmpty()
@@ -22,7 +22,7 @@ public sealed class StackTraceRequestHandlerServiceTests
         GivenAnEngineIsRunning();
         GivenNativeDebuggerReturnsFrames(3);
 
-        var result = _testee.ExecuteInternal(new StackTraceArguments { Levels = 20 });
+        var result = ExecuteWithDrain(new StackTraceArguments { Levels = 20 });
 
         Assert.Equal(3, result.StackFrames.Length);
         Assert.Equal(3, result.TotalFrames);
@@ -34,17 +34,30 @@ public sealed class StackTraceRequestHandlerServiceTests
         GivenAnEngineIsRunning();
         GivenNativeDebuggerReturnsFrames(2);
 
-        _testee.ExecuteInternal(new StackTraceArguments { Levels = 0 });
+        ExecuteWithDrain(new StackTraceArguments { Levels = 0 });
 
-        _engine.Received(1).GetStackTrace(Arg.Any<NativeDebuggerModel>(), 50);
+        _engine.Received(1).GetStackTraceOnEngine(Arg.Any<NativeDebuggerModel>(), 50);
     }
 
     private void GivenAnEngineIsRunning() => _session.Engine = _engineModel;
 
     private void GivenNativeDebuggerReturnsFrames(int count)
     {
-        _engine.GetStackTrace(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+        _engine.GetStackTraceOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
             .Returns(Enumerable.Range(1, count).Select(i => new StackFrame { Id = i, Name = $"frame{i}" }).ToArray());
+    }
+
+    private StackTraceResponseBody ExecuteWithDrain(StackTraceArguments args)
+    {
+        var drainThread = new Thread(() =>
+        {
+            if (_engineModel.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
+                cmd();
+        }) { IsBackground = true };
+        drainThread.Start();
+        var result = _testee.ExecuteInternal(args);
+        drainThread.Join(TimeSpan.FromSeconds(5));
+        return result;
     }
 
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
@@ -56,9 +69,17 @@ public sealed class StackTraceRequestHandlerServiceTests
     {
         _testee = new StackTraceRequestHandlerService(_engine, _session);
     }
+
+    public void Dispose()
+    {
+        _engineModel.Commands.CompleteAdding();
+        _engineModel.Commands.Dispose();
+        _engineModel.Stopped.Dispose();
+        _engineModel.EngineReady.Dispose();
+    }
 }
 
-public sealed class ThreadsRequestHandlerServiceTests
+public sealed class ThreadsRequestHandlerServiceTests : IDisposable
 {
     [Fact]
     public void Execute_WhenNoEngine_ReturnsDefaultThread()
@@ -73,10 +94,17 @@ public sealed class ThreadsRequestHandlerServiceTests
     public void Execute_WhenEngineExists_DelegatesToNativeDebugger()
     {
         _session.Engine = _engineModel;
-        _engine.GetThreads(Arg.Any<NativeDebuggerModel>())
+        _engine.GetThreadsOnEngine(Arg.Any<NativeDebuggerModel>())
             .Returns(Enumerable.Range(1, 2).Select(i => new DapThread { Id = i, Name = $"Thread {i}" }).ToArray());
 
+        var drainThread = new Thread(() =>
+        {
+            if (_engineModel.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
+                cmd();
+        }) { IsBackground = true };
+        drainThread.Start();
         var result = _testee.ExecuteInternal(new EmptyArguments());
+        drainThread.Join(TimeSpan.FromSeconds(5));
 
         Assert.Equal(2, result.Threads.Length);
     }
@@ -90,9 +118,17 @@ public sealed class ThreadsRequestHandlerServiceTests
     {
         _testee = new MixDbg.Services.Handlers.Lifecycle.ThreadsRequestHandlerService(_engine, _session);
     }
+
+    public void Dispose()
+    {
+        _engineModel.Commands.CompleteAdding();
+        _engineModel.Commands.Dispose();
+        _engineModel.Stopped.Dispose();
+        _engineModel.EngineReady.Dispose();
+    }
 }
 
-public sealed class ScopesRequestHandlerServiceTests
+public sealed class ScopesRequestHandlerServiceTests : IDisposable
 {
     [Fact]
     public void Execute_WhenNoEngine_ReturnsEmpty()
@@ -106,13 +142,20 @@ public sealed class ScopesRequestHandlerServiceTests
     public void Execute_WhenEngineExists_DelegatesToNativeDebugger()
     {
         _session.Engine = _engineModel;
-        _engine.GetScopes(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+        _engine.GetScopesOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
             .Returns([new Scope { Name = "Locals", VariablesReference = 1 }]);
 
+        var drainThread = new Thread(() =>
+        {
+            if (_engineModel.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
+                cmd();
+        }) { IsBackground = true };
+        drainThread.Start();
         var result = _testee.ExecuteInternal(new ScopesArguments { FrameId = 1 });
+        drainThread.Join(TimeSpan.FromSeconds(5));
 
         Assert.Single(result.Scopes);
-        _engine.Received(1).GetScopes(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>());
+        _engine.Received(1).GetScopesOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>());
     }
 
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
@@ -124,9 +167,17 @@ public sealed class ScopesRequestHandlerServiceTests
     {
         _testee = new ScopesRequestHandlerService(_engine, _session);
     }
+
+    public void Dispose()
+    {
+        _engineModel.Commands.CompleteAdding();
+        _engineModel.Commands.Dispose();
+        _engineModel.Stopped.Dispose();
+        _engineModel.EngineReady.Dispose();
+    }
 }
 
-public sealed class VariablesRequestHandlerServiceTests
+public sealed class VariablesRequestHandlerServiceTests : IDisposable
 {
     [Fact]
     public void Execute_WhenNoEngine_ReturnsEmpty()
@@ -140,16 +191,23 @@ public sealed class VariablesRequestHandlerServiceTests
     public void Execute_WhenEngineExists_DelegatesToNativeDebugger()
     {
         _session.Engine = _engineModel;
-        _engine.GetVariables(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+        _engine.GetVariablesOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
             .Returns(Enumerable.Range(1, 3).Select(i => new Variable
             {
                 Name = $"var{i}", Value = $"{i}", VariablesReference = 0,
             }).ToArray());
 
+        var drainThread = new Thread(() =>
+        {
+            if (_engineModel.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
+                cmd();
+        }) { IsBackground = true };
+        drainThread.Start();
         var result = _testee.ExecuteInternal(new VariablesArguments { VariablesReference = 1 });
+        drainThread.Join(TimeSpan.FromSeconds(5));
 
         Assert.Equal(3, result.Variables.Length);
-        _engine.Received(1).GetVariables(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>());
+        _engine.Received(1).GetVariablesOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>());
     }
 
     private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
@@ -160,5 +218,13 @@ public sealed class VariablesRequestHandlerServiceTests
     public VariablesRequestHandlerServiceTests()
     {
         _testee = new VariablesRequestHandlerService(_engine, _session);
+    }
+
+    public void Dispose()
+    {
+        _engineModel.Commands.CompleteAdding();
+        _engineModel.Commands.Dispose();
+        _engineModel.Stopped.Dispose();
+        _engineModel.EngineReady.Dispose();
     }
 }

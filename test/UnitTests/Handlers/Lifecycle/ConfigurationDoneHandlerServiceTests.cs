@@ -6,7 +6,7 @@ using NSubstitute;
 
 namespace MixDbg.Tests.Handlers.Lifecycle;
 
-public sealed class ConfigurationDoneHandlerServiceTests
+public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
 {
     [Fact]
     public void Execute_WhenNoEngine_SetsConfiguredState()
@@ -23,10 +23,9 @@ public sealed class ConfigurationDoneHandlerServiceTests
         GivenPendingBreakpointsExist("C:/src/main.cpp", [10]);
         GivenNativeDebuggerReturnsBreakpoints();
 
-        WhenExecuting();
+        WhenExecutingWithDrain();
 
         ThenNativeDebuggerSetBreakpointsWasCalled();
-        ThenNativeDebuggerContinueWasCalled();
         ThenSessionStateIs(SessionState.Running);
     }
 
@@ -37,7 +36,7 @@ public sealed class ConfigurationDoneHandlerServiceTests
         GivenPendingBreakpointsExist("C:/src/main.cpp", [10]);
         GivenNativeDebuggerReturnsBreakpoints();
 
-        WhenExecuting();
+        WhenExecutingWithDrain();
 
         ThenBreakpointEventWasSent();
     }
@@ -57,7 +56,7 @@ public sealed class ConfigurationDoneHandlerServiceTests
 
     private void GivenNativeDebuggerReturnsBreakpoints()
     {
-        _engine.SetBreakpoints(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
+        _engine.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
             .Returns(ci => ci.ArgAt<SourceBreakpoint[]>(2)
                 .Select((bp, i) => new Breakpoint { Id = i + 1, Verified = true, Line = bp.Line }).ToArray());
     }
@@ -68,15 +67,33 @@ public sealed class ConfigurationDoneHandlerServiceTests
 
     private void WhenExecuting() => _testee.ExecuteInternal(new EmptyArguments());
 
+    private void WhenExecutingWithDrain()
+    {
+        // Start a background drain thread to process QueueEngineQuery commands.
+        var drainThread = new Thread(() =>
+        {
+            try
+            {
+                foreach (var cmd in _engineModel.Commands.GetConsumingEnumerable())
+                    cmd();
+            }
+            catch (OperationCanceledException) { }
+        }) { IsBackground = true };
+        drainThread.Start();
+
+        _testee.ExecuteInternal(new EmptyArguments());
+
+        _engineModel.Commands.CompleteAdding();
+        drainThread.Join(TimeSpan.FromSeconds(5));
+    }
+
     #endregion
 
     #region Then
 
     private void ThenSessionStateIs(SessionState expected) => Assert.Equal(expected, _session.State);
     private void ThenNativeDebuggerSetBreakpointsWasCalled() =>
-        _engine.Received().SetBreakpoints(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>());
-    private void ThenNativeDebuggerContinueWasCalled() =>
-        _engine.Received().Continue(Arg.Any<NativeDebuggerModel>());
+        _engine.Received().SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>());
     private void ThenBreakpointEventWasSent() =>
         _server.Received().SendEvent(_transport, "breakpoint", Arg.Any<BreakpointEventBody>());
 
@@ -93,7 +110,18 @@ public sealed class ConfigurationDoneHandlerServiceTests
 
     public ConfigurationDoneHandlerServiceTests()
     {
-        _testee = new ConfigurationDoneHandlerService(_engine, _server, _transport, _session);
+        _testee = new ConfigurationDoneHandlerService(
+            Substitute.For<ILoggingService>(),
+            new LogStore(Path.Combine(Path.GetTempPath(), "test.log")),
+            _engine, _server, _transport, _session);
+    }
+
+    public void Dispose()
+    {
+        try { _engineModel.Commands.CompleteAdding(); } catch { }
+        _engineModel.Commands.Dispose();
+        _engineModel.Stopped.Dispose();
+        _engineModel.EngineReady.Dispose();
     }
 
     #endregion

@@ -17,10 +17,12 @@ public class StackTraceRequestHandlerService(
 
     public override StackTraceResponseBody ExecuteInternal(StackTraceArguments args)
     {
-		if (sessionModel.Engine == null)
+		if (sessionModel.Engine is not NativeDebuggerModel model)
 			return new StackTraceResponseBody { StackFrames = [] };
 
-		var frames = nativeDebugger.GetStackTrace(sessionModel.Engine, args.Levels > 0 ? args.Levels : 50);
+		var maxFrames = args.Levels > 0 ? args.Levels : 50;
+		var frames = model.QueueEngineQuery(
+			() => nativeDebugger.GetStackTraceOnEngine(model, maxFrames));
 		return new StackTraceResponseBody
 		{
 			StackFrames = frames,

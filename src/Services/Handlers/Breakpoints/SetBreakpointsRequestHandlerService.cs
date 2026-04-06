@@ -5,7 +5,7 @@ namespace MixDbg.Services.Handlers.Breakpoints;
 
 /// <summary>
 /// Handles the DAP setBreakpoints request. Queues breakpoints as pending if the engine
-/// is not ready, otherwise delegates to the native debugger.
+/// is not ready, otherwise delegates to the native debugger on the engine thread.
 /// </summary>
 public class SetBreakpointsRequestHandlerService(
         INativeDebugger nativeDebugger,
@@ -18,7 +18,7 @@ public class SetBreakpointsRequestHandlerService(
 
     public override SetBreakpointsResponseBody ExecuteInternal(SetBreakpointsArguments args)
     {
-		if (sessionModel.Engine == null || args.Source.Path == null)
+		if (sessionModel.Engine is not NativeDebuggerModel model || args.Source.Path == null)
 		{
 			if (args.Source.Path != null)
 				sessionModel.PendingBreakpoints.Add(args);
@@ -35,7 +35,8 @@ public class SetBreakpointsRequestHandlerService(
 			};
 		}
 
-		var bps = nativeDebugger.SetBreakpoints(sessionModel.Engine, args.Source.Path, args.Breakpoints);
+		var bps = model.QueueEngineQuery(
+			() => nativeDebugger.SetBreakpointsOnEngine(model, args.Source.Path, args.Breakpoints));
 		return new SetBreakpointsResponseBody { Breakpoints = bps };
     }
 }

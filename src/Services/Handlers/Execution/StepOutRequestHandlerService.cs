@@ -17,8 +17,11 @@ public class StepOutRequestHandlerService(
 
     public override void ExecuteInternal(StepArguments args)
     {
-		if (sessionModel.Engine != null)
-			nativeDebugger.StepOut(sessionModel.Engine);
+		if (sessionModel.Engine is NativeDebuggerModel model)
+		{
+			model.Variables.Clear();
+			model.Commands.Add(() => nativeDebugger.ExecuteStepOutOnEngine(model));
+		}
 		sessionModel.State = SessionState.Running;
     }
 }

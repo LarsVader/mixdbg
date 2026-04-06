@@ -19,9 +19,17 @@ public class AttachRequestHandlerService(
     {
 		sessionModel.Engine = nativeDebugger.CreateModel();
 
-		if (args.Pid.HasValue)
+		if (args.Pid.HasValue
+			&& sessionModel.Engine is NativeDebuggerModel debuggerModel)
 		{
-			nativeDebugger.Attach(sessionModel.Engine, (uint)args.Pid.Value, null);
+			debuggerModel.IsAttach = true;
+			debuggerModel.AttachPid = (uint)args.Pid.Value;
+			debuggerModel.SymbolPath = null;
+			nativeDebugger.StartEngineThread(debuggerModel);
+			debuggerModel.EngineReady.Wait();
+			if (debuggerModel.EngineInitError != null)
+				throw debuggerModel.EngineInitError;
+			// nativeDebugger.Attach(sessionModel.Engine, (uint)args.Pid.Value, null);
 		}
 		else
 		{

@@ -6,7 +6,7 @@ using NSubstitute;
 
 namespace MixDbg.Tests.Handlers.Breakpoints;
 
-public sealed class SetBreakpointsRequestHandlerServiceTests
+public sealed class SetBreakpointsRequestHandlerServiceTests : IDisposable
 {
     [Fact]
     public void Execute_WhenNoEngine_StoresPending()
@@ -36,7 +36,7 @@ public sealed class SetBreakpointsRequestHandlerServiceTests
         GivenBreakpointsArgs("C:/src/main.cpp", [10]);
         GivenNativeDebuggerReturnsBreakpoints();
 
-        WhenExecuting();
+        WhenExecutingWithDrain();
 
         ThenNativeDebuggerSetBreakpointsWasCalled();
     }
@@ -56,7 +56,7 @@ public sealed class SetBreakpointsRequestHandlerServiceTests
 
     private void GivenNativeDebuggerReturnsBreakpoints()
     {
-        _engine.SetBreakpoints(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
+        _engine.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
             .Returns(ci => ci.ArgAt<SourceBreakpoint[]>(2)
                 .Select((bp, i) => new Breakpoint { Id = i + 1, Verified = true, Line = bp.Line }).ToArray());
     }
@@ -67,6 +67,18 @@ public sealed class SetBreakpointsRequestHandlerServiceTests
 
     private void WhenExecuting() => _response = _testee.ExecuteInternal(_args!);
 
+    private void WhenExecutingWithDrain()
+    {
+        var drainThread = new Thread(() =>
+        {
+            if (_engineModel.Commands.TryTake(out var cmd, TimeSpan.FromSeconds(5)))
+                cmd();
+        }) { IsBackground = true };
+        drainThread.Start();
+        _response = _testee.ExecuteInternal(_args!);
+        drainThread.Join(TimeSpan.FromSeconds(5));
+    }
+
     #endregion
 
     #region Then
@@ -75,7 +87,7 @@ public sealed class SetBreakpointsRequestHandlerServiceTests
     private void ThenBreakpointResponseCountIs(int expected) => Assert.Equal(expected, _response!.Breakpoints.Length);
     private void ThenBreakpointAtIndexIsVerified(int index, bool expected) => Assert.Equal(expected, _response!.Breakpoints[index].Verified);
     private void ThenNativeDebuggerSetBreakpointsWasCalled() =>
-        _engine.Received().SetBreakpoints(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>());
+        _engine.Received().SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>());
 
     #endregion
 
@@ -91,6 +103,14 @@ public sealed class SetBreakpointsRequestHandlerServiceTests
     public SetBreakpointsRequestHandlerServiceTests()
     {
         _testee = new SetBreakpointsRequestHandlerService(_engine, _session);
+    }
+
+    public void Dispose()
+    {
+        _engineModel.Commands.CompleteAdding();
+        _engineModel.Commands.Dispose();
+        _engineModel.Stopped.Dispose();
+        _engineModel.EngineReady.Dispose();
     }
 
     #endregion

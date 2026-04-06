@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using MixDbg.Engine.DbgEng;
 using MixDbg.Models.Dap;
 using MixDbg.Models;
 using MixDbg.Services;
@@ -44,7 +45,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         WhenRunningPipeline();
 
         ThenResponseExistsForCommand("launch", success: true);
-        ThenNativeDebuggerLaunchWasCalled();
+        ThenNativeDebuggerStartEngineThreadWasCalled();
     }
 
     [Fact]
@@ -430,7 +431,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void GivenNativeDebuggerReturnsBreakpoints()
     {
-        _engine.SetBreakpoints(
+        _engine.SetBreakpointsOnEngine(
             Arg.Any<NativeDebuggerModel>(),
             Arg.Any<string>(),
             Arg.Any<SourceBreakpoint[]>())
@@ -448,7 +449,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void GivenNativeDebuggerReturnsFrames(int count)
     {
-        _engine.GetStackTrace(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
+        _engine.GetStackTraceOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>())
             .Returns(Enumerable.Range(1, count).Select(i => new StackFrame
             {
                 Id = i,
@@ -459,7 +460,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void GivenNativeDebuggerReturnsThreads(int count)
     {
-        _engine.GetThreads(Arg.Any<NativeDebuggerModel>())
+        _engine.GetThreadsOnEngine(Arg.Any<NativeDebuggerModel>())
             .Returns(Enumerable.Range(1, count).Select(i => new DapThread
             {
                 Id = i,
@@ -534,19 +535,14 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         Assert.True(body.SupportsTerminateRequest);
     }
 
-    private void ThenNativeDebuggerLaunchWasCalled()
+    private void ThenNativeDebuggerStartEngineThreadWasCalled()
     {
-        _engine.Received(1).Launch(
-            Arg.Any<NativeDebuggerModel>(),
-            Arg.Any<string>(),
-            Arg.Any<string?>(),
-            Arg.Any<string?>(),
-            Arg.Any<string[]?>());
+        _engine.Received(1).StartEngineThread(Arg.Any<NativeDebuggerModel>());
     }
 
     private void ThenNativeDebuggerSetBreakpointsWasCalled(string filePath)
     {
-        _engine.Received().SetBreakpoints(
+        _engine.Received().SetBreakpointsOnEngine(
             Arg.Any<NativeDebuggerModel>(),
             filePath,
             Arg.Any<SourceBreakpoint[]>());
@@ -554,22 +550,22 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
     private void ThenNativeDebuggerContinueWasCalled()
     {
-        _engine.Received().Continue(Arg.Any<NativeDebuggerModel>());
+        _engine.Received().ExecuteContinueOnEngine(Arg.Any<NativeDebuggerModel>());
     }
 
     private void ThenNativeDebuggerStepOverWasCalled()
     {
-        _engine.Received(1).StepOver(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), DebugStatus.StepOver);
     }
 
     private void ThenNativeDebuggerStepIntoWasCalled()
     {
-        _engine.Received(1).StepInto(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), DebugStatus.StepInto);
     }
 
     private void ThenNativeDebuggerStepOutWasCalled()
     {
-        _engine.Received(1).StepOut(Arg.Any<NativeDebuggerModel>());
+        _engine.Received(1).ExecuteStepOutOnEngine(Arg.Any<NativeDebuggerModel>());
     }
 
     private void ThenNativeDebuggerTerminateWasCalled()
@@ -691,6 +687,24 @@ public sealed class DapPipelineIntegrationTests : IDisposable
     public DapPipelineIntegrationTests()
     {
         _engine.CreateModel().Returns(_ => new NativeDebuggerModel());
+        _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
+            .Do(ci =>
+            {
+                var model = ci.ArgAt<NativeDebuggerModel>(0);
+                model.EngineReady.Set();
+                // Start a drain thread so QueueEngineQuery calls don't block.
+                var drainThread = new Thread(() =>
+                {
+                    try
+                    {
+                        foreach (var cmd in model.Commands.GetConsumingEnumerable())
+                            cmd();
+                    }
+                    catch (OperationCanceledException) { }
+                })
+                { IsBackground = true };
+                drainThread.Start();
+            });
     }
 
     private static string MakeRequest(int seq, string command, object? args = null)

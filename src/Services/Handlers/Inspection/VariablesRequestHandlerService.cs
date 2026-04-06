@@ -17,9 +17,11 @@ public class VariablesRequestHandlerService(
 
     public override VariablesResponseBody ExecuteInternal(VariablesArguments args)
     {
-		if (sessionModel.Engine == null)
+		if (sessionModel.Engine is not NativeDebuggerModel model)
 			return new VariablesResponseBody { Variables = [] };
 
-		return new VariablesResponseBody { Variables = nativeDebugger.GetVariables(sessionModel.Engine, args.VariablesReference) };
+		var vars = model.QueueEngineQuery(
+			() => nativeDebugger.GetVariablesOnEngine(model, args.VariablesReference));
+		return new VariablesResponseBody { Variables = vars };
     }
 }

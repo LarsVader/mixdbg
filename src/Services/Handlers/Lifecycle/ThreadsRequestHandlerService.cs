@@ -17,12 +17,14 @@ public class ThreadsRequestHandlerService(
 
     public override ThreadsResponseBody ExecuteInternal(EmptyArguments args)
     {
-		if (sessionModel.Engine == null)
+		if (sessionModel.Engine is not NativeDebuggerModel model)
 			return new ThreadsResponseBody
 			{
 				Threads = [new DapThread { Id = 1, Name = "Main Thread" }],
 			};
 
-		return new ThreadsResponseBody { Threads = nativeDebugger.GetThreads(sessionModel.Engine) };
+		var threads = model.QueueEngineQuery(
+			() => nativeDebugger.GetThreadsOnEngine(model));
+		return new ThreadsResponseBody { Threads = threads };
     }
 }

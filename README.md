@@ -89,19 +89,19 @@ All services are stateless singletons; mutable state lives in model objects (`Da
 
 **Two threads, one queue:**
 
-1. **Main thread** reads DAP JSON requests from stdin, dispatches them to handlers. Some handlers (like `stackTrace`) need data from the debug engine, so they queue a command and block.
+1. **Main thread** reads DAP JSON requests from stdin, dispatches them to handlers. Handlers own the dispatching: fire-and-forget via `model.Commands.Add(...)`, or synchronous queries via `model.QueueEngineQuery(...)`.
 
 2. **Engine thread** creates the dbgeng client, launches the process, and runs the `WaitForEvent` loop. When the target stops, it processes queued commands (breakpoints, stack trace requests, etc.) and sends DAP events back via the server.
 
-The `BlockingCollection<Action>` in `NativeDebuggerModel` is the bridge. When a handler needs engine data:
+The `BlockingCollection<Action>` in `NativeDebuggerModel` is the bridge. `NativeDebuggerService` exposes only engine-thread methods (suffixed `OnEngine`) — handlers dispatch to them:
 
 ```csharp
-// Main thread (inside stackTrace handler):
-var tcs = new TaskCompletionSource<StackFrame[]>();
-model.Commands.Add(() => {               // Queue work for engine thread
-    tcs.SetResult(GetStackTraceOnEngine(model));
-});
-return tcs.Task.Result;                  // Block until engine processes it
+// Handler (main thread) — synchronous query:
+var frames = model.QueueEngineQuery(
+    () => nativeDebugger.GetStackTraceOnEngine(model, maxFrames));
+
+// Handler (main thread) — fire-and-forget:
+model.Commands.Add(() => nativeDebugger.ExecuteContinueOnEngine(model));
 
 // Engine thread (in command processing loop):
 var cmd = model.Commands.Take();         // Dequeue
