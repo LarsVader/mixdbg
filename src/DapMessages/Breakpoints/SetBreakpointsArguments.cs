@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using MixDbg.Models.Interfaces;
 
 namespace MixDbg.Dap;
 
-public record SetBreakpointsArguments
+public record SetBreakpointsArguments : IDapMessageArguments
 {
     [JsonPropertyName("source")]
     public Source Source { get; set; } = new();

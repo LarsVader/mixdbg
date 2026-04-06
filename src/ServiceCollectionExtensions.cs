@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using MixDbg.Services;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg;
 
@@ -27,6 +28,14 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IDapDispatcher>().CreateModel());
         services.AddSingleton(sp =>
             sp.GetRequiredService<IDebugSession>().CreateModel());
+
+		// Register all IDapHandlerService implementations
+        typeof(ServiceCollectionExtensions)
+			.Assembly
+			.GetTypes()
+			.Where(t => t.IsClass && !t.IsAbstract && typeof(IDapHandlerService).IsAssignableFrom(t))
+			.ToList()
+			.ForEach(serviceType => services.AddSingleton(typeof(IDapHandlerService), serviceType));
 
         return services;
     }

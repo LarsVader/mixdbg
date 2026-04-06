@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Dap;
 
-public record Capabilities
+public record Capabilities : IDapMessage
 {
     [JsonPropertyName("supportsConfigurationDoneRequest")]
     public bool SupportsConfigurationDoneRequest { get; set; }

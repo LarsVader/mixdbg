@@ -1,6 +1,9 @@
+using System.Collections;
 using System.Text.Json;
+using System.Linq;
 using MixDbg.Dap;
 using MixDbg.Models;
+using MixDbg.Services.Interfaces;
 
 namespace MixDbg.Services;
 
@@ -9,11 +12,17 @@ namespace MixDbg.Services;
 /// <see cref="DapDispatcherModel"/>.
 /// </summary>
 internal sealed class DapDispatcherService(
+	IEnumerable<IDapHandlerService> handlersNew,
     IDapServer server,
     DapServerModel transport,
     ILoggingService log,
     LogStore logStore) : IDapDispatcher
 {
+	public Dictionary<string, IDapHandlerService> HandlersNew
+		=> handlersNew.ToDictionary(
+				s => s.Command,
+				s => s);
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -54,17 +63,28 @@ internal sealed class DapDispatcherService(
                     ? request.Arguments.Value.ToString() : "null";
                 _log.LogInfo(_logStore, $"DAP request: seq={request.Seq} cmd={request.Command} args={argsStr}");
 
-                if (model.Handlers.TryGetValue(request.Command, out var handler))
-                {
-                    var body = handler(request);
-                    _server.SendResponse(_transport, request, body);
-                    _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} success=true");
-                }
-                else
+				if (HandlersNew.TryGetValue(request.Command, out IDapHandlerService? handlerNew)){
+					IDapMessage? body = handlerNew.Execute(request.Arguments);
+					if (body != null) _server.SendResponse(_transport, request, body);
+					_log.LogInfo(_logStore, $"DAP response: cmd={request.Command} success=true");
+				}
+				else
                 {
                     _server.SendErrorResponse(_transport, request, $"Unknown command: {request.Command}");
                     _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} UNKNOWN");
                 }
+
+                // if (model.Handlers.TryGetValue(request.Command, out var handler))
+                // {
+                //     var body = handler(request);
+                //     _server.SendResponse(_transport, request, body);
+                //     _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} success=true");
+                // }
+                // else
+                // {
+                //     _server.SendErrorResponse(_transport, request, $"Unknown command: {request.Command}");
+                //     _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} UNKNOWN");
+                // }
             }
             catch (DisconnectException)
             {

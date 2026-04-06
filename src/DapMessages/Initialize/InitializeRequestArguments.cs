@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using MixDbg.Models.Interfaces;
 
 namespace MixDbg.Dap;
 
-public record InitializeRequestArguments
+public record InitializeRequestArguments : IDapMessageArguments
 {
     [JsonPropertyName("clientID")]
     public string? ClientId { get; set; }

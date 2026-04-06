@@ -1,8 +1,9 @@
 using System.Text.Json.Serialization;
+using MixDbg.Models.Interfaces;
 
 namespace MixDbg.Dap;
 
-public record LaunchRequestArguments
+public record LaunchRequestArguments : IDapMessageArguments
 {
     [JsonPropertyName("program")]
     public string Program { get; set; } = "";
