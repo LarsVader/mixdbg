@@ -1,9 +1,6 @@
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
-using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.Marshalling;
-using ClrDebug;
 using MixDbg.Models.Dap;
 using MixDbg.Engine.Sos;
 using MixDbg.Models;
@@ -11,9 +8,9 @@ using MixDbg.Models;
 namespace MixDbg.Services;
 
 /// <summary>
-/// Stateless managed debugging service. Uses ICorDebug V4
-/// (<c>ICLRDebugging::OpenVirtualProcess</c>) piggybacked on the existing dbgeng
-/// session for IL-level breakpoints and managed stack traces.
+/// Stateless managed debugging service. Orchestrates managed breakpoint
+/// lifecycle, profiler interaction, and frame merging. Delegates all ICorDebug
+/// V4 COM operations to <see cref="ICorDebugWrapper"/>.
 /// All methods execute on the engine thread.
 /// </summary>
 internal sealed class ManagedDebuggerService(
@@ -22,7 +19,8 @@ internal sealed class ManagedDebuggerService(
     ISourceFileService sourceFiles,
     IDapServer server,
     DapServerModel transport,
-    IDbgEngWrapper dbgEngWrapper) : IManagedDebugger
+    IDbgEngWrapper dbgEngWrapper,
+    ICorDebugWrapper corDebugWrapper) : IManagedDebugger
 {
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
@@ -30,7 +28,7 @@ internal sealed class ManagedDebuggerService(
     private readonly IDapServer _server = server;
     private readonly DapServerModel _transport = transport;
     private readonly IDbgEngWrapper _dbgEng = dbgEngWrapper;
-    private IntPtr _dacHandle;
+    private readonly ICorDebugWrapper _corDebug = corDebugWrapper;
 
     public bool IsInitialized(NativeDebuggerModel model) => model.ManagedInitialized;
 
@@ -45,36 +43,12 @@ internal sealed class ManagedDebuggerService(
             return false;
         }
 
-        try
-        {
-            _log.LogInfo(_logStore, $"Initializing ICorDebug V4 via OpenVirtualProcessImpl (coreclr={model.CoreClrPath}, base=0x{model.CoreClrBaseAddress:X})");
-
-            // Create the data target bridge that lets ICorDebug read/write through dbgeng.
-            var dataTarget = _dbgEng.CreateDataTarget(model.Wrapper);
-
-            // Call mscordbi!OpenVirtualProcessImpl directly — the .NET 10 mscordbi.dll
-            // doesn't export DllGetClassObject, and mscoree.dll's CLRCreateInstance
-            // doesn't understand .NET 10 (returns CORDBG_E_UNSUPPORTED_FORWARD_COMPAT).
-            model.CorProcess = OpenVirtualProcessImpl(
-                model.CoreClrPath, model.CoreClrBaseAddress, dataTarget, _log, _logStore,
-                out var clrVersion);
-            _log.LogInfo(_logStore, $"ICorDebug V4 initialized: CLR {clrVersion.wMajor}.{clrVersion.wMinor}.{clrVersion.wBuild}");
-
-            // Enumerate currently loaded modules.
-            EnumerateModules(model);
-
-            // Initialize the DAC (SOSDacInterface) for querying JIT native code addresses.
-            try { TryInitializeDac(model); }
-            catch (Exception ex) { _log.LogWarning(_logStore, $"DAC init outer catch: {ex.Message}"); }
-
+        model.CorWrapper = _corDebug.CreateModel();
+        var result = _corDebug.InitializeRuntime(
+            model.CorWrapper, model.Wrapper, model.CoreClrPath, model.CoreClrBaseAddress);
+        if (result)
             model.ManagedInitialized = true;
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _log.LogError(_logStore, $"Failed to initialize managed debugging: {ex.Message}");
-            return false;
-        }
+        return result;
     }
 
     public Breakpoint[] SetManagedBreakpoints(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
@@ -94,120 +68,36 @@ internal sealed class ManagedDebuggerService(
 
     public StackFrame[] GetManagedStackFrames(NativeDebuggerModel model)
     {
-        if (model.CorProcess == null)
+        if (!model.ManagedInitialized)
             return [];
 
-        try
-        {
-            // Find the CLR thread matching the current dbgeng event thread.
-            var currentOsId = _dbgEng.GetCurrentThreadSystemId(model.Wrapper);
-
-            CorDebugThread? clrThread = null;
-            foreach (var thread in model.CorProcess.Threads)
-            {
-                try
-                {
-                    // ICorDebugThread::GetID returns the OS thread ID in .NET Core.
-                    if ((uint)thread.Id == currentOsId)
-                    {
-                        clrThread = thread;
-                        break;
-                    }
-                }
-                catch { }
-            }
-
-            if (clrThread == null)
-            {
-                _log.LogInfo(_logStore, $"No CLR thread found for OS thread {currentOsId}");
-                return [];
-            }
-
-            var frames = new List<StackFrame>();
-            int frameId = 1;
-
-            using var pdbMapper = new PdbSourceMapper();
-
-            foreach (var chain in clrThread.Chains)
-            {
-                if (!chain.IsManaged)
-                    continue;
-
-                foreach (var frame in chain.Frames)
-                {
-                    try
-                    {
-                        var function = frame.Function;
-                        var module = function.Module;
-                        var token = (int)function.Token;
-                        var modulePath = module.Name;
-
-                        // Get IL offset for source resolution.
-                        int ilOffset = 0;
-                        try
-                        {
-                            if (frame is CorDebugILFrame ilFrame)
-                            {
-                                var ip = ilFrame.IP;
-                                ilOffset = (int)ip.pnOffset;
-                            }
-                        }
-                        catch { }
-
-                        // Resolve source location via PDB.
-                        Source? source = null;
-                        int line = 0;
-
-                        if (modulePath != null)
-                        {
-                            var srcLoc = pdbMapper.GetSourceLocation(modulePath, token, ilOffset > 0 ? ilOffset : 1);
-                            if (srcLoc != null)
-                            {
-                                source = new Source
-                                {
-                                    Name = Path.GetFileName(srcLoc.Value.File),
-                                    Path = srcLoc.Value.File,
-                                };
-                                line = srcLoc.Value.Line;
-                            }
-                        }
-
-                        // Build frame name from metadata.
-                        var name = GetFrameName(function);
-
-                        frames.Add(new StackFrame
-                        {
-                            Id = frameId++,
-                            Name = name,
-                            Source = source,
-                            Line = line,
-                            Column = 0,
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.LogInfo(_logStore, $"  Frame enumeration error: {ex.Message}");
-                    }
-                }
-            }
-
-            _log.LogInfo(_logStore, $"GetManagedStackFrames: {frames.Count} managed frames");
-            return frames.ToArray();
-        }
-        catch (Exception ex)
-        {
-            _log.LogError(_logStore, $"GetManagedStackFrames failed: {ex.Message}");
+        var currentOsId = _dbgEng.GetCurrentThreadSystemId(model.Wrapper);
+        var managedFrames = _corDebug.GetManagedStackFrames(model.CorWrapper, currentOsId);
+        if (managedFrames.Length == 0)
             return [];
-        }
+
+        int frameId = 1;
+        return managedFrames.Select(f => new StackFrame
+        {
+            Id = frameId++,
+            Name = f.Name,
+            Source = f.SourceFile != null ? new Source
+            {
+                Name = Path.GetFileName(f.SourceFile),
+                Path = f.SourceFile,
+            } : null,
+            Line = f.Line,
+            Column = 0,
+        }).ToArray();
     }
 
     public Breakpoint[] OnModuleLoad(NativeDebuggerModel model)
     {
-        if (!model.ManagedInitialized || model.CorProcess == null)
+        if (!model.ManagedInitialized)
             return [];
 
         // Re-enumerate ICorDebug modules to pick up newly loaded assemblies.
-        EnumerateModules(model);
+        _corDebug.RefreshModules(model.CorWrapper);
 
         // Try to bind pending managed breakpoints against the new modules.
         return TryBindPendingBreakpoints(model);
@@ -266,7 +156,7 @@ internal sealed class ManagedDebuggerService(
         string? assemblyName = null;
         using (var mapper = new PdbSourceMapper())
         {
-            foreach (var loaded in model.CorModules.Values)
+            foreach (var loaded in _corDebug.GetModules(model.CorWrapper))
             {
                 if (loaded.PdbPath == null || loaded.Path == null)
                     continue;
@@ -382,24 +272,7 @@ internal sealed class ManagedDebuggerService(
         return true;
     }
 
-    /// <summary>
-    /// Gets the native code address corresponding to an IL offset using the
-    /// IL-to-native mapping from JIT-compiled code.
-    /// </summary>
-    private ulong GetNativeAddressForILOffset(CorDebugCode nativeCode, int ilOffset)
-    {
-        var mapping = nativeCode.ILToNativeMapping;
-        if (mapping != null && mapping.Length > 0)
-        {
-            foreach (var entry in mapping)
-            {
-                if (entry.ilOffset == ilOffset)
-                    return nativeCode.Address + (ulong)entry.nativeStartOffset;
-            }
-        }
-        // Fallback: use the code base address.
-        return nativeCode.Address;
-    }
+
 
     /// <summary>
     /// Sets a hardware execution breakpoint (<c>ba e1</c>) at the given native address.
@@ -434,7 +307,7 @@ internal sealed class ManagedDebuggerService(
         _log.LogInfo(_logStore, $"TryResolveDeferredBreakpoints: {model.DeferredManagedBreakpoints.Count} deferred");
 
         // Recreate the DAC so it sees the latest JIT state.
-        try { TryInitializeDac(model); }
+        try { _corDebug.InitializeDac(model.CorWrapper, model.Wrapper, model.CoreClrPath!, model.CoreClrBaseAddress); }
         catch { }
 
         var resolved = new List<Breakpoint>();
@@ -445,7 +318,7 @@ internal sealed class ManagedDebuggerService(
             try
             {
                 // Use the DAC (XCLRDataProcess) to find the real JIT native entry point.
-                var nativeAddress = ResolveViaXclrData(model, deferred.MethodToken, deferred.AssemblyName);
+                var nativeAddress = _corDebug.ResolveNativeEntryViaXclrData(model.CorWrapper, deferred.MethodToken, deferred.AssemblyName);
                 if (nativeAddress == 0)
                     continue;
 
@@ -585,32 +458,27 @@ internal sealed class ManagedDebuggerService(
         if (method == null)
             return null;
 
-        // Find the assembly path from CorModules (match by assembly name).
+        // Find the assembly path from loaded modules (match by assembly name).
         string? assemblyPath = null;
-        foreach (var mod in model.CorModules.Values)
+        if (model.CorWrapper != null)
         {
-            if (mod.Path != null &&
-                Path.GetFileNameWithoutExtension(mod.Path)
-                    .Equals(method.AssemblyName, StringComparison.OrdinalIgnoreCase))
-            {
-                assemblyPath = mod.Path;
-                break;
-            }
-        }
+            var moduleInfo = _corDebug.FindModuleByName(model.CorWrapper, method.AssemblyName);
+            assemblyPath = moduleInfo?.Path;
 
-        // Fallback: search near known module paths if CorModules didn't have it.
-        if (assemblyPath == null)
-        {
-            foreach (var mod in model.CorModules.Values)
+            // Fallback: search near known module paths.
+            if (assemblyPath == null)
             {
-                if (mod.Path == null) continue;
-                var dir = Path.GetDirectoryName(mod.Path);
-                if (dir == null) continue;
-                var candidate = Path.Combine(dir, method.AssemblyName + ".dll");
-                if (File.Exists(candidate))
+                foreach (var mod in _corDebug.GetModules(model.CorWrapper))
                 {
-                    assemblyPath = candidate;
-                    break;
+                    if (mod.Path == null) continue;
+                    var dir = Path.GetDirectoryName(mod.Path);
+                    if (dir == null) continue;
+                    var candidate = Path.Combine(dir, method.AssemblyName + ".dll");
+                    if (File.Exists(candidate))
+                    {
+                        assemblyPath = candidate;
+                        break;
+                    }
                 }
             }
         }
@@ -763,11 +631,8 @@ internal sealed class ManagedDebuggerService(
                 }
 
                 // Also deactivate any ICorDebug breakpoints (legacy path).
-                if (model.CorManagedBreakpoints.TryGetValue(id, out var corBp))
-                {
-                    try { corBp.Activate(false); } catch { }
-                    model.CorManagedBreakpoints.Remove(id);
-                }
+                if (model.CorWrapper != null)
+                    _corDebug.DeactivateLegacyBreakpoint(model.CorWrapper, id);
             }
             existingIds.Clear();
         }
@@ -779,239 +644,7 @@ internal sealed class ManagedDebuggerService(
             d.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
     }
 
-    private void EnumerateModules(NativeDebuggerModel model)
-    {
-        if (model.CorProcess == null)
-            return;
 
-        try
-        {
-            // Notify ICorDebug that the process is stopped so the DAC refreshes
-            // its view of the runtime's in-memory data structures.
-            try
-            {
-                model.CorProcess.ProcessStateChanged(CorDebugStateChange.FLUSH_ALL);
-            }
-            catch (Exception ex)
-            {
-                _log.LogInfo(_logStore, $"  ProcessStateChanged failed: {ex.Message}");
-            }
-
-            var appDomains = model.CorProcess.AppDomains;
-            _log.LogInfo(_logStore, $"  EnumerateModules: {appDomains.Length} app domains");
-
-            foreach (var appDomain in appDomains)
-            {
-                _log.LogInfo(_logStore, $"  AppDomain: {appDomain.Name}");
-                var assemblies = appDomain.Assemblies;
-                _log.LogInfo(_logStore, $"    {assemblies.Length} assemblies");
-
-                foreach (var assembly in assemblies)
-                {
-                    foreach (var module in assembly.Modules)
-                    {
-                        var baseAddr = (long)module.BaseAddress;
-                        var isNew = !model.CorModules.ContainsKey(baseAddr);
-
-                        // Always update: after FLUSH_ALL old CorDebugModule objects
-                        // are neutered, so we must store the fresh reference.
-                        var name = module.Name;
-                        var pdbPath = name != null ? Path.ChangeExtension(name, ".pdb") : null;
-                        model.CorModules[baseAddr] = new ManagedModule
-                        {
-                            Module = module,
-                            Path = name,
-                            PdbPath = pdbPath != null && File.Exists(pdbPath) ? pdbPath : null,
-                        };
-                        if (isNew)
-                            _log.LogInfo(_logStore, $"  ICorDebug module: {name} (pdb={pdbPath != null && File.Exists(pdbPath)})");
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.LogInfo(_logStore, $"  Module enumeration error: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Initializes the DAC (<c>SOSDacInterface</c>) by calling <c>CLRDataCreateInstance</c>
-    /// from mscordaccore.dll. The DAC provides <c>GetMethodDescPtrFromIP</c> and
-    /// <c>GetMethodDescData</c> for finding real JIT native code addresses.
-    /// </summary>
-    private void TryInitializeDac(NativeDebuggerModel model)
-    {
-        try
-        {
-            var runtimeDir = Path.GetDirectoryName(model.CoreClrPath)!;
-            var dacPath = Path.Combine(runtimeDir, "mscordaccore.dll");
-
-            // Load mscordaccore.dll once, reuse the handle.
-            if (_dacHandle == IntPtr.Zero)
-            {
-                _log.LogInfo(_logStore, "DAC: Loading mscordaccore.dll...");
-                _dacHandle = System.Runtime.InteropServices.NativeLibrary.Load(dacPath);
-            }
-
-            var clrDataTarget = _dbgEng.CreateClrDataTarget(
-                model.Wrapper, model.CoreClrPath!, model.CoreClrBaseAddress);
-
-            var interfaces = ClrDebug.Extensions.CLRDataCreateInstance(_dacHandle, clrDataTarget);
-            model.SosDac = interfaces.SOSDacInterface;
-            model.XclrProcess = interfaces.XCLRDataProcess;
-            _log.LogInfo(_logStore, "DAC: XCLRDataProcess refreshed");
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(_logStore, $"DAC initialization failed: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Uses the DAC's XCLRData interfaces to find the real JIT native code entry point
-    /// for a method token. Enumerates modules to find the matching one, then gets the
-    /// method definition by token and checks if it has a JIT'd instance.
-    /// Returns 0 if the method is not yet JIT'd or the lookup fails.
-    /// </summary>
-    private ulong ResolveViaXclrData(NativeDebuggerModel model, int methodToken, string? assemblyName)
-    {
-        _log.LogInfo(_logStore, $"  ResolveViaXclrData: token=0x{methodToken:X8} assembly={assemblyName} xclrProcess={model.XclrProcess != null}");
-
-        if (model.XclrProcess == null)
-            return 0;
-
-        try
-        {
-            // Enumerate XCLR modules to find the one containing our method.
-            _log.LogInfo(_logStore, "  XCLRData: StartEnumModules...");
-            var enumHandle = model.XclrProcess.StartEnumModules();
-            int moduleCount = 0;
-            try
-            {
-                while (true)
-                {
-                    var moduleResult = model.XclrProcess.TryEnumModule(ref enumHandle, out var xModule);
-                    if (moduleResult != ClrDebug.HRESULT.S_OK)
-                        break;
-                    moduleCount++;
-
-                    try
-                    {
-                        // Filter by assembly name to avoid token collisions.
-                        if (assemblyName != null)
-                        {
-                            string moduleName = "";
-                            try { moduleName = xModule.Name; } catch { }
-                            if (!moduleName.Contains(assemblyName, StringComparison.OrdinalIgnoreCase))
-                                continue;
-                        }
-
-                        var methodDef = xModule.GetMethodDefinitionByToken((ClrDebug.mdMethodDef)methodToken);
-
-                        // Check if this method has a JIT'd instance.
-                        var startResult = methodDef.TryStartEnumInstances(null!, out var instHandle);
-                        if (startResult != ClrDebug.HRESULT.S_OK)
-                        {
-                            _log.LogInfo(_logStore, $"  XCLRData: StartEnumInstances failed: {startResult}");
-                            continue;
-                        }
-                        try
-                        {
-                            var instResult = methodDef.TryEnumInstance(ref instHandle, out var methodInst);
-                            if (instResult == ClrDebug.HRESULT.S_OK)
-                            {
-                                var entryResult = methodInst.TryGetRepresentativeEntryAddress(out var entryAddr);
-                                _log.LogInfo(_logStore, $"  XCLRData: EntryAddress result={entryResult} addr=0x{(ulong)entryAddr:X}");
-                                if (entryResult == ClrDebug.HRESULT.S_OK && (ulong)entryAddr != 0)
-                                {
-                                    return (ulong)entryAddr;
-                                }
-                            }
-                        }
-                        finally
-                        {
-                            methodDef.EndEnumInstances(instHandle);
-                        }
-                    }
-                    catch
-                    {
-                        // Token not found in this module — try next.
-                    }
-                }
-                _log.LogInfo(_logStore, $"  XCLRData: enumerated {moduleCount} modules, method not found/not JIT'd");
-            }
-            finally
-            {
-                model.XclrProcess.EndEnumModules(enumHandle);
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.LogInfo(_logStore, $"  XCLRData lookup failed for token 0x{methodToken:X8}: {ex.GetType().Name}: {ex.Message}");
-        }
-
-        return 0;
-    }
-
-    /// <summary>
-    /// Given an address within a managed method (from <c>GetOffsetByLine</c>), uses the
-    /// DAC to find the real native code entry point via <c>GetMethodDescPtrFromIP</c> +
-    /// <c>GetMethodDescData</c>. Falls back to the original address if the DAC is not
-    /// available or the lookup fails.
-    /// </summary>
-    private ulong ResolveNativeEntryPoint(NativeDebuggerModel model, ulong symbolAddress)
-    {
-        if (model.SosDac == null)
-            return symbolAddress;
-
-        try
-        {
-            var mdResult = model.SosDac.TryGetMethodDescPtrFromIP((ClrDebug.CLRDATA_ADDRESS)symbolAddress, out var methodDesc);
-            if (mdResult != ClrDebug.HRESULT.S_OK)
-            {
-                _log.LogInfo(_logStore, $"  GetMethodDescPtrFromIP(0x{symbolAddress:X}) failed: {mdResult}");
-                return symbolAddress;
-            }
-
-            var dataResult = model.SosDac.TryGetMethodDescData(methodDesc, 0, out var data);
-            if (dataResult != ClrDebug.HRESULT.S_OK)
-            {
-                _log.LogInfo(_logStore, $"  GetMethodDescData(0x{(ulong)methodDesc:X}) failed: {dataResult}");
-                return symbolAddress;
-            }
-
-            var entryPoint = (ulong)data.data.NativeCodeAddr;
-            if (entryPoint != 0 && data.data.bHasNativeCode)
-            {
-                _log.LogInfo(_logStore, $"  DAC: MethodDesc=0x{(ulong)methodDesc:X} NativeCodeAddr=0x{entryPoint:X} (symbol was 0x{symbolAddress:X})");
-                return entryPoint;
-            }
-
-            return symbolAddress;
-        }
-        catch (Exception ex)
-        {
-            _log.LogInfo(_logStore, $"  DAC lookup failed: {ex.Message}");
-            return symbolAddress;
-        }
-    }
-
-    private static string GetFrameName(CorDebugFunction function)
-    {
-        try
-        {
-            var module = function.Module;
-            var metaData = module.GetMetaDataInterface<MetaDataImport>();
-            var methodProps = metaData.GetMethodProps(function.Token);
-            var typeName = metaData.GetTypeDefProps(methodProps.pClass).szTypeDef;
-            return $"{typeName}.{methodProps.szMethod}";
-        }
-        catch
-        {
-            return $"<frame token=0x{function.Token:X8}>";
-        }
-    }
 
     /// <summary>
     /// Finds the method by searching for PDB files on disk near the source file's
@@ -1163,77 +796,6 @@ internal sealed class ManagedDebuggerService(
             }
         }
         return assemblies.ToList();
-    }
-
-    /// <summary>
-    /// Calls <c>mscordbi!OpenVirtualProcessImpl</c> directly to create a piggybacked
-    /// <c>ICorDebugProcess</c>. This bypasses <c>ICLRDebugging</c> entirely because
-    /// .NET 10's <c>mscordbi.dll</c> doesn't export <c>DllGetClassObject</c>, and
-    /// <c>mscoree.dll</c>'s <c>CLRCreateInstance</c> returns
-    /// <c>CORDBG_E_UNSUPPORTED_FORWARD_COMPAT</c> for modern runtimes.
-    /// </summary>
-    private static unsafe CorDebugProcess OpenVirtualProcessImpl(
-        string coreClrPath, ulong coreClrBase, ICorDebugMutableDataTarget dataTarget,
-        ILoggingService log, LogStore logStore, out CLR_DEBUGGING_VERSION clrVersion)
-    {
-        clrVersion = default;
-        var runtimeDir = Path.GetDirectoryName(coreClrPath)!;
-        var mscordbiPath = Path.Combine(runtimeDir, "mscordbi.dll");
-        var mscordacPath = Path.Combine(runtimeDir, "mscordaccore.dll");
-
-        var hMscordbi = NativeLibrary.Load(mscordbiPath);
-        var hDac = NativeLibrary.Load(mscordacPath);
-        var pFunc = NativeLibrary.GetExport(hMscordbi, "OpenVirtualProcessImpl");
-
-        // StrategyBasedComWrappers is required for both creating CCWs from our
-        // [GeneratedComClass] objects AND wrapping native COM pointers for
-        // ClrDebug's [GeneratedComInterface] types.
-        var comWrappers = new StrategyBasedComWrappers();
-
-        IntPtr pDataTarget = comWrappers.GetOrCreateComInterfaceForObject(
-            dataTarget, CreateComInterfaceFlags.None);
-        try
-        {
-            var maxVersion = new CLR_DEBUGGING_VERSION
-            {
-                wStructVersion = 0,
-                wMajor = 255, wMinor = 255, wBuild = 255, wRevision = 255,
-            };
-            var riid = typeof(ICorDebugProcess).GUID;
-            var version = new CLR_DEBUGGING_VERSION();
-            int flags = 0;
-            IntPtr ppInstance = IntPtr.Zero;
-
-            // OpenVirtualProcessImpl(clrInstanceId, pDataTarget, hDacModule,
-            //   pMaxVersion, riidProcess, ppInstance, pVersion, pdwFlags)
-            var fn = (delegate* unmanaged[Stdcall]<
-                ulong, IntPtr, IntPtr,
-                CLR_DEBUGGING_VERSION*, Guid*,
-                IntPtr*, CLR_DEBUGGING_VERSION*, int*, int>)pFunc;
-
-            int hr = fn(
-                coreClrBase, pDataTarget, hDac,
-                &maxVersion, &riid,
-                &ppInstance, &version, &flags);
-
-            log.LogInfo(logStore, $"OpenVirtualProcessImpl: hr=0x{hr:X8} flags=0x{flags:X} version={version.wMajor}.{version.wMinor}.{version.wBuild}");
-
-            if (hr < 0)
-                Marshal.ThrowExceptionForHR(hr);
-
-            // Use StrategyBasedComWrappers to create a proper wrapper compatible
-            // with ClrDebug's [GeneratedComInterface] types. Marshal.GetObjectForIUnknown
-            // creates a legacy RCW that can't QI for source-generated COM interfaces.
-            var raw = (ICorDebugProcess)comWrappers.GetOrCreateObjectForComInstance(
-                ppInstance, CreateObjectFlags.None);
-            Marshal.Release(ppInstance);
-            clrVersion = version;
-            return new CorDebugProcess(raw);
-        }
-        finally
-        {
-            Marshal.Release(pDataTarget);
-        }
     }
 
     // ── Methods moved from NativeDebuggerService ────────────────────

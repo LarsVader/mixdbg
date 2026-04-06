@@ -688,6 +688,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         _engine.CreateModel().Returns(_ => new NativeDebuggerModel
         {
             Wrapper = new DbgEngWrapperModel(),
+            CorWrapper = new CorDebugWrapperModel(),
         });
         _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
             .Do(ci =>

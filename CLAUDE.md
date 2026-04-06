@@ -61,8 +61,11 @@ src/
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
     DbgEngWrapperModel.cs        # dbgeng COM wrapper state: COM interfaces (internal), engine events, variable store, cached stack frames
-    NativeDebuggerModel.cs       # Engine state: DbgEngWrapperModel ref, threads, flags, breakpoint tracking, ICorDebug V4 refs
+    CorDebugWrapperModel.cs      # ICorDebug V4 wrapper state: CorDebugProcess, DAC interfaces, module cache (all internal)
+    NativeDebuggerModel.cs       # Engine state: DbgEngWrapperModel + CorDebugWrapperModel refs, threads, flags, breakpoint tracking
     VariableStore.cs             # Maps variablesReference handles to VariableContainer (symbol group + index range), owned by DbgEngWrapperModel
+    ManagedModuleInfo.cs         # Public record: loaded managed module info (path, PDB path, base address)
+    ManagedFrameInfo.cs          # Public record: managed stack frame (name, source file, line, IL offset)
     EngineExecutionStatus.cs     # Public enum: Go, StepOver, StepInto, Break, etc. — replaces internal DebugStatus constants
     EngineEventInfo.cs           # Public record for last debug event info
     NativeStackFrame.cs          # Public record struct with InstructionOffset — replaces internal DEBUG_STACK_FRAME
@@ -76,6 +79,7 @@ src/
       IDapHandlerService.cs      # Handler interface: Command + Execute(JsonElement?)
       IDapMessage.cs             # Marker interface for DAP response types
       IDbgEngWrapper.cs          # Stateless dbgeng COM wrapper — all COM calls encapsulated here, takes DbgEngWrapperModel
+      ICorDebugWrapper.cs        # Stateless ICorDebug V4 wrapper — runtime init, modules, stack traces, DAC ops, takes CorDebugWrapperModel
       INativeDebugger.cs         # Stateless debug orchestration — engine thread, DAP events, takes NativeDebuggerModel
       ILoggingService.cs         # LogInfo/LogWarning/LogError with [CallerFilePath] — all take LogStore
       ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
@@ -83,9 +87,10 @@ src/
       IProfilerPipeService.cs    # Profiler pipe setup and reader thread
     DapServerService.cs          # IDapServer: Content-Length framed JSON-RPC transport
     DapDispatcherService.cs      # IDapDispatcher: command routing via DI-resolved handler services
-    DbgEngWrapperService.cs      # IDbgEngWrapper: all dbgeng COM interop — lifecycle, breakpoints, symbols, stack, variables, threads, ICorDebug bridge
+    DbgEngWrapperService.cs      # IDbgEngWrapper: all dbgeng COM interop — lifecycle, breakpoints, symbols, stack, variables, threads
+    CorDebugWrapperService.cs    # ICorDebugWrapper: all ICorDebug V4 interop — runtime init, module enumeration, stack traces, DAC operations
     NativeDebuggerService.cs     # INativeDebugger: engine thread orchestration, DAP event emission, delegates COM calls to IDbgEngWrapper
-    ManagedDebuggerService.cs    # IManagedDebugger: ICorDebug V4, managed BP lifecycle, transient BPs, frame merging
+    ManagedDebuggerService.cs    # IManagedDebugger: managed BP lifecycle, profiler interaction, transient BPs, frame merging — delegates ICorDebug to ICorDebugWrapper
     ProfilerPipeService.cs       # IProfilerPipeService: named pipe to CLR profiler, JIT/ENTER notification parsing
     LoggingService.cs            # ILoggingService: file + in-memory logger, [CallerFilePath] sender
     SourceFileService.cs         # ISourceFileService: native vs managed/CLI file detection
@@ -117,7 +122,9 @@ test/
 
 **DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Services are stateless singletons; all mutable state lives in model objects registered as singletons. DAP request handling uses `IDapHandlerService` implementations auto-discovered via assembly scanning — each handler extends `DapHandlerServiceBase<TResponse, TArgs>` or `DapVoidHandlerServiceBase<TArgs>` and contains its own session logic (no separate session orchestrator layer). `NativeDebuggerModel` is created per-session (one per Launch/Attach) by `INativeDebugger.CreateModel()`, stored in `DebugSessionModel.Engine`.
 
-**DbgEng COM isolation**: All dbgeng COM interop is encapsulated behind `IDbgEngWrapper` / `DbgEngWrapperService`. COM interface types (`IDebugClient`, `IDebugControl`, etc.) are `internal` to the `Engine.DbgEng` namespace and stored on `DbgEngWrapperModel` (also `internal` properties). The rest of the codebase uses only the wrapper's public API: `EngineExecutionStatus`, `NativeStackFrame`, `VariableInfo`, `EngineEventInfo`. Engine callback events (breakpoint hit, module load, etc.) are exposed as C# events on `DbgEngWrapperModel`. `NativeDebuggerModel` holds a `DbgEngWrapperModel Wrapper` property. `ManagedDebuggerService` and `ProfilerPipeService` also use `IDbgEngWrapper` for their COM needs (breakpoints, symbols, bridge creation, SetInterrupt).
+**DbgEng COM isolation**: All dbgeng COM interop is encapsulated behind `IDbgEngWrapper` / `DbgEngWrapperService`. COM interface types (`IDebugClient`, `IDebugControl`, etc.) are `internal` to the `Engine.DbgEng` namespace and stored on `DbgEngWrapperModel` (also `internal` properties). The rest of the codebase uses only the wrapper's public API: `EngineExecutionStatus`, `NativeStackFrame`, `VariableInfo`, `EngineEventInfo`. Engine callback events (breakpoint hit, module load, etc.) are exposed as C# events on `DbgEngWrapperModel`. `NativeDebuggerModel` holds a `DbgEngWrapperModel Wrapper` property. `ManagedDebuggerService` and `ProfilerPipeService` also use `IDbgEngWrapper` for their COM needs (breakpoints, symbols, SetInterrupt).
+
+**ICorDebug V4 isolation**: All ClrDebug NuGet package types (`CorDebugProcess`, `SOSDacInterface`, `XCLRDataProcess`, etc.) are encapsulated behind `ICorDebugWrapper` / `CorDebugWrapperService`. ClrDebug types are `internal` on `CorDebugWrapperModel`. The rest of the codebase uses `ManagedModuleInfo`, `ManagedFrameInfo`, and wrapper methods. `NativeDebuggerModel` holds a `CorDebugWrapperModel CorWrapper` property. `ManagedDebuggerService` delegates all ICorDebug operations (runtime init, module enumeration, stack traces, DAC resolution) to `ICorDebugWrapper`.
 
 Three threads, one command queue:
 

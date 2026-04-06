@@ -16,6 +16,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDapDispatcher, DapDispatcherService>();
         services.AddSingleton<IDbgEngWrapper, DbgEngWrapperService>();
         services.AddSingleton<INativeDebugger, NativeDebuggerService>();
+        services.AddSingleton<ICorDebugWrapper, CorDebugWrapperService>();
         services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();
         services.AddSingleton<IProfilerPipeService, ProfilerPipeService>();
 

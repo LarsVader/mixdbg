@@ -749,6 +749,7 @@ public sealed class NativeDebuggerServiceTests : IDisposable
         _model = new NativeDebuggerModel
         {
             Wrapper = new DbgEngWrapperModel(),
+            CorWrapper = new CorDebugWrapperModel(),
         };
     }
 

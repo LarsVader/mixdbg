@@ -1,16 +1,14 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
-using ClrDebug;
 using MixDbg.Models.Dap;
 
 namespace MixDbg.Models;
 
 /// <summary>
-/// Mutable state for the native debug engine. Holds the dbgeng wrapper model
-/// (which encapsulates COM interfaces), volatile flags for cross-thread
-/// signaling, a command queue for marshaling DAP handler calls to the engine
-/// thread, breakpoint tracking state, and ICorDebug V4 references for managed
-/// debugging piggybacked on the dbgeng session.
+/// Mutable state for the native debug engine. Holds the dbgeng and ICorDebug
+/// wrapper models (which encapsulate COM interfaces), volatile flags for
+/// cross-thread signaling, a command queue for marshaling DAP handler calls
+/// to the engine thread, and breakpoint tracking state.
 /// Dispose tears down the engine thread and releases all resources.
 /// </summary>
 public sealed class NativeDebuggerModel : IDisposable
@@ -21,6 +19,13 @@ public sealed class NativeDebuggerModel : IDisposable
     /// methods that take this model.
     /// </summary>
     public DbgEngWrapperModel Wrapper { get; set; } = null!;
+
+    /// <summary>
+    /// The ICorDebug V4 wrapper model. Initialized when CLR is detected.
+    /// All ICorDebug interaction goes through <see cref="Services.ICorDebugWrapper"/>
+    /// methods that take this model.
+    /// </summary>
+    public CorDebugWrapperModel CorWrapper { get; set; } = null!;
 
     // Engine thread lifecycle.
     internal Thread? EngineThread { get; set; }
@@ -44,17 +49,11 @@ public sealed class NativeDebuggerModel : IDisposable
     internal HashSet<uint> ManagedBreakpointIds { get; } = new();
     internal List<SetBreakpointsArguments> PendingManagedBreakpoints { get; } = new();
 
-    // ICorDebug V4 state — piggybacked on the dbgeng session via OpenVirtualProcess.
+    // CLR detection state.
     internal volatile bool ClrLoaded;
     internal volatile bool ManagedInitialized;
-    internal volatile bool SosLoaded;
-    internal ClrDebug.SOSDacInterface? SosDac { get; set; }
-    internal ClrDebug.XCLRDataProcess? XclrProcess { get; set; }
     internal string? CoreClrPath { get; set; }
     internal ulong CoreClrBaseAddress { get; set; }
-    internal CorDebugProcess? CorProcess { get; set; }
-    internal Dictionary<long, ManagedModule> CorModules { get; } = new();
-    internal Dictionary<int, CorDebugFunctionBreakpoint> CorManagedBreakpoints { get; } = new();
     internal Dictionary<string, List<int>> ManagedFileBreakpointIds { get; } = new();
     internal List<PendingManagedBreakpoint> PendingILBreakpoints { get; } = new();
 
@@ -205,12 +204,3 @@ internal sealed class JitMethodMapping
 /// </summary>
 internal record JitMethodInfo(int MethodToken, ulong StartAddress, uint CodeSize, string AssemblyName);
 
-/// <summary>
-/// Tracks a loaded managed module discovered via ICorDebug enumeration.
-/// </summary>
-internal sealed class ManagedModule
-{
-    public required CorDebugModule Module { get; init; }
-    public required string? Path { get; init; }
-    public required string? PdbPath { get; init; }
-}

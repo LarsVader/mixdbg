@@ -130,7 +130,7 @@ internal sealed class NativeDebuggerService(
             // Check if this EXCEPTION_BREAKPOINT is from a managed IL breakpoint.
             if (model.ManagedInitialized &&
                 (model.ManagedBreakpointAddresses.Contains(addr) ||
-                 (model.CorManagedBreakpoints.Count > 0 && !model.UserBreakpointIds.Contains(model.LastHitBpId))))
+                 (model.CorWrapper?.HasLegacyBreakpoints == true && !model.UserBreakpointIds.Contains(model.LastHitBpId))))
             {
                 model.HitUserBreakpoint = true;
                 _log.LogInfo(_logStore, $"Managed breakpoint hit at 0x{addr:X}");

@@ -1,4 +1,3 @@
-using ClrDebug;
 using MixDbg.Models;
 
 namespace MixDbg.Services;
@@ -149,17 +148,4 @@ public interface IDbgEngWrapper
     /// <summary>Enumerates all threads as (engine ID, OS system ID) pairs.</summary>
     (uint EngineId, uint SystemId)[] GetThreads(DbgEngWrapperModel model);
 
-    // ── ICorDebug Bridge ──
-
-    /// <summary>
-    /// Creates an <see cref="ICorDebugMutableDataTarget"/> that bridges memory
-    /// and thread context access through the dbgeng COM interfaces.
-    /// </summary>
-    ICorDebugMutableDataTarget CreateDataTarget(DbgEngWrapperModel model);
-
-    /// <summary>
-    /// Creates an <see cref="ICLRDataTarget"/> that bridges memory and thread
-    /// context access through dbgeng, with the given module base registered.
-    /// </summary>
-    ICLRDataTarget CreateClrDataTarget(DbgEngWrapperModel model, string coreclrPath, ulong baseAddress);
 }

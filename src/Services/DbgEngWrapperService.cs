@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using MixDbg.Engine.DbgEng;
-using MixDbg.Engine.CorDebug;
 using MixDbg.Models;
 
 namespace MixDbg.Services;
@@ -449,20 +448,6 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         for (int i = 0; i < count; i++)
             result[i] = (ids[i], sysIds[i]);
         return result;
-    }
-
-    // ── ICorDebug Bridge ──
-
-    public ClrDebug.ICorDebugMutableDataTarget CreateDataTarget(DbgEngWrapperModel model)
-    {
-        return new DbgEngDataTarget(model.DataSpaces, model.Advanced, model.SysObjects);
-    }
-
-    public ClrDebug.ICLRDataTarget CreateClrDataTarget(DbgEngWrapperModel model, string coreclrPath, ulong baseAddress)
-    {
-        var target = new DbgEngClrDataTarget(model.DataSpaces, model.Advanced, model.SysObjects);
-        target.AddModuleBase(coreclrPath, baseAddress);
-        return target;
     }
 
     // ── Helpers ──
