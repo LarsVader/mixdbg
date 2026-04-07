@@ -1019,6 +1019,13 @@ internal sealed class ManagedDebuggerService(
 
     public bool HandleEnterBreakpoint(NativeDebuggerModel model)
     {
+        // Initialize managed debugging when CLR is first detected.
+        if (model.ClrLoaded && !model.ManagedInitialized)
+            TryInitializeManaged(model);
+
+        // Process JIT notifications and resolve deferred managed breakpoints.
+        ProcessPendingManagedBreakpoints(model);
+
         if (!model.ProfilerHooksActive || !model.PendingEnterBreakpoint)
             return false;
 

@@ -504,10 +504,10 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         _repoRoot, "test", "TestApp", "WpfApp", "MainWindow.xaml.cs");
     private static readonly string _cliWrapperBpFile = Path.Combine(
         _repoRoot, "test", "TestApp", "CliWrapper", "ManagedCalculator.h");
-    private const int _addLine = 63;
-    private const int _multiplyLine = 72;
-    private const int _addBodyLine = 65;       // int result = ManagedCalculator.Add(a, b);
-    private const int _multiplyBodyLine = 74;  // int result = ManagedCalculator.Multiply(a, b);
+    private const int _addLine = 65;
+    private const int _multiplyLine = 74;
+    private const int _addBodyLine = 67;       // int result = ManagedCalculator.Add(a, b);
+    private const int _multiplyBodyLine = 76;  // int result = ManagedCalculator.Multiply(a, b);
     private const int _cliWrapperAddLine = 14;      // return NativeLib::Calculator::Add(a, b);
     private const int _cliWrapperMultiplyLine = 19;  // return NativeLib::Calculator::Multiply(a, b);
 

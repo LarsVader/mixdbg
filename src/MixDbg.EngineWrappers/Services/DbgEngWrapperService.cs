@@ -129,7 +129,13 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
 
     // ── Execution ──
 
-    public int WaitForEvent(DbgEngWrapperModel model) => model.Control.WaitForEvent(0, 0xFFFFFFFF); // INFINITE
+    public WaitForEventResult WaitForEvent(DbgEngWrapperModel model)
+    {
+        int hr = model.Control.WaitForEvent(0, 0xFFFFFFFF); // INFINITE
+        if (hr < 0) return WaitForEventResult.Failed;
+        if (hr == 1) return WaitForEventResult.Timeout; // S_FALSE
+        return WaitForEventResult.EventOccurred; // S_OK
+    }
 
     public void SetExecutionStatus(DbgEngWrapperModel model, EngineExecutionStatus status) => Check(model.Control.SetExecutionStatus((uint)status));
 

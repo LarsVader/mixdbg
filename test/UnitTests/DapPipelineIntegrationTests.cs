@@ -705,7 +705,8 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
         // Split by Content-Length framing
         MemoryStream stream = new(Encoding.UTF8.GetBytes(raw));
-        DapServerService reader = new();
+        LoggingService loggingService = new();
+        DapServerService reader = new(loggingService, loggingService.CreateStore());
         _ = reader.CreateModel(stream, Stream.Null);
 
         // Re-parse as generic messages

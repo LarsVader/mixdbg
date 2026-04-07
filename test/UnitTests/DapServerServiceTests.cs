@@ -6,6 +6,9 @@ using MixDbg.Models.DapMessages.Events;
 using MixDbg.Models.DapMessages.Initialize;
 using MixDbg.Models.DapMessages.Protocol;
 using MixDbg.Services;
+using MixDbg.Services.Interfaces;
+
+using NSubstitute;
 
 namespace MixDbg.Tests;
 
@@ -261,7 +264,9 @@ public sealed class DapServerServiceTests
 
     #region Misc
 
-    private readonly DapServerService _testee = new();
+    private readonly ILoggingService _log = Substitute.For<ILoggingService>();
+    private readonly LogStore _logStore;
+    private readonly DapServerService _testee;
     private static readonly JsonSerializerOptions _jsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -276,6 +281,11 @@ public sealed class DapServerServiceTests
     private Exception? _thrownException;
 
     private string GetOutputString() => Encoding.UTF8.GetString(_outputStream!.ToArray());
+
+    public DapServerServiceTests(){
+        _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
+        _testee = new(_log, _logStore);
+    }
 
     #endregion
 }

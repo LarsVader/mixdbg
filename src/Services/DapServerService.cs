@@ -11,7 +11,9 @@ namespace MixDbg.Services;
 /// Stateless DAP transport service. All mutable state lives in
 /// <see cref="DapServerModel"/>.
 /// </summary>
-internal sealed class DapServerService : IDapServer
+internal sealed class DapServerService(
+        ILoggingService _loggingService,
+        LogStore _logStore) : IDapServer
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -74,6 +76,7 @@ internal sealed class DapServerService : IDapServer
 
     public void SendEvent(DapServerModel model, string eventName, object? body = null)
     {
+        _loggingService.LogInfo(_logStore, $"sending {eventName} event");
         EventMessage evt = new()
         {
             Seq = NextSeq(model),

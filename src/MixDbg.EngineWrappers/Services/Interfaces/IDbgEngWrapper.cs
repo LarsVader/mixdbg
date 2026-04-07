@@ -55,8 +55,8 @@ public interface IDbgEngWrapper
 
     // ── Execution ──
 
-    /// <summary>Blocks until the target stops. Returns the HRESULT from WaitForEvent.</summary>
-    int WaitForEvent(DbgEngWrapperModel model);
+    /// <summary>Blocks until the target stops or an error occurs.</summary>
+    WaitForEventResult WaitForEvent(DbgEngWrapperModel model);
 
     /// <summary>Sets the execution status (Go, StepOver, StepInto, etc.).</summary>
     void SetExecutionStatus(DbgEngWrapperModel model, EngineExecutionStatus status);

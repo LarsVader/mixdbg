@@ -86,67 +86,38 @@ internal sealed class NativeDebuggerService(
         model.Commands.Add(WakeEngineThread);
     }
 
-    // ── Private ─────────────────────────────────────────
-
-    private void CreateEngine(NativeDebuggerModel model)
-    {
-        DbgEngWrapperModel wrapperModel = _wrapper.CreateModel();
-        model.Wrapper = wrapperModel;
-
-        _wrapper.CreateEngine(wrapperModel);
-
-        // Subscribe to engine events.
-        wrapperModel.OnBreakpointHit += bpId => OnBreakpoint(model, bpId);
-        wrapperModel.OnExitProcess += code => OnExitProcess(model, code);
-        wrapperModel.OnCreateProcess += name => _server.SendEvent(_transport, "output", new OutputEventBody
-        {
-            Category = "console",
-            Output = $"[mixdbg] Process created: {name}\n",
-        });
-        wrapperModel.OnLoadModule += (mod, img, baseOffset) =>
-        {
-            if (!model.ClrLoaded && mod != null &&
-                mod.Equals("coreclr", StringComparison.OrdinalIgnoreCase))
-            {
-                model.ClrLoaded = true;
-                model.CoreClrPath = img;
-                model.CoreClrBaseAddress = baseOffset;
-                _log.LogInfo(_logStore, $"CLR detected: coreclr at {img} base=0x{baseOffset:X}");
-            }
-
-            // After managed init, notify on managed assembly loads so pending BPs can bind.
-            if (model.ManagedInitialized && img != null &&
-                (img.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
-                 img.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
-            {
-                _managedDebugger.TryBindManagedBreakpointsOnModuleLoad(model);
-            }
-        };
-        wrapperModel.OnClrNotification += () =>
-        {
-            // When deferred managed breakpoints exist after configDone,
-            // break so the engine loop can recreate the DAC and check for JIT.
-            if (model.ConfigDone && model.DeferredManagedBreakpoints.Count > 0)
-                wrapperModel.ClrNotificationShouldBreak = true;
-        };
-        wrapperModel.OnExceptionBreakpoint += addr =>
-        {
-            // Check if this EXCEPTION_BREAKPOINT is from a managed IL breakpoint.
-            if (model.ManagedInitialized &&
-                (model.ManagedBreakpointAddresses.Contains(addr) ||
-                 (model.CorWrapper?.HasLegacyBreakpoints == true && !model.UserBreakpointIds.Contains(model.LastHitBpId))))
-            {
-                model.HitUserBreakpoint = true;
-                _log.LogInfo(_logStore, $"Managed breakpoint hit at 0x{addr:X}");
-            }
-        };
-
-        _wrapper.InitializeSymbols(wrapperModel, model.SymbolPath, null);
-    }
-
     public void StartEngineThread(NativeDebuggerModel model)
     {
-        model.EngineThread = new Thread(() => EngineLoop(model))
+        model.EngineThread = new Thread(() =>
+        {
+            try{
+                // All dbgeng COM calls must happen on this thread.
+                CreateEngine(model);
+                AttachOrCreateProcess(model);
+                model.EngineReady.Set(); // Signal the main thread that init is done.
+                _log.LogInfo(_logStore, "EngineLoop started — initializing dbgeng on engine thread");
+
+                while (!model.Terminated)
+                {
+                    if(!EngineLoopStep(model, model.Wrapper)){
+                        break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(_logStore, $"EngineLoop EXCEPTION: {ex}");
+                // If init failed, unblock the main thread.
+                model.EngineInitError = ex;
+                model.EngineReady.Set();
+                _server.SendEvent(_transport, "output", new OutputEventBody
+                {
+                    Category = "stderr",
+                    Output = $"[mixdbg] Engine error: {ex.Message}\n",
+                });
+                _server.SendEvent(_transport, "terminated", new TerminatedEventBody());
+            }
+        })
         {
             Name = "dbgeng-engine",
             IsBackground = true,
@@ -154,226 +125,7 @@ internal sealed class NativeDebuggerService(
         model.EngineThread.Start();
     }
 
-    private void EngineLoop(NativeDebuggerModel model)
-    {
-        _log.LogInfo(_logStore, "EngineLoop started — initializing dbgeng on engine thread");
-        try
-        {
-            // All dbgeng COM calls must happen on this thread.
-            CreateEngine(model);
-
-            DbgEngWrapperModel w = model.Wrapper;
-
-            if (model.IsAttach)
-            {
-                _log.LogInfo(_logStore, $"Attach: pid={model.AttachPid}");
-                _wrapper.AttachProcess(w, model.AttachPid);
-            }
-            else
-            {
-                if (model.LaunchCwd != null)
-                    _wrapper.InitializeSymbols(w, null, model.LaunchCwd);
-
-                // Disable tiered compilation and ReadyToRun so JIT produces stable
-                // native addresses for hardware breakpoints on managed methods.
-                Environment.SetEnvironmentVariable("DOTNET_TieredCompilation", "0");
-                Environment.SetEnvironmentVariable("DOTNET_ReadyToRun", "0");
-
-                // Set up CLR profiler for real-time JIT notifications.
-                _profilerPipe.SetupProfilerPipe(model);
-
-                string cmdLine = model.LaunchProgram!;
-                if (model.LaunchArgs is { Length: > 0 })
-                    cmdLine += " " + string.Join(" ", model.LaunchArgs);
-                _log.LogInfo(_logStore, $"Launch: CreateProcess({cmdLine})");
-                _wrapper.CreateProcess(w, cmdLine);
-                _log.LogInfo(_logStore, "Launch: CreateProcess succeeded");
-
-                // Start reading profiler notifications in the background.
-                _profilerPipe.StartProfilerReader(model);
-            }
-
-            // Signal the main thread that init is done.
-            model.EngineReady.Set();
-
-            while (!model.Terminated)
-            {
-                _log.LogInfo(_logStore, "WaitForEvent...");
-                int hr = _wrapper.WaitForEvent(w);
-                _log.LogInfo(_logStore, $"WaitForEvent returned hr=0x{hr:X8}");
-                if (hr < 0)
-                {
-                    _log.LogInfo(_logStore, $"WaitForEvent failed hr=0x{hr:X8}, terminated={model.Terminated} exited={model.TargetExited}");
-                    break;
-                }
-
-                // Target is now stopped.
-                model.Stopped.Set();
-
-                // Initialize managed debugging when CLR is first detected.
-                if (model.ClrLoaded && !model.ManagedInitialized)
-                    _managedDebugger.TryInitializeManaged(model);
-
-                if (model.TargetExited)
-                {
-                    _log.LogInfo(_logStore, "Target exited, sending terminated event");
-                    _server.SendEvent(_transport, "terminated", new TerminatedEventBody());
-                    break;
-                }
-
-                // Get last event info for logging
-                EngineEventInfo evt = _wrapper.GetLastEventInfo(w);
-                _log.LogInfo(_logStore, $"Event: type=0x{evt.Type:X} pid={evt.ProcessId} tid={evt.ThreadId} desc=\"{evt.Description}\"");
-                _log.LogInfo(_logStore, $"State: configDone={model.ConfigDone} hitUserBp={model.HitUserBreakpoint} stepping={model.Stepping} pause={model.PauseRequested}");
-
-                if (!model.ConfigDone)
-                {
-                    _log.LogInfo(_logStore, "Pre-configDone: processing commands until resume");
-                    ProcessCommandsUntilResume(model);
-                    continue;
-                }
-
-                // Process JIT notifications and resolve deferred managed breakpoints.
-                _managedDebugger.ProcessPendingManagedBreakpoints(model);
-
-                // Handle ENTER notification from profiler — set transient BP, ACK, auto-continue.
-                if (_managedDebugger.HandleEnterBreakpoint(model))
-                {
-                    model.Stopped.Reset();
-                    _wrapper.SetExecutionStatus(w, EngineExecutionStatus.Go);
-                    continue;
-                }
-
-                // After configurationDone: determine stop reason.
-                string? reason = null;
-                if (model.HitUserBreakpoint)
-                {
-                    model.HitUserBreakpoint = false;
-                    reason = "breakpoint";
-                }
-                else if (model.Stepping)
-                {
-                    model.Stepping = false;
-                    reason = "step";
-                }
-                else if (model.PauseRequested)
-                {
-                    model.PauseRequested = false;
-                    reason = "pause";
-                }
-
-                if (reason != null)
-                {
-                    uint threadId = _wrapper.GetCurrentThreadId(w);
-                    _log.LogInfo(_logStore, $"User stop: reason={reason} threadId={threadId}");
-                    _server.SendEvent(_transport, "stopped", new StoppedEventBody
-                    {
-                        Reason = reason,
-                        ThreadId = (int)threadId,
-                        AllThreadsStopped = true,
-                    });
-                    ProcessCommandsUntilResume(model);
-                }
-                else
-                {
-                    _log.LogInfo(_logStore, "System stop — auto-continuing");
-                    model.Stopped.Reset();
-                    _wrapper.SetExecutionStatus(w, EngineExecutionStatus.Go);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.LogError(_logStore, $"EngineLoop EXCEPTION: {ex}");
-            // If init failed, unblock the main thread.
-            model.EngineInitError = ex;
-            model.EngineReady.Set();
-            _server.SendEvent(_transport, "output", new OutputEventBody
-            {
-                Category = "stderr",
-                Output = $"[mixdbg] Engine error: {ex.Message}\n",
-            });
-            _server.SendEvent(_transport, "terminated", new TerminatedEventBody());
-        }
-    }
-
-    /// <summary>
-    private void ProcessCommandsUntilResume(NativeDebuggerModel model)
-    {
-        _log.LogInfo(_logStore, "ProcessCommandsUntilResume: waiting for commands");
-        while (!model.Terminated)
-        {
-            Action cmd;
-            try
-            {
-                cmd = model.Commands.Take();
-            }
-            catch (InvalidOperationException)
-            {
-                _log.LogInfo(_logStore, "ProcessCommandsUntilResume: collection completed");
-                break;
-            }
-
-            _log.LogInfo(_logStore, "ProcessCommandsUntilResume: executing command");
-            cmd();
-
-            EngineExecutionStatus status = _wrapper.GetExecutionStatus(model.Wrapper);
-            _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: execStatus={status}");
-            if (status != EngineExecutionStatus.Break
-                && status != EngineExecutionStatus.NoDebuggee)
-            {
-                _log.LogInfo(_logStore, "ProcessCommandsUntilResume: resuming");
-                model.Stopped.Reset();
-                break;
-            }
-        }
-    }
-
-    private void OnBreakpoint(NativeDebuggerModel model, uint bpId)
-    {
-        model.LastHitBpId = bpId;
-        model.HitUserBreakpoint = model.UserBreakpointIds.Contains(bpId)
-            || model.ManagedBreakpointIds.Contains(bpId);
-        _log.LogInfo(_logStore, $"OnBreakpoint: id={bpId} isUser={model.HitUserBreakpoint} (native: [{string.Join(",", model.UserBreakpointIds)}] managed: [{string.Join(",", model.ManagedBreakpointIds)}])");
-
-        // Send verified update so nvim-dap clears the "rejected" marker.
-        if (model.HitUserBreakpoint)
-        {
-            // Find the source:line for this breakpoint ID
-            KeyValuePair<string, uint> entry = model.BreakpointIds.FirstOrDefault(kv => kv.Value == bpId);
-            if (entry.Key != null)
-            {
-                string[] parts = entry.Key.Split(':', 2);
-                string path = parts[0];
-                int line = int.TryParse(parts[1], out int l) ? l : 0;
-                _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
-                {
-                    Reason = "changed",
-                    Breakpoint = new Breakpoint
-                    {
-                        Id = (int)bpId,
-                        Verified = true,
-                        Line = line,
-                        Source = new Source
-                        {
-                            Name = Path.GetFileName(path),
-                            Path = path,
-                        },
-                    },
-                });
-            }
-        }
-    }
-
-    private void OnExitProcess(NativeDebuggerModel model, uint exitCode)
-    {
-        model.TargetExited = true;
-        _server.SendEvent(_transport, "output", new OutputEventBody
-        {
-            Category = "console",
-            Output = $"[mixdbg] Process exited with code {exitCode}\n",
-        });
-    }
+    // ── Engine-thread methods (caller must dispatch via Commands.Add) ──
 
     public Breakpoint[] SetBreakpointsOnEngine(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
     {
@@ -637,12 +389,6 @@ internal sealed class NativeDebuggerService(
         return result;
     }
 
-    // ── Engine-thread command methods ──────────────────
-
-    /// <summary>No-op command that unblocks the engine thread's <c>Commands.Take()</c>.</summary>
-    private static void WakeEngineThread() { }
-
-    // ── Engine-thread methods (caller must dispatch via Commands.Add) ──
 
     /// <summary>Resumes execution, clears transient BPs, and re-enables profiler hooks.</summary>
     public void ExecuteContinueOnEngine(NativeDebuggerModel model)
@@ -673,4 +419,273 @@ internal sealed class NativeDebuggerService(
 
     /// <summary>Gets the engine thread ID of the last event.</summary>
     public int GetStoppedThreadIdOnEngine(NativeDebuggerModel model) => (int)_wrapper.GetEventThreadId(model.Wrapper);
+
+    // ── Private ─────────────────────────────────────────
+
+    /// <summary>No-op command that unblocks the engine thread's <c>Commands.Take()</c>.</summary>
+    private static void WakeEngineThread() { }
+
+    private bool EngineLoopStep(NativeDebuggerModel model, DbgEngWrapperModel dbgEngWrapperModel)
+    {
+        _log.LogInfo(_logStore, "WaitForEvent...");
+        WaitForEventResult waitResult = _wrapper.WaitForEvent(dbgEngWrapperModel);
+        _log.LogInfo(_logStore, $"WaitForEvent returned {waitResult}");
+        if (waitResult == WaitForEventResult.Failed)
+        {
+            _log.LogInfo(_logStore, $"WaitForEvent failed, terminated={model.Terminated} exited={model.TargetExited}");
+            return false;
+        }
+        model.Stopped.Set(); // Target is now stopped.
+
+        LogDebuggerEvent(model, dbgEngWrapperModel);
+        if (model.TargetExited)
+        {
+            _server.SendEvent(_transport, "terminated", new TerminatedEventBody());
+            return false;
+        }
+        if (!model.ConfigDone)
+        {
+            ProcessCommandsUntilResume(model);
+            return true;
+        }
+        if (_managedDebugger.HandleEnterBreakpoint(model))
+        {
+            model.Stopped.Reset();
+            _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
+            return true;
+        }
+        if (DetermineStopReason(model) is string reason)
+        {
+            SendStopDapResponseAndProcessCommands(model, dbgEngWrapperModel, reason);
+            return true;
+        }
+
+        _log.LogInfo(_logStore, "System stop — auto-continuing");
+        model.Stopped.Reset();
+        _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
+        return true;
+    }
+
+    private void LogDebuggerEvent(NativeDebuggerModel model, DbgEngWrapperModel dbgEngWrapperModel)
+    {
+        // Get last event info for logging
+        EngineEventInfo evt = _wrapper.GetLastEventInfo(dbgEngWrapperModel);
+        _log.LogInfo(_logStore, $"Event: type=0x{evt.Type:X} pid={evt.ProcessId} tid={evt.ThreadId} desc=\"{evt.Description}\"");
+        _log.LogInfo(_logStore, $"State: configDone={model.ConfigDone} hitUserBp={model.HitUserBreakpoint} stepping={model.Stepping} pause={model.PauseRequested}");
+    }
+
+    private void SendStopDapResponseAndProcessCommands(NativeDebuggerModel model, DbgEngWrapperModel dbgEngWrapperModel, string reason)
+    {
+        uint threadId = _wrapper.GetCurrentThreadId(dbgEngWrapperModel);
+        _log.LogInfo(_logStore, $"User stop: reason={reason} threadId={threadId}");
+        _server.SendEvent(_transport, "stopped", new StoppedEventBody
+        {
+            Reason = reason,
+            ThreadId = (int)threadId,
+            AllThreadsStopped = true,
+        });
+        ProcessCommandsUntilResume(model);
+    }
+
+    private static string? DetermineStopReason(NativeDebuggerModel model)
+    {
+        string? reason = null;
+        if (model.HitUserBreakpoint)
+        {
+            model.HitUserBreakpoint = false;
+            reason = "breakpoint";
+        }
+        else if (model.Stepping)
+        {
+            model.Stepping = false;
+            reason = "step";
+        }
+        else if (model.PauseRequested)
+        {
+            model.PauseRequested = false;
+            reason = "pause";
+        }
+
+        return reason;
+    }
+
+    private void AttachOrCreateProcess(NativeDebuggerModel model)
+    {
+        DbgEngWrapperModel dbgEngWrapperModel = model.Wrapper;
+
+        if (model.IsAttach)
+        {
+            _log.LogInfo(_logStore, $"Attach: pid={model.AttachPid}");
+            _wrapper.AttachProcess(dbgEngWrapperModel, model.AttachPid);
+            return;
+        }
+
+        if (model.LaunchCwd != null)
+            _wrapper.InitializeSymbols(dbgEngWrapperModel, null, model.LaunchCwd);
+
+        // Disable tiered compilation and ReadyToRun so JIT produces stable
+        // native addresses for hardware breakpoints on managed methods.
+        Environment.SetEnvironmentVariable("DOTNET_TieredCompilation", "0");
+        Environment.SetEnvironmentVariable("DOTNET_ReadyToRun", "0");
+
+        // Set up CLR profiler for real-time JIT notifications.
+        _profilerPipe.SetupProfilerPipe(model);
+
+        string cmdLine = model.LaunchProgram!;
+        if (model.LaunchArgs is { Length: > 0 })
+            cmdLine += " " + string.Join(" ", model.LaunchArgs);
+
+        _log.LogInfo(_logStore, $"Launch: CreateProcess({cmdLine})");
+        _wrapper.CreateProcess(dbgEngWrapperModel, cmdLine);
+        _log.LogInfo(_logStore, "Launch: CreateProcess succeeded");
+
+        // Start reading profiler notifications in the background.
+        _profilerPipe.StartProfilerReader(model);
+    }
+
+    private void ProcessCommandsUntilResume(NativeDebuggerModel model)
+    {
+        _log.LogInfo(_logStore, "ProcessCommandsUntilResume: waiting for commands");
+        while (!model.Terminated)
+        {
+            Action cmd;
+            try
+            {
+                cmd = model.Commands.Take();
+            }
+            catch (InvalidOperationException)
+            {
+                _log.LogInfo(_logStore, "ProcessCommandsUntilResume: collection completed");
+                break;
+            }
+
+            _log.LogInfo(_logStore, "ProcessCommandsUntilResume: executing command");
+            cmd();
+
+            EngineExecutionStatus status = _wrapper.GetExecutionStatus(model.Wrapper);
+            _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: execStatus={status}");
+            if (status != EngineExecutionStatus.Break
+                && status != EngineExecutionStatus.NoDebuggee)
+            {
+                _log.LogInfo(_logStore, "ProcessCommandsUntilResume: resuming");
+                model.Stopped.Reset();
+                break;
+            }
+        }
+    }
+
+    private void CreateEngine(NativeDebuggerModel model)
+    {
+        DbgEngWrapperModel wrapperModel = _wrapper.CreateModel();
+        model.Wrapper = wrapperModel;
+
+        _wrapper.CreateEngine(wrapperModel);
+
+        wrapperModel.OnBreakpointHit += bpId => OnBreakpoint(model, bpId);
+        wrapperModel.OnExitProcess += code => OnExitProcess(model, code);
+        wrapperModel.OnCreateProcess += OnCreateProcess;
+        wrapperModel.OnLoadModule += (mod, img, baseOffset) => OnLoadModule(model, mod, img, baseOffset);
+        wrapperModel.OnClrNotification += () => OnClrNotification(model, wrapperModel);
+        wrapperModel.OnExceptionBreakpoint += addr => OnExceptionBreakpoint(model, addr);
+
+        _wrapper.InitializeSymbols(wrapperModel, model.SymbolPath, null);
+    }
+
+    private void OnExceptionBreakpoint(NativeDebuggerModel model, ulong addr)
+    {
+        // Check if this EXCEPTION_BREAKPOINT is from a managed IL breakpoint.
+        if (!model.ManagedInitialized ||
+                !model.ManagedBreakpointAddresses.Contains(addr) &&
+                 ((model.CorWrapper?.HasLegacyBreakpoints) != true || model.UserBreakpointIds.Contains(model.LastHitBpId)))
+        {
+            return;
+        }
+        model.HitUserBreakpoint = true;
+        _log.LogInfo(_logStore, $"Managed breakpoint hit at 0x{addr:X}");
+    }
+
+    private static void OnClrNotification(NativeDebuggerModel model, DbgEngWrapperModel wrapperModel)
+    {
+        // When deferred managed breakpoints exist after configDone,
+        // break so the engine loop can recreate the DAC and check for JIT.
+        if (model.ConfigDone && model.DeferredManagedBreakpoints.Count > 0)
+            wrapperModel.ClrNotificationShouldBreak = true;
+    }
+
+    private void OnLoadModule(NativeDebuggerModel model, string? mod, string? img, ulong baseOffset)
+    {
+        if (!model.ClrLoaded && mod != null &&
+                mod.Equals("coreclr", StringComparison.OrdinalIgnoreCase))
+        {
+            model.ClrLoaded = true;
+            model.CoreClrPath = img;
+            model.CoreClrBaseAddress = baseOffset;
+            _log.LogInfo(_logStore, $"CLR detected: coreclr at {img} base=0x{baseOffset:X}");
+        }
+
+        // After managed init, notify on managed assembly loads so pending BPs can bind.
+        if (model.ManagedInitialized && img != null &&
+                (img.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
+                 img.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
+        {
+            _managedDebugger.TryBindManagedBreakpointsOnModuleLoad(model);
+        }
+    }
+
+    private void OnCreateProcess(string? name)
+        => _server.SendEvent(_transport, "output", new OutputEventBody
+        {
+            Category = "console",
+            Output = $"[mixdbg] Process created: {name}\n",
+        });
+
+    private void OnBreakpoint(NativeDebuggerModel model, uint bpId)
+    {
+        model.LastHitBpId = bpId;
+        model.HitUserBreakpoint = model.UserBreakpointIds.Contains(bpId)
+            || model.ManagedBreakpointIds.Contains(bpId);
+        _log.LogInfo(_logStore, $"OnBreakpoint: id={bpId} isUser={model.HitUserBreakpoint} (native: [{string.Join(",", model.UserBreakpointIds)}] managed: [{string.Join(",", model.ManagedBreakpointIds)}])");
+
+        // Send verified update so nvim-dap clears the "rejected" marker.
+        if (!model.HitUserBreakpoint)
+        {
+            return;
+        }
+        // Find the source:line for this breakpoint ID
+        KeyValuePair<string, uint> entry = model.BreakpointIds.FirstOrDefault(kv => kv.Value == bpId);
+        if (entry.Key == null)
+        {
+            return;
+        }
+        string[] parts = entry.Key.Split(':', 2);
+        string path = parts[0];
+        int line = int.TryParse(parts[1], out int l) ? l : 0;
+
+        _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
+        {
+            Reason = "changed",
+            Breakpoint = new Breakpoint
+            {
+                Id = (int)bpId,
+                Verified = true,
+                Line = line,
+                Source = new Source
+                {
+                    Name = Path.GetFileName(path),
+                    Path = path,
+                },
+            },
+        });
+    }
+
+    private void OnExitProcess(NativeDebuggerModel model, uint exitCode)
+    {
+        model.TargetExited = true;
+        _server.SendEvent(_transport, "output", new OutputEventBody
+        {
+            Category = "console",
+            Output = $"[mixdbg] Process exited with code {exitCode}\n",
+        });
+    }
+
 }
