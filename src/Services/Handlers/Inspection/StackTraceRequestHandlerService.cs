@@ -8,7 +8,7 @@ namespace MixDbg.Services.Handlers.Inspection;
 /// Handles the DAP stackTrace request by returning the call stack.
 /// </summary>
 public class StackTraceRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IEngineQueryService engineQuery,
         DebugSessionModel sessionModel)
     : DapHandlerServiceBase<StackTraceResponseBody, StackTraceArguments>
 {
@@ -23,7 +23,7 @@ public class StackTraceRequestHandlerService(
 
         int maxFrames = args.Levels > 0 ? args.Levels : 50;
         StackFrame[] frames = model.QueueEngineQuery(
-            () => nativeDebugger.GetStackTraceOnEngine(model, maxFrames));
+            () => engineQuery.GetStackTraceOnEngine(model, maxFrames));
         return new StackTraceResponseBody
         {
             StackFrames = frames,

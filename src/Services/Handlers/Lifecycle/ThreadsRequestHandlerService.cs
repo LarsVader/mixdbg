@@ -9,7 +9,7 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 /// Handles the DAP threads request by returning all debugger threads.
 /// </summary>
 public class ThreadsRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IEngineQueryService engineQuery,
         DebugSessionModel sessionModel)
     : DapHandlerServiceBase<ThreadsResponseBody, EmptyArguments>
 {
@@ -28,7 +28,7 @@ public class ThreadsRequestHandlerService(
         }
 
         DapThread[] threads = model.QueueEngineQuery(
-            () => nativeDebugger.GetThreadsOnEngine(model));
+            () => engineQuery.GetThreadsOnEngine(model));
         return new ThreadsResponseBody { Threads = threads };
     }
 }

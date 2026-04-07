@@ -95,13 +95,17 @@ src/
       IDapDispatcher.cs          # Stateless request dispatcher — Run() dispatches to handler services
       IDapHandlerService.cs      # Handler interface: Command + Execute(JsonElement?)
       IDapMessage.cs             # Marker interface for DAP response types
-      INativeDebugger.cs         # Stateless debug orchestration — engine thread, DAP events, takes NativeDebuggerModel
+      IEngineLifecycleService.cs         # Stateless engine lifecycle — engine thread, event loop, break/terminate/detach
+      IBreakpointService.cs      # Stateless breakpoint management — set, remove, hit handling
+      IEngineQueryService.cs     # Stateless engine queries + execution control — stack trace, scopes, variables, threads, continue, step
       ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
       IManagedDebugger.cs        # Stateless managed debugging — BP orchestration, frame merging
       IProfilerPipeService.cs    # Profiler pipe setup and reader thread
     DapServerService.cs          # IDapServer: Content-Length framed JSON-RPC transport
     DapDispatcherService.cs      # IDapDispatcher: command routing via DI-resolved handler services
-    NativeDebuggerService.cs     # INativeDebugger: engine thread orchestration, DAP event emission
+    EngineLifecycleService.cs     # IEngineLifecycleService: engine thread, event loop, process lifecycle
+    BreakpointService.cs         # IBreakpointService: native/managed/deferred breakpoint management, hit callbacks
+    EngineQueryService.cs        # IEngineQueryService: stack trace, scopes, variables, threads, execution control
     ManagedDebuggerService.cs    # IManagedDebugger: managed BP lifecycle, profiler interaction, frame merging
     ProfilerPipeService.cs       # IProfilerPipeService: named pipe to CLR profiler, JIT/ENTER notification parsing
     LoggingService.cs            # ILoggingService: file + in-memory logger, [CallerFilePath] sender
@@ -132,7 +136,7 @@ test/
 
 ## Architecture
 
-**DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Services are stateless singletons; all mutable state lives in model objects registered as singletons. DAP request handling uses `IDapHandlerService` implementations auto-discovered via assembly scanning — each handler extends `DapHandlerServiceBase<TResponse, TArgs>` or `DapVoidHandlerServiceBase<TArgs>` and contains its own session logic (no separate session orchestrator layer). `NativeDebuggerModel` is created per-session (one per Launch/Attach) by `INativeDebugger.CreateModel()`, stored in `DebugSessionModel.Engine`.
+**DI container** (`Microsoft.Extensions.DependencyInjection`): `Program.cs` builds a `ServiceProvider` via `AddMixDbgCore()`. Services are stateless singletons; all mutable state lives in model objects registered as singletons. DAP request handling uses `IDapHandlerService` implementations auto-discovered via assembly scanning — each handler extends `DapHandlerServiceBase<TResponse, TArgs>` or `DapVoidHandlerServiceBase<TArgs>` and contains its own session logic (no separate session orchestrator layer). `NativeDebuggerModel` is created per-session (one per Launch/Attach) by `IEngineLifecycleService.CreateModel()`, stored in `DebugSessionModel.Engine`. The engine-facing functionality is split across three services: `IEngineLifecycleService` (engine lifecycle + event loop), `IBreakpointService` (breakpoint management + hit callbacks), and `IEngineQueryService` (stack trace, scopes, variables, threads, execution control). Handlers inject `IBreakpointService` or `IEngineQueryService` directly for engine-thread operations.
 
 **DbgEng COM isolation**: All dbgeng COM interop is encapsulated behind `IDbgEngWrapper` / `DbgEngWrapperService`. COM interface types (`IDebugClient`, `IDebugControl`, etc.) are `internal` to the `Engine.DbgEng` namespace and stored on `DbgEngWrapperModel` (also `internal` properties). The rest of the codebase uses only the wrapper's public API: `EngineExecutionStatus`, `NativeStackFrame`, `VariableInfo`, `EngineEventInfo`. Engine callback events (breakpoint hit, module load, etc.) are exposed as C# events on `DbgEngWrapperModel`. `NativeDebuggerModel` holds a `DbgEngWrapperModel Wrapper` property. `ManagedDebuggerService` and `ProfilerPipeService` also use `IDbgEngWrapper` for their COM needs (breakpoints, symbols, SetInterrupt).
 
@@ -174,7 +178,7 @@ Current settings: `Breakpoint` → BREAK, `CreateProcess` → BREAK, `ExitProces
 
 ### Thread Affinity
 
-ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace`, etc.) MUST happen on the engine thread. `NativeDebuggerService` exposes only engine-thread methods (suffixed `OnEngine`) and thread-safe methods (`Break`, `Terminate`, `Detach`). Handlers set launch/attach parameters on `NativeDebuggerModel`, call `StartEngineThread`, and block on `model.EngineReady` until init completes. For engine queries, handlers use `model.QueueEngineQuery(() => nativeDebugger.GetStackTraceOnEngine(model, ...))` which marshals the call to the engine thread.
+ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace`, etc.) MUST happen on the engine thread. `EngineLifecycleService` exposes only engine-thread methods (suffixed `OnEngine`) and thread-safe methods (`Break`, `Terminate`, `Detach`). Handlers set launch/attach parameters on `NativeDebuggerModel`, call `StartEngineThread`, and block on `model.EngineReady` until init completes. For engine queries, handlers use `model.QueueEngineQuery(() => nativeDebugger.GetStackTraceOnEngine(model, ...))` which marshals the call to the engine thread.
 
 ### Process Startup Sequence
 

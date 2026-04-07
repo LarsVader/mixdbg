@@ -8,7 +8,7 @@ namespace MixDbg.Services.Handlers.Execution;
 /// Handles the DAP stepOut request.
 /// </summary>
 public class StepOutRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IEngineQueryService engineQuery,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<StepArguments>
 {
@@ -20,7 +20,7 @@ public class StepOutRequestHandlerService(
     {
         if (sessionModel.Engine is NativeDebuggerModel model)
         {
-            model.Commands.Add(() => nativeDebugger.ExecuteStepOutOnEngine(model));
+            model.Commands.Add(() => engineQuery.ExecuteStepOutOnEngine(model));
         }
         sessionModel.State = SessionState.Running;
     }

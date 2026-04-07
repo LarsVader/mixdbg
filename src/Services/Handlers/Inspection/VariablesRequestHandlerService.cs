@@ -8,7 +8,7 @@ namespace MixDbg.Services.Handlers.Inspection;
 /// Handles the DAP variables request by returning variables for a reference handle.
 /// </summary>
 public class VariablesRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IEngineQueryService engineQuery,
         DebugSessionModel sessionModel)
     : DapHandlerServiceBase<VariablesResponseBody, VariablesArguments>
 {
@@ -22,7 +22,7 @@ public class VariablesRequestHandlerService(
             return new VariablesResponseBody { Variables = [] };
 
         Variable[] vars = model.QueueEngineQuery(
-            () => nativeDebugger.GetVariablesOnEngine(model, args.VariablesReference));
+            () => engineQuery.GetVariablesOnEngine(model, args.VariablesReference));
         return new VariablesResponseBody { Variables = vars };
     }
 }

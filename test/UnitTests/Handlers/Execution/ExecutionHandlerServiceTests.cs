@@ -27,10 +27,10 @@ public sealed class ContinueRequestHandlerServiceTests
     {
         _ = _testee.ExecuteInternal(new ContinueArguments());
 
-        _engine.DidNotReceive().ExecuteContinueOnEngine(Arg.Any<NativeDebuggerModel>());
+        _engineQuery.DidNotReceive().ExecuteContinueOnEngine(Arg.Any<NativeDebuggerModel>());
     }
 
-    private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
+    private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly ContinueRequestHandlerService _testee;
@@ -38,7 +38,7 @@ public sealed class ContinueRequestHandlerServiceTests
     public ContinueRequestHandlerServiceTests() => _testee = new ContinueRequestHandlerService(
             Substitute.For<ILoggingService>(),
             new LogStore(Path.Combine(Path.GetTempPath(), "test.log")),
-            _engine, _session);
+            _engineQuery, _session);
 }
 
 public sealed class NextRequestHandlerServiceTests
@@ -55,12 +55,12 @@ public sealed class NextRequestHandlerServiceTests
         Assert.Equal(SessionState.Running, _session.State);
     }
 
-    private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
+    private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly NextRequestHandlerService _testee;
 
-    public NextRequestHandlerServiceTests() => _testee = new NextRequestHandlerService(_engine, _session);
+    public NextRequestHandlerServiceTests() => _testee = new NextRequestHandlerService(_engineQuery, _session);
 }
 
 public sealed class StepInRequestHandlerServiceTests
@@ -77,12 +77,12 @@ public sealed class StepInRequestHandlerServiceTests
         Assert.Equal(SessionState.Running, _session.State);
     }
 
-    private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
+    private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly StepInRequestHandlerService _testee;
 
-    public StepInRequestHandlerServiceTests() => _testee = new StepInRequestHandlerService(_engine, _session);
+    public StepInRequestHandlerServiceTests() => _testee = new StepInRequestHandlerService(_engineQuery, _session);
 }
 
 public sealed class StepOutRequestHandlerServiceTests
@@ -98,12 +98,12 @@ public sealed class StepOutRequestHandlerServiceTests
         Assert.Equal(SessionState.Running, _session.State);
     }
 
-    private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
+    private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly StepOutRequestHandlerService _testee;
 
-    public StepOutRequestHandlerServiceTests() => _testee = new StepOutRequestHandlerService(_engine, _session);
+    public StepOutRequestHandlerServiceTests() => _testee = new StepOutRequestHandlerService(_engineQuery, _session);
 }
 
 public sealed class PauseRequestHandlerServiceTests
@@ -118,7 +118,7 @@ public sealed class PauseRequestHandlerServiceTests
         _engine.Received(1).Break(Arg.Any<NativeDebuggerModel>());
     }
 
-    private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
+    private readonly IEngineLifecycleService _engine = Substitute.For<IEngineLifecycleService>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly PauseRequestHandlerService _testee;

@@ -822,7 +822,7 @@ internal sealed class ManagedDebuggerService(
         return [.. assemblies];
     }
 
-    // ── Methods moved from NativeDebuggerService ────────────────────
+    // ── Methods moved from EngineLifecycleService ────────────────────
 
     public void TryInitializeManaged(NativeDebuggerModel model)
     {

@@ -26,7 +26,8 @@ public sealed class PdbSourceMapperTests
         string mixedSlashPath = _sourceFile.Replace("\\test\\TestApp\\", "/test/TestApp/");
 
         using PdbSourceMapperService mapper = new();
-        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = mapper.FindMethodAtLine(_wpfAppDll, mixedSlashPath, 63);
+        // Line 65 = first code line inside OnAddClick (the if statement).
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = mapper.FindMethodAtLine(_wpfAppDll, mixedSlashPath, 65);
 
         _ = Assert.NotNull(result);
         Assert.Equal("WpfApp", result.Value.AssemblyName);
@@ -39,7 +40,9 @@ public sealed class PdbSourceMapperTests
         if (!File.Exists(_wpfAppDll)) return; // WpfApp not built — skip
 
         using PdbSourceMapperService mapper = new();
-        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 63);
+        // Line 65 = first code line inside OnAddClick (the if statement).
+        // Line 63 is the method signature which has no sequence point.
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 65);
 
         _ = Assert.NotNull(result);
         Assert.Equal("WpfApp", result.Value.AssemblyName);

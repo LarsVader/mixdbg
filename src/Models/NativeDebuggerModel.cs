@@ -117,7 +117,7 @@ public sealed class NativeDebuggerModel : IDisposable
 
     /// <summary>
     /// Breakpoint file:line hints from DAP setBreakpoints (received before launch).
-    /// Used by <see cref="Services.NativeDebuggerService.SetupProfilerPipe"/> to resolve
+    /// Used by <see cref="Services.ProfilerPipeService.SetupProfilerPipe"/> to resolve
     /// assembly names so the profiler knows which assemblies to block on during JIT.
     /// </summary>
     internal List<(string FilePath, int Line)> ProfilerBreakpointHints { get; } = [];

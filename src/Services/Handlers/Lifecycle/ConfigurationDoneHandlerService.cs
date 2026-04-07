@@ -12,7 +12,8 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 public class ConfigurationDoneHandlerService(
         ILoggingService log,
         LogStore logStore,
-        INativeDebugger nativeDebugger,
+        IBreakpointService breakpointService,
+        IEngineQueryService engineQuery,
         IDapServer server,
         DapServerModel transport,
         DebugSessionModel sessionModel)
@@ -32,7 +33,7 @@ public class ConfigurationDoneHandlerService(
             foreach (SetBreakpointsArguments pending in sessionModel.PendingBreakpoints)
             {
                 Breakpoint[] bps = model.QueueEngineQuery(
-                    () => nativeDebugger.SetBreakpointsOnEngine(model, pending.Source.Path!, pending.Breakpoints));
+                    () => breakpointService.SetBreakpointsOnEngine(model, pending.Source.Path!, pending.Breakpoints));
                 foreach (Breakpoint? bp in bps)
                 {
                     server.SendEvent(transport, "breakpoint", new BreakpointEventBody
@@ -46,7 +47,7 @@ public class ConfigurationDoneHandlerService(
 
             log.LogInfo(logStore, "Continue queued");
             model.CachedStackTraceResult = null;
-            model.Commands.Add(() => nativeDebugger.ExecuteContinueOnEngine(model));
+            model.Commands.Add(() => engineQuery.ExecuteContinueOnEngine(model));
             sessionModel.State = SessionState.Running;
         }
     }

@@ -73,7 +73,7 @@ nvim-dap ──stdio──> IDapServer
                     IDapDispatcher
                       │ (routes requests)
                       v
-                    Handlers ──────command queue──> INativeDebugger
+                    Handlers ──────command queue──> IEngineLifecycleService
                       │                              │
                       │                            IDbgEngWrapper
                       │                            (encapsulates COM)
@@ -87,7 +87,7 @@ nvim-dap ──stdio──> IDapServer
 nvim-dap <──stdio────                            [target.exe]
 ```
 
-All services are stateless singletons; mutable state lives in model objects (`DapServerModel`, `DebugSessionModel`, `NativeDebuggerModel`, `DbgEngWrapperModel`). DAP requests are routed by `IDapDispatcher` to `IDapHandlerService` implementations (auto-discovered via assembly scanning). Each handler contains its own session logic and delegates to `INativeDebugger` for engine operations. All dbgeng COM interop is encapsulated behind `IDbgEngWrapper` / `DbgEngWrapperService` — no COM types leak outside the wrapper boundary.
+All services are stateless singletons; mutable state lives in model objects (`DapServerModel`, `DebugSessionModel`, `NativeDebuggerModel`, `DbgEngWrapperModel`). DAP requests are routed by `IDapDispatcher` to `IDapHandlerService` implementations (auto-discovered via assembly scanning). Each handler contains its own session logic and delegates to `IEngineLifecycleService` for engine lifecycle, `IBreakpointService` for breakpoints, and `IEngineQueryService` for stack traces, variables, and execution control. All dbgeng COM interop is encapsulated behind `IDbgEngWrapper` / `DbgEngWrapperService` — no COM types leak outside the wrapper boundary.
 
 **Two threads, one queue:**
 
@@ -95,7 +95,7 @@ All services are stateless singletons; mutable state lives in model objects (`Da
 
 2. **Engine thread** creates the dbgeng client, launches the process, and runs the `WaitForEvent` loop. When the target stops, it processes queued commands (breakpoints, stack trace requests, etc.) and sends DAP events back via the server.
 
-The `BlockingCollection<Action>` in `NativeDebuggerModel` is the bridge. `NativeDebuggerService` exposes only engine-thread methods (suffixed `OnEngine`) and delegates all COM calls to `IDbgEngWrapper` — handlers dispatch to them:
+The `BlockingCollection<Action>` in `NativeDebuggerModel` is the bridge. `EngineLifecycleService` owns the engine thread and event loop; `BreakpointService` and `EngineQueryService` expose engine-thread methods (suffixed `OnEngine`) and delegate all COM calls to `IDbgEngWrapper` — handlers dispatch to them:
 
 ```csharp
 // Handler (main thread) — synchronous query:

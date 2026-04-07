@@ -54,7 +54,7 @@ public sealed class SetBreakpointsRequestHandlerServiceTests : IDisposable
         Breakpoints = [.. lines.Select(l => new SourceBreakpoint { Line = l })],
     };
 
-    private void GivenNativeDebuggerReturnsBreakpoints() => _ = _engine.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
+    private void GivenNativeDebuggerReturnsBreakpoints() => _ = _breakpointService.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
             .Returns(ci => [.. ci.ArgAt<SourceBreakpoint[]>(2).Select((bp, i) => new Breakpoint { Id = i + 1, Verified = true, Line = bp.Line })]);
 
     #endregion
@@ -84,20 +84,20 @@ public sealed class SetBreakpointsRequestHandlerServiceTests : IDisposable
     private void ThenBreakpointResponseCountIs(int expected) => Assert.Equal(expected, _response!.Breakpoints.Length);
     private void ThenBreakpointAtIndexIsVerified(int index, bool expected) => Assert.Equal(expected, _response!.Breakpoints[index].Verified);
     private void ThenNativeDebuggerSetBreakpointsWasCalled() =>
-        _engine.Received().SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>());
+        _breakpointService.Received().SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>());
 
     #endregion
 
     #region Misc
 
-    private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
+    private readonly IBreakpointService _breakpointService = Substitute.For<IBreakpointService>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly SetBreakpointsRequestHandlerService _testee;
     private SetBreakpointsArguments? _args;
     private SetBreakpointsResponseBody? _response;
 
-    public SetBreakpointsRequestHandlerServiceTests() => _testee = new SetBreakpointsRequestHandlerService(_engine, _session);
+    public SetBreakpointsRequestHandlerServiceTests() => _testee = new SetBreakpointsRequestHandlerService(_breakpointService, _session);
 
     public void Dispose()
     {

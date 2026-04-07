@@ -8,7 +8,7 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 /// Handles the DAP terminate request by terminating the debuggee.
 /// </summary>
 public class TerminateRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IEngineLifecycleService nativeDebugger,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<EmptyArguments>
 {

@@ -20,7 +20,7 @@ public sealed class DbgEngWrapperModel
     internal IDebugAdvanced Advanced { get; set; } = null!;
     internal EventCallbacks Callbacks { get; set; } = null!;
 
-    // ── Engine callback events (public for NativeDebuggerService) ──
+    // ── Engine callback events (public for EngineLifecycleService) ──
 
     /// <summary>Raised when a breakpoint fires. Parameter is the dbgeng breakpoint ID.</summary>
     public event Action<uint>? OnBreakpointHit;

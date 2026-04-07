@@ -16,7 +16,9 @@ public static class ServiceCollectionExtensions
         _ = services.AddSingleton<IDapServer, DapServerService>();
         _ = services.AddSingleton<IDapDispatcher, DapDispatcherService>();
         _ = services.AddEngineWrappers();
-        _ = services.AddSingleton<INativeDebugger, NativeDebuggerService>();
+        _ = services.AddSingleton<IEngineLifecycleService, EngineLifecycleService>();
+        _ = services.AddSingleton<IBreakpointService, BreakpointService>();
+        _ = services.AddSingleton<IEngineQueryService, EngineQueryService>();
         _ = services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();
         _ = services.AddSingleton<IProfilerPipeService, ProfilerPipeService>();
 

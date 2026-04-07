@@ -8,7 +8,7 @@ namespace MixDbg.Services.Handlers.Inspection;
 /// Handles the DAP scopes request by returning locals/arguments for a stack frame.
 /// </summary>
 public class ScopesRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IEngineQueryService engineQuery,
         DebugSessionModel sessionModel)
     : DapHandlerServiceBase<ScopesResponseBody, ScopesArguments>
 {
@@ -22,7 +22,7 @@ public class ScopesRequestHandlerService(
             return new ScopesResponseBody { Scopes = [] };
 
         Scope[] scopes = model.QueueEngineQuery(
-            () => nativeDebugger.GetScopesOnEngine(model, args.FrameId));
+            () => engineQuery.GetScopesOnEngine(model, args.FrameId));
         return new ScopesResponseBody { Scopes = scopes };
     }
 }

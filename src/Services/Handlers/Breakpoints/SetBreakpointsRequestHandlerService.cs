@@ -9,7 +9,7 @@ namespace MixDbg.Services.Handlers.Breakpoints;
 /// is not ready, otherwise delegates to the native debugger on the engine thread.
 /// </summary>
 public class SetBreakpointsRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IBreakpointService breakpointService,
         DebugSessionModel sessionModel)
     : DapHandlerServiceBase<SetBreakpointsResponseBody, SetBreakpointsArguments>
 {
@@ -37,7 +37,7 @@ public class SetBreakpointsRequestHandlerService(
         }
 
         Breakpoint[] bps = model.QueueEngineQuery(
-            () => nativeDebugger.SetBreakpointsOnEngine(model, args.Source.Path, args.Breakpoints));
+            () => breakpointService.SetBreakpointsOnEngine(model, args.Source.Path, args.Breakpoints));
         return new SetBreakpointsResponseBody { Breakpoints = bps };
     }
 }

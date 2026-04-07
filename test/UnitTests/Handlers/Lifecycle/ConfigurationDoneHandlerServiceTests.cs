@@ -55,7 +55,7 @@ public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
         Breakpoints = [.. lines.Select(l => new SourceBreakpoint { Line = l })],
     });
 
-    private void GivenNativeDebuggerReturnsBreakpoints() => _ = _engine.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
+    private void GivenNativeDebuggerReturnsBreakpoints() => _ = _breakpointService.SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>())
             .Returns(ci => [.. ci.ArgAt<SourceBreakpoint[]>(2).Select((bp, i) => new Breakpoint { Id = i + 1, Verified = true, Line = bp.Line })]);
 
     #endregion
@@ -91,7 +91,7 @@ public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
 
     private void ThenSessionStateIs(SessionState expected) => Assert.Equal(expected, _session.State);
     private void ThenNativeDebuggerSetBreakpointsWasCalled() =>
-        _engine.Received().SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>());
+        _breakpointService.Received().SetBreakpointsOnEngine(Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<SourceBreakpoint[]>());
     private void ThenBreakpointEventWasSent() =>
         _server.Received().SendEvent(_transport, "breakpoint", Arg.Any<BreakpointEventBody>());
 
@@ -99,7 +99,8 @@ public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
 
     #region Misc
 
-    private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
+    private readonly IBreakpointService _breakpointService = Substitute.For<IBreakpointService>();
+    private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
     private readonly IDapServer _server = Substitute.For<IDapServer>();
     private readonly DapServerModel _transport = new(Stream.Null, Stream.Null);
     private readonly DebugSessionModel _session = new();
@@ -109,7 +110,7 @@ public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
     public ConfigurationDoneHandlerServiceTests() => _testee = new ConfigurationDoneHandlerService(
             Substitute.For<ILoggingService>(),
             new LogStore(Path.Combine(Path.GetTempPath(), "test.log")),
-            _engine, _server, _transport, _session);
+            _breakpointService, _engineQuery, _server, _transport, _session);
 
     public void Dispose()
     {

@@ -10,7 +10,7 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 /// Handles the DAP launch request by starting a new debug target process.
 /// </summary>
 public class LaunchRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IEngineLifecycleService nativeDebugger,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<LaunchRequestArguments>
 {

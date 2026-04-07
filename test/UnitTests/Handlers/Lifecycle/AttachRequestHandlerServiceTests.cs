@@ -56,7 +56,7 @@ public sealed class AttachRequestHandlerServiceTests
 
     #region Misc
 
-    private readonly INativeDebugger _engine = Substitute.For<INativeDebugger>();
+    private readonly IEngineLifecycleService _engine = Substitute.For<IEngineLifecycleService>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();
     private readonly AttachRequestHandlerService _testee;

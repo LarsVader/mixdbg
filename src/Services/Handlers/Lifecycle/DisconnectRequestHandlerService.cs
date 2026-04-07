@@ -9,7 +9,7 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 /// Handles the DAP disconnect request by detaching or terminating the target.
 /// </summary>
 public class DisconnectRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IEngineLifecycleService nativeDebugger,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<DisconnectArguments>
 {

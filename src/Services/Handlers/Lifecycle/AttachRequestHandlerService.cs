@@ -8,7 +8,7 @@ namespace MixDbg.Services.Handlers.Lifecycle;
 /// Handles the DAP attach request by attaching to an existing process.
 /// </summary>
 public class AttachRequestHandlerService(
-        INativeDebugger nativeDebugger,
+        IEngineLifecycleService nativeDebugger,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<AttachRequestArguments>
 {
