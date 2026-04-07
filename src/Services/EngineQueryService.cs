@@ -26,74 +26,99 @@ internal sealed class EngineQueryService(
         if (model.CachedStackTraceResult != null)
             return model.CachedStackTraceResult;
 
-        DbgEngWrapperModel w = model.Wrapper;
-        NativeStackFrame[] nativeFrames = _wrapper.GetStackTrace(w, maxFrames);
+        NativeStackFrame[] nativeFrames = _wrapper.GetStackTrace(model.Wrapper, maxFrames);
         if (nativeFrames.Length == 0)
             return [];
 
         StackFrame[] result = new StackFrame[nativeFrames.Length];
         for (int i = 0; i < nativeFrames.Length; i++)
-        {
-            ulong ip = nativeFrames[i].InstructionOffset;
-            string name = $"0x{ip:X}";
-            Source? source = null;
-            int line = 0;
+            result[i] = ResolveStackFrame(model, nativeFrames[i].InstructionOffset, i);
 
-            // Try to resolve function name
-            (string Name, ulong Displacement)? nameInfo = _wrapper.GetNameByOffset(w, ip);
-            if (nameInfo != null)
-            {
-                name = nameInfo.Value.Displacement > 0
-                    ? $"{nameInfo.Value.Name}+0x{nameInfo.Value.Displacement:x}"
-                    : nameInfo.Value.Name;
-            }
-
-            // Try to resolve source location
-            (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(w, ip);
-            if (lineInfo != null)
-            {
-                line = (int)lineInfo.Value.Line;
-                source = new Source
-                {
-                    Name = Path.GetFileName(lineInfo.Value.File),
-                    Path = lineInfo.Value.File,
-                };
-            }
-
-            // Fallback: if dbgeng can't resolve, try the profiler's JIT method map.
-            if (source == null && model.JitMethodMap.Count > 0)
-            {
-                try
-                {
-                    (string Name, Source? Source, int Line)? profilerFrame = _managedDebugger.ResolveFrameFromProfilerData(model, ip);
-                    if (profilerFrame != null)
-                    {
-                        name = profilerFrame.Value.Name;
-                        source = profilerFrame.Value.Source;
-                        line = profilerFrame.Value.Line;
-                    }
-                }
-                catch { }
-            }
-
-            _log.LogInfo(_logStore, $"  Frame {i}: ip=0x{ip:X} name={name} line={line}");
-
-            result[i] = new StackFrame
-            {
-                Id = i + 1, // 1-based
-                Name = name,
-                Source = source,
-                Line = line,
-                Column = 0,
-            };
-        }
-
-        // Merge managed frame info from ClrMD.
         if (model.ManagedInitialized)
             _managedDebugger.MergeManagedFrames(model, result);
 
         model.CachedStackTraceResult = result;
         return result;
+    }
+
+    /// <summary>
+    /// Resolves a single native instruction pointer into a DAP <see cref="StackFrame"/>
+    /// with function name, source location, and line number.
+    /// </summary>
+    private StackFrame ResolveStackFrame(NativeDebuggerModel model, ulong ip, int index)
+    {
+        string name = ResolveFunctionName(model.Wrapper, ip);
+        (string? resolvedName, Source? source, int line) = ResolveSourceLocation(model, ip);
+
+        // Profiler-resolved name overrides dbgeng name (more accurate for managed code).
+        if (resolvedName != null)
+            name = resolvedName;
+
+        _log.LogInfo(_logStore, $"  Frame {index}: ip=0x{ip:X} name={name} line={line}");
+
+        return new StackFrame
+        {
+            Id = index + 1, // 1-based
+            Name = name,
+            Source = source,
+            Line = line,
+            Column = 0,
+        };
+    }
+
+    /// <summary>
+    /// Resolves a function name from the instruction pointer via dbgeng symbols.
+    /// Returns a hex address string if no symbol is available.
+    /// </summary>
+    private string ResolveFunctionName(DbgEngWrapperModel wrapper, ulong ip)
+    {
+        (string Name, ulong Displacement)? nameInfo = _wrapper.GetNameByOffset(wrapper, ip);
+        return nameInfo == null
+            ? $"0x{ip:X}"
+            : nameInfo.Value.Displacement > 0
+                ? $"{nameInfo.Value.Name}+0x{nameInfo.Value.Displacement:x}"
+                : nameInfo.Value.Name;
+    }
+
+    /// <summary>
+    /// Resolves source file, line number, and optionally a better function name for an instruction pointer.
+    /// Tries dbgeng's PDB symbols first, then falls back to the profiler's JIT method map
+    /// for managed code that dbgeng can't resolve. Returns <c>Name</c> only when the profiler
+    /// provides a more accurate name than dbgeng (managed code).
+    /// </summary>
+    private (string? Name, Source? Source, int Line) ResolveSourceLocation(NativeDebuggerModel model, ulong ip)
+    {
+        // Try dbgeng symbol resolution (native PDBs and C++/CLI Windows PDBs).
+        (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(model.Wrapper, ip);
+        if (lineInfo != null)
+        {
+            return (null, new Source
+            {
+                Name = Path.GetFileName(lineInfo.Value.File),
+                Path = lineInfo.Value.File,
+            }, (int)lineInfo.Value.Line);
+        }
+
+        // Fallback: try the profiler's JIT method map for managed code.
+        if (model.JitMethodMap.Count <= 0)
+        {
+            return (null, null, 0);
+        }
+
+        try
+        {
+            (string Name, Source? Source, int Line)? profilerFrame =
+                _managedDebugger.ResolveFrameFromProfilerData(model, ip);
+
+            if (profilerFrame != null)
+                return (profilerFrame.Value.Name, profilerFrame.Value.Source, profilerFrame.Value.Line);
+        }
+        catch (Exception ex)
+        {
+            _log.LogInfo(_logStore, $"  Profiler resolve failed for 0x{ip:X}: {ex.Message}");
+        }
+
+        return (null, null, 0);
     }
 
     public Scope[] GetScopesOnEngine(NativeDebuggerModel model, int frameId)

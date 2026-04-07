@@ -51,8 +51,6 @@ internal sealed class EngineLifecycleService(
         return model;
     }
 
-    // ── Thread-safe methods (callable from any thread) ──
-
     /// <summary>Requests the target to break. Thread-safe — uses SetInterrupt.</summary>
     public void Break(NativeDebuggerModel model)
     {
@@ -121,8 +119,6 @@ internal sealed class EngineLifecycleService(
         };
         model.EngineThread.Start();
     }
-
-    // ── Private ─────────────────────────────────────────
 
     /// <summary>No-op command that unblocks the engine thread's <c>Commands.Take()</c>.</summary>
     private static void WakeEngineThread() { }

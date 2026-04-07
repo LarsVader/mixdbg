@@ -25,35 +25,59 @@ internal sealed class BreakpointService(
         foreach (SourceBreakpoint r in requested)
             _log.LogInfo(_logStore, $"  requested: line={r.Line}");
 
-        // Delegate managed files to the managed debugger.
-        if (!_sourceFiles.IsNativeFile(filePath))
-        {
-            if (model.ManagedInitialized)
-            {
-                _log.LogInfo(_logStore, $"  Delegating to managed debugger: {filePath}");
-                return _managedDebugger.SetManagedBreakpoints(model, filePath, requested);
-            }
+        // DAP sends setBreakpoints per source file, so all requested breakpoints share the
+        // same filePath and are either all managed or all native — no mixing within one call.
+        Breakpoint[]? managedResult = TrySetManagedBreakpoints(model, filePath, requested);
+        if (managedResult != null)
+            return managedResult;
 
-            // CLR not loaded yet — store as pending, return optimistic verified: true.
-            _log.LogInfo(_logStore, $"  CLR not ready, storing as pending managed bp: {filePath}");
-            model.PendingManagedBreakpoints.Add(new SetBreakpointsArguments
-            {
-                Source = new Source { Name = Path.GetFileName(filePath), Path = filePath },
-                Breakpoints = requested,
-            });
-            return [.. requested.Select((bp, i) => new Breakpoint
-            {
-                Id = ++model.NextBpId,
-                Verified = true,
-                Line = bp.Line,
-                Source = new Source { Name = Path.GetFileName(filePath), Path = filePath },
-                Message = "Pending — managed debugger not yet initialized",
-            })];
+        RemoveExistingBreakpoints(model, filePath);
+
+        Breakpoint[] results = new Breakpoint[requested.Length];
+        for (int i = 0; i < requested.Length; i++)
+            results[i] = SetNativeBreakpoint(model, filePath, requested[i]);
+
+        return results;
+    }
+
+    /// <summary>
+    /// Delegates breakpoint setting to the managed debugger if the file is not native.
+    /// Returns <c>null</c> if the file is native and should use the dbgeng path.
+    /// </summary>
+    private Breakpoint[]? TrySetManagedBreakpoints(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
+    {
+        if (_sourceFiles.IsNativeFile(filePath))
+            return null;
+
+        if (model.ManagedInitialized)
+        {
+            _log.LogInfo(_logStore, $"  Delegating to managed debugger: {filePath}");
+            return _managedDebugger.SetManagedBreakpoints(model, filePath, requested);
         }
 
-        DbgEngWrapperModel w = model.Wrapper;
+        // CLR not loaded yet — store as pending, return optimistic verified: true.
+        _log.LogInfo(_logStore, $"  CLR not ready, storing as pending managed bp: {filePath}");
+        model.PendingManagedBreakpoints.Add(new SetBreakpointsArguments
+        {
+            Source = CreateSource(filePath),
+            Breakpoints = requested,
+        });
+        return [.. requested.Select((bp, i) => new Breakpoint
+        {
+            Id = ++model.NextBpId,
+            Verified = true,
+            Line = bp.Line,
+            Source = CreateSource(filePath),
+            Message = "Pending — managed debugger not yet initialized",
+        })];
+    }
 
-        // Remove old breakpoints for this file
+    /// <summary>
+    /// Removes all existing native breakpoints for the given file before re-setting them.
+    /// </summary>
+    private void RemoveExistingBreakpoints(NativeDebuggerModel model, string filePath)
+    {
+        DbgEngWrapperModel w = model.Wrapper;
         List<string> keysToRemove = [.. model.BreakpointIds.Keys.Where(k => k.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase))];
         foreach (string key in keysToRemove)
         {
@@ -64,87 +88,83 @@ internal sealed class BreakpointService(
                 _ = model.BreakpointIds.Remove(key);
             }
         }
+    }
 
-        Breakpoint[] results = new Breakpoint[requested.Length];
-        for (int i = 0; i < requested.Length; i++)
+    /// <summary>
+    /// Sets a single native breakpoint via dbgeng. Tries direct offset resolution first,
+    /// falls back to a deferred breakpoint (<c>bu</c> command) if the module isn't loaded yet.
+    /// </summary>
+    private Breakpoint SetNativeBreakpoint(NativeDebuggerModel model, string filePath, SourceBreakpoint req)
+    {
+        DbgEngWrapperModel w = model.Wrapper;
+        string key = $"{filePath}:{req.Line}";
+
+        (ulong offset, bool resolved) = _wrapper.GetOffsetByLine(w, (uint)req.Line, filePath);
+        _log.LogInfo(_logStore, $"  GetOffsetByLine({req.Line}, {filePath}) -> resolved={resolved} offset=0x{offset:X}");
+
+        if (!resolved)
+            return SetDeferredBreakpoint(model, filePath, req, key);
+
+        (uint bpId, bool bpOk) = _wrapper.AddCodeBreakpoint(w, offset);
+        if (!bpOk)
         {
-            SourceBreakpoint req = requested[i];
-            string key = $"{filePath}:{req.Line}";
-
-            (ulong offset, bool resolved) = _wrapper.GetOffsetByLine(w, (uint)req.Line, filePath);
-            _log.LogInfo(_logStore, $"  GetOffsetByLine({req.Line}, {filePath}) -> resolved={resolved} offset=0x{offset:X}");
-            if (!resolved)
+            return new Breakpoint
             {
-                // GetOffsetByLine failed — module probably not loaded yet.
-                // Use deferred breakpoint via bu command instead.
-                _log.LogInfo(_logStore, $"  Trying deferred breakpoint: bu `{filePath}:{req.Line}`");
-                (uint deferredId, bool buOk) = _wrapper.AddDeferredBreakpoint(w, filePath, req.Line);
-                _log.LogInfo(_logStore, $"  bu result: ok={buOk} id={deferredId}");
-
-                if (buOk)
-                {
-                    model.BreakpointIds[key] = deferredId;
-                    _ = model.UserBreakpointIds.Add(deferredId);
-                    results[i] = new Breakpoint
-                    {
-                        Id = (int)deferredId,
-                        Verified = true,
-                        Line = req.Line,
-                        Source = new Source
-                        {
-                            Name = Path.GetFileName(filePath),
-                            Path = filePath,
-                        },
-                    };
-                }
-                else
-                {
-                    results[i] = new Breakpoint
-                    {
-                        Id = ++model.NextBpId,
-                        Verified = false,
-                        Line = req.Line,
-                        Message = "Could not resolve source line",
-                    };
-                }
-                continue;
-            }
-
-            (uint bpId, bool bpOk) = _wrapper.AddCodeBreakpoint(w, offset);
-            if (!bpOk)
-            {
-                results[i] = new Breakpoint
-                {
-                    Id = ++model.NextBpId,
-                    Verified = false,
-                    Line = req.Line,
-                    Message = "Failed to create breakpoint",
-                };
-                continue;
-            }
-
-            model.BreakpointIds[key] = bpId;
-            _ = model.UserBreakpointIds.Add(bpId);
-
-            // Resolve back to verify the actual line
-            int actualLine = req.Line;
-            (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(w, offset);
-            if (lineInfo != null)
-                actualLine = (int)lineInfo.Value.Line;
-
-            results[i] = new Breakpoint
-            {
-                Id = (int)bpId,
-                Verified = true,
-                Line = actualLine,
-                Source = new Source
-                {
-                    Name = Path.GetFileName(filePath),
-                    Path = filePath,
-                },
+                Id = ++model.NextBpId,
+                Verified = false,
+                Line = req.Line,
+                Message = "Failed to create breakpoint",
             };
         }
-        return results;
+
+        model.BreakpointIds[key] = bpId;
+        _ = model.UserBreakpointIds.Add(bpId);
+
+        // Resolve back to verify the actual line
+        int actualLine = req.Line;
+        (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(w, offset);
+        if (lineInfo != null)
+            actualLine = (int)lineInfo.Value.Line;
+
+        return new Breakpoint
+        {
+            Id = (int)bpId,
+            Verified = true,
+            Line = actualLine,
+            Source = CreateSource(filePath),
+        };
+    }
+
+    /// <summary>
+    /// Sets a deferred breakpoint via the <c>bu</c> command when the module isn't loaded yet.
+    /// </summary>
+    private Breakpoint SetDeferredBreakpoint(NativeDebuggerModel model, string filePath, SourceBreakpoint req, string key)
+    {
+        DbgEngWrapperModel w = model.Wrapper;
+        _log.LogInfo(_logStore, $"  Trying deferred breakpoint: bu `{filePath}:{req.Line}`");
+        (uint deferredId, bool buOk) = _wrapper.AddDeferredBreakpoint(w, filePath, req.Line);
+        _log.LogInfo(_logStore, $"  bu result: ok={buOk} id={deferredId}");
+
+        if (!buOk)
+        {
+            return new Breakpoint
+            {
+                Id = ++model.NextBpId,
+                Verified = false,
+                Line = req.Line,
+                Message = "Could not resolve source line",
+            };
+        }
+
+        model.BreakpointIds[key] = deferredId;
+        _ = model.UserBreakpointIds.Add(deferredId);
+        return new Breakpoint
+        {
+            Id = (int)deferredId,
+            Verified = true,
+            Line = req.Line,
+            Source = CreateSource(filePath),
+        };
     }
 
     public void HandleBreakpointHit(NativeDebuggerModel model, uint breakpointId)
@@ -177,11 +197,7 @@ internal sealed class BreakpointService(
                 Id = (int)breakpointId,
                 Verified = true,
                 Line = line,
-                Source = new Source
-                {
-                    Name = Path.GetFileName(path),
-                    Path = path,
-                },
+                Source = CreateSource(path),
             },
         });
     }
@@ -198,4 +214,13 @@ internal sealed class BreakpointService(
         model.HitUserBreakpoint = true;
         _log.LogInfo(_logStore, $"Managed breakpoint hit at 0x{address:X}");
     }
+
+    /// <summary>
+    /// Creates a DAP <see cref="Source"/> from a file path.
+    /// </summary>
+    private static Source CreateSource(string filePath) => new()
+    {
+        Name = Path.GetFileName(filePath),
+        Path = filePath,
+    };
 }
