@@ -15,6 +15,7 @@ internal sealed class EngineQueryService(
     ILoggingService _log,
     LogStore _logStore,
     IManagedDebugger _managedDebugger,
+    IManagedBreakpointService _managedBp,
     IDbgEngWrapper _wrapper) : IEngineQueryService
 {
     public StackFrame[] GetStackTraceOnEngine(NativeDebuggerModel model, int maxFrames)
@@ -181,7 +182,7 @@ internal sealed class EngineQueryService(
     public void ExecuteContinueOnEngine(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
-        _managedDebugger.RemoveTransientManagedBreakpoints(model);
+        _managedBp.RemoveTransientManagedBreakpoints(model);
         _ = (model.ProfilerRehookEvent?.Set());
         model.ConfigDone = true;
         model.CachedStackTraceResult = null;
@@ -191,7 +192,7 @@ internal sealed class EngineQueryService(
 
     public void ExecuteStepOnEngine(NativeDebuggerModel model, EngineExecutionStatus stepKind)
     {
-        _managedDebugger.RemoveTransientManagedBreakpoints(model);
+        _managedBp.RemoveTransientManagedBreakpoints(model);
         _wrapper.ClearVariables(model.Wrapper);
         _wrapper.SetExecutionStatus(model.Wrapper, stepKind);
     }

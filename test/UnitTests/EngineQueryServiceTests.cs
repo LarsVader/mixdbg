@@ -252,6 +252,7 @@ public sealed class EngineQueryServiceTests : IDisposable
 
     private readonly ILoggingService _log = Substitute.For<ILoggingService>();
     private readonly IManagedDebugger _managedDebugger = Substitute.For<IManagedDebugger>();
+    private readonly IManagedBreakpointService _managedBp = Substitute.For<IManagedBreakpointService>();
     private readonly IDbgEngWrapper _wrapper = Substitute.For<IDbgEngWrapper>();
     private readonly LogStore _logStore;
     private readonly NativeDebuggerModel _model;
@@ -265,7 +266,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     public EngineQueryServiceTests()
     {
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
-        _testee = new EngineQueryService(_log, _logStore, _managedDebugger, _wrapper);
+        _testee = new EngineQueryService(_log, _logStore, _managedDebugger, _managedBp, _wrapper);
         _model = new NativeDebuggerModel
         {
             Wrapper = new DbgEngWrapperModel(),

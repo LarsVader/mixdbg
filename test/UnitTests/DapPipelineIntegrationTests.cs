@@ -480,6 +480,8 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         _ = services.AddSingleton<IEngineLifecycleService>(_engine);
         _ = services.AddSingleton<IBreakpointService>(_breakpointService);
         _ = services.AddSingleton<IEngineQueryService>(_engineQuery);
+        _ = services.AddSingleton(Substitute.For<IManagedBreakpointService>());
+        _ = services.AddSingleton(Substitute.For<IManagedBreakpointResolver>());
         _ = services.AddSingleton(Substitute.For<IManagedDebugger>());
         _ = services.AddSingleton(_sourceFiles);
 

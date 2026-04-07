@@ -15,6 +15,7 @@ internal sealed class EngineLifecycleService(
     ILoggingService _log,
     LogStore _logStore,
     IManagedDebugger _managedDebugger,
+    IManagedBreakpointResolver _bpResolver,
     IProfilerPipeService _profilerPipe,
     IBreakpointService _breakpointService,
     IDbgEngWrapper _wrapper) : IEngineLifecycleService
@@ -146,7 +147,14 @@ internal sealed class EngineLifecycleService(
             ProcessCommandsUntilResume(model);
             return true;
         }
-        if (_managedDebugger.HandleEnterBreakpoint(model))
+        // Initialize managed debugging when CLR is first detected.
+        if (model.ClrLoaded && !model.ManagedInitialized)
+            _managedDebugger.TryInitializeManaged(model);
+
+        // Process JIT notifications and resolve deferred managed breakpoints.
+        _bpResolver.ProcessPendingManagedBreakpoints(model);
+
+        if (_bpResolver.HandleEnterBreakpoint(model))
         {
             model.Stopped.Reset();
             _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
@@ -313,7 +321,7 @@ internal sealed class EngineLifecycleService(
                 (img.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
                  img.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
         {
-            _managedDebugger.TryBindManagedBreakpointsOnModuleLoad(model);
+            _bpResolver.TryBindManagedBreakpointsOnModuleLoad(model);
         }
     }
 

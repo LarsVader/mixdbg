@@ -131,6 +131,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     private readonly IDapServer _server = Substitute.For<IDapServer>();
     private readonly ILoggingService _log = Substitute.For<ILoggingService>();
     private readonly IManagedDebugger _managedDebugger = Substitute.For<IManagedDebugger>();
+    private readonly IManagedBreakpointResolver _bpResolver = Substitute.For<IManagedBreakpointResolver>();
     private readonly IDbgEngWrapper _wrapper = Substitute.For<IDbgEngWrapper>();
     private readonly DapServerModel _transport;
     private readonly LogStore _logStore;
@@ -145,7 +146,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
         _testee = new EngineLifecycleService(
             _server, _transport, _log, _logStore,
-            _managedDebugger, Substitute.For<IProfilerPipeService>(),
+            _managedDebugger, _bpResolver, Substitute.For<IProfilerPipeService>(),
             Substitute.For<IBreakpointService>(), _wrapper);
         _model = new NativeDebuggerModel
         {

@@ -13,12 +13,12 @@ namespace MixDbg.Services;
 internal sealed class ProfilerPipeService(
     ILoggingService log,
     LogStore logStore,
-    IManagedDebugger managedDebugger,
+    IManagedBreakpointService managedBp,
     IDbgEngWrapper dbgEngWrapper) : IProfilerPipeService
 {
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
-    private readonly IManagedDebugger _managedDebugger = managedDebugger;
+    private readonly IManagedBreakpointService _managedBp = managedBp;
     private readonly IDbgEngWrapper _dbgEng = dbgEngWrapper;
 
     public void SetupProfilerPipe(NativeDebuggerModel model)
@@ -66,7 +66,7 @@ internal sealed class ProfilerPipeService(
         string? watchTokens = null;
         if (model.ProfilerBreakpointHints.Count > 0)
         {
-            List<(string Assembly, int Token)> tokens = _managedDebugger.ResolveTokensFromBreakpoints(model.ProfilerBreakpointHints);
+            List<(string Assembly, int Token)> tokens = _managedBp.ResolveTokensFromBreakpoints(model.ProfilerBreakpointHints);
             if (tokens.Count > 0)
             {
                 watchTokens = string.Join(",", tokens.Select(t => $"{t.Assembly}:{t.Token:X8}"));
@@ -95,7 +95,7 @@ internal sealed class ProfilerPipeService(
         // so the profiler hooks ALL methods from these assemblies.
         if (model.ProfilerBreakpointHints.Count > 0)
         {
-            List<string> watchAssemblies = _managedDebugger.ResolveWatchAssemblies(model.ProfilerBreakpointHints);
+            List<string> watchAssemblies = _managedBp.ResolveWatchAssemblies(model.ProfilerBreakpointHints);
             if (watchAssemblies.Count > 0)
             {
                 string asmList = string.Join(",", watchAssemblies);

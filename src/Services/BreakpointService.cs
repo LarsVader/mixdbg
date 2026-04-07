@@ -16,7 +16,7 @@ internal sealed class BreakpointService(
     ILoggingService _log,
     LogStore _logStore,
     ISourceFileService _sourceFiles,
-    IManagedDebugger _managedDebugger,
+    IManagedBreakpointService _managedBp,
     IDbgEngWrapper _wrapper) : IBreakpointService
 {
     public Breakpoint[] SetBreakpointsOnEngine(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
@@ -52,7 +52,7 @@ internal sealed class BreakpointService(
         if (model.ManagedInitialized)
         {
             _log.LogInfo(_logStore, $"  Delegating to managed debugger: {filePath}");
-            return _managedDebugger.SetManagedBreakpoints(model, filePath, requested);
+            return _managedBp.SetManagedBreakpoints(model, filePath, requested);
         }
 
         // CLR not loaded yet — store as pending, return optimistic verified: true.

@@ -209,7 +209,7 @@ public sealed class BreakpointServiceTests : IDisposable
     private readonly IDapServer _server = Substitute.For<IDapServer>();
     private readonly ILoggingService _log = Substitute.For<ILoggingService>();
     private readonly ISourceFileService _sourceFiles = Substitute.For<ISourceFileService>();
-    private readonly IManagedDebugger _managedDebugger = Substitute.For<IManagedDebugger>();
+    private readonly IManagedBreakpointService _managedBp = Substitute.For<IManagedBreakpointService>();
     private readonly IDbgEngWrapper _wrapper = Substitute.For<IDbgEngWrapper>();
     private readonly DapServerModel _transport;
     private readonly LogStore _logStore;
@@ -226,7 +226,7 @@ public sealed class BreakpointServiceTests : IDisposable
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
         _testee = new BreakpointService(
             _server, _transport, _log, _logStore, _sourceFiles,
-            _managedDebugger, _wrapper);
+            _managedBp, _wrapper);
         _model = new NativeDebuggerModel
         {
             Wrapper = new DbgEngWrapperModel(),
