@@ -16,7 +16,7 @@ testapp:
 test: unit integration
 
 unit:
-	dotnet test test/UnitTests/MixDbg.UnitTests.csproj -c $(CONFIG) --no-restore
+	dotnet test test/UnitTests/MixDbg.UnitTests.csproj -c $(CONFIG) --no-restore --settings coverage.runsettings
 
 integration:
 	dotnet test test/IntegrationTests/MixDbg.IntegrationTests.csproj -c $(CONFIG) --no-restore

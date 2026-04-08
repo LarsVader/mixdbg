@@ -44,6 +44,53 @@ public sealed class LaunchRequestHandlerServiceTests
         Assert.Contains("C:/other", _engineModel.SymbolPath);
     }
 
+    [Fact]
+    public void Execute_WhenPendingBreakpoints_CopiesHintsToProfilerBreakpointHints()
+    {
+        _session.PendingBreakpoints.Add(new MixDbg.Models.DapMessages.Breakpoints.SetBreakpointsArguments
+        {
+            Source = new MixDbg.Models.DapMessages.Protocol.Source { Path = @"C:\src\Program.cs" },
+            Breakpoints = [new MixDbg.Models.DapMessages.Breakpoints.SourceBreakpoint { Line = 10 }],
+        });
+        GivenLaunchArgs("C:/app/test.exe", cwd: "C:/app");
+
+        WhenExecuting();
+
+        _ = Assert.Single(_engineModel.ProfilerBreakpointHints);
+        Assert.Equal(@"C:\src\Program.cs", _engineModel.ProfilerBreakpointHints[0].FilePath);
+        Assert.Equal(10, _engineModel.ProfilerBreakpointHints[0].Line);
+    }
+
+    [Fact]
+    public void Execute_WhenEngineInitFails_ThrowsException()
+    {
+        _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
+            .Do(ci =>
+            {
+                NativeDebuggerModel m = ci.ArgAt<NativeDebuggerModel>(0);
+                m.EngineInitError = new InvalidOperationException("launch failed");
+                m.EngineReady.Set();
+            });
+        GivenLaunchArgs("C:/app/test.exe", cwd: "C:/app");
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(WhenExecuting);
+        Assert.Equal("launch failed", ex.Message);
+    }
+
+    [Fact]
+    public void Execute_WhenArgsProvided_SetsLaunchArgs()
+    {
+        _launchArgs = new LaunchRequestArguments
+        {
+            Program = "C:/app/test.exe",
+            Args = ["--flag", "value"],
+        };
+
+        WhenExecuting();
+
+        Assert.Equal(["--flag", "value"], _engineModel.LaunchArgs!);
+    }
+
     #region Given
 
     private void GivenLaunchArgs(string program, string? cwd) => _launchArgs = new LaunchRequestArguments { Program = program, Cwd = cwd };

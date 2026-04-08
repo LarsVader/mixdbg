@@ -25,6 +25,35 @@ public sealed class AttachRequestHandlerServiceTests
     }
 
     [Fact]
+    public void Execute_WhenSymbolPathProvided_SetsSymbolPathToNull()
+    {
+        // AttachRequestHandlerService always sets SymbolPath to null.
+        GivenAttachArgs(pid: 1234);
+        _attachArgs!.SymbolPath = ["/symbols"];
+        _attachArgs.Program = "test.exe";
+
+        WhenExecuting();
+
+        Assert.Null(_engineModel.SymbolPath);
+    }
+
+    [Fact]
+    public void Execute_WhenEngineInitError_ThrowsException()
+    {
+        _engine.When(e => e.StartEngineThread(Arg.Any<NativeDebuggerModel>()))
+            .Do(ci =>
+            {
+                NativeDebuggerModel m = ci.ArgAt<NativeDebuggerModel>(0);
+                m.EngineInitError = new InvalidOperationException("init failed");
+                m.EngineReady.Set();
+            });
+        GivenAttachArgs(pid: 5678);
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(WhenExecuting);
+        Assert.Equal("init failed", ex.Message);
+    }
+
+    [Fact]
     public void Execute_WhenNoPid_ThrowsInvalidOperation()
     {
         GivenAttachArgs(pid: null);

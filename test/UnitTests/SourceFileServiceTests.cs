@@ -211,6 +211,42 @@ public sealed class SourceFileServiceTests : IDisposable
         ThenResultIsFalse();
     }
 
+    // ── Catch blocks (IO errors) ─────────────────────────────
+
+    [Fact]
+    public void IsNativeFile_WhenDirectoryAccessThrows_ReturnsTrue()
+    {
+        // Use a path with an invalid directory that will cause Directory.GetFiles to throw.
+        string invalidDirPath = Path.Combine(_tempDir, "nonexistent_subdir", "file.cpp");
+
+        _filePath = invalidDirPath;
+        WhenCheckingIsNativeFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsManagedFile_WhenDirectoryAccessThrows_ReturnsFalse()
+    {
+        string invalidDirPath = Path.Combine(_tempDir, "nonexistent_subdir", "file.cpp");
+
+        _filePath = invalidDirPath;
+        WhenCheckingIsManagedFile();
+
+        ThenResultIsFalse();
+    }
+
+    [Fact]
+    public void IsCliFile_WhenDirectoryAccessThrows_ReturnsFalse()
+    {
+        string invalidDirPath = Path.Combine(_tempDir, "nonexistent_subdir", "file.cpp");
+
+        _filePath = invalidDirPath;
+        WhenCheckingIsCliFile();
+
+        ThenResultIsFalse();
+    }
+
     #region Given
 
     private void GivenAFileWithName(string fileName)

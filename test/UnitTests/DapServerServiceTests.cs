@@ -143,6 +143,92 @@ public sealed class DapServerServiceTests
         ThenInvalidOperationExceptionWasThrown();
     }
 
+    [Fact]
+    public void ReadRequest_WhenInputEndsWithPartialContent_ReturnsNull()
+    {
+        // Content-Length says 100 bytes but only 5 bytes are available.
+        GivenRawInput("Content-Length: 100\r\n\r\nshort");
+
+        WhenReadingRequest();
+
+        ThenRequestIsNull();
+    }
+
+    [Fact]
+    public void ReadRequest_WhenHeaderHasNoColon_SkipsHeader()
+    {
+        // A header line without a colon should be silently ignored.
+        // The next line provides a valid Content-Length.
+        string json = "{\"seq\":1,\"type\":\"request\",\"command\":\"test\"}";
+        byte[] body = System.Text.Encoding.UTF8.GetBytes(json);
+        string raw = $"NoColonHeader\r\nContent-Length: {body.Length}\r\n\r\n{json}";
+        GivenRawInput(raw);
+
+        WhenReadingRequest();
+
+        ThenRequestIsNotNull();
+        ThenRequestCommandIs("test");
+    }
+
+    [Fact]
+    public void ReadRequest_WhenCarriageReturnWithoutLineFeed_HandlesGracefully()
+    {
+        // \r followed by a non-\n character in the header line.
+        // This tests the ReadLine branch where \r is not followed by \n.
+        // Build "Content-Length: N\rX\r\n\r\n" + json — the \rX pair is appended to the header value.
+        string json = "{\"seq\":1,\"type\":\"request\",\"command\":\"test\"}";
+        byte[] body = Encoding.UTF8.GetBytes(json);
+        // "Content-Length: <len>\rX" forms a single logical line (CR not followed by LF).
+        // Then normal "\r\n" terminates it, then blank "\r\n" ends headers.
+        // The header value parsed will be " <len>\rX" which won't parse as int → exception.
+        // To actually test the code path while still getting a valid request, we need a
+        // non-essential header line with \r not followed by \n.
+        byte[] raw = [
+            // "Dummy: val\rX\r\n" — header with bare CR in value
+            .. Encoding.ASCII.GetBytes("Dummy: val"),
+            (byte)'\r', (byte)'X',
+            (byte)'\r', (byte)'\n',
+            // "Content-Length: <len>\r\n" — actual header
+            .. Encoding.ASCII.GetBytes($"Content-Length: {body.Length}"),
+            (byte)'\r', (byte)'\n',
+            // blank line ends headers
+            (byte)'\r', (byte)'\n',
+            // body
+            .. body
+        ];
+
+        _inputStream = new MemoryStream(raw);
+        _outputStream = new MemoryStream();
+        _model = _testee.CreateModel(_inputStream, _outputStream);
+
+        WhenReadingRequest();
+
+        ThenRequestIsNotNull();
+        ThenRequestCommandIs("test");
+    }
+
+    [Fact]
+    public void ReadRequest_WhenCarriageReturnFollowedByEof_HandlesGracefully()
+    {
+        // \r at the very end of stream (next ReadByte returns -1).
+        // Tests ReadLine branch: \r then next == -1 (sb.Append(\r) only).
+        byte[] raw = [
+            .. Encoding.ASCII.GetBytes("Content-Length: 5"),
+            (byte)'\r',
+            // EOF — no more bytes
+        ];
+
+        _inputStream = new MemoryStream(raw);
+        _outputStream = new MemoryStream();
+        _model = _testee.CreateModel(_inputStream, _outputStream);
+
+        // ReadHeaders will parse "Content-Length: 5\r" as a single header line,
+        // then hit EOF. The empty headers dict (only has malformed entries) returns null.
+        WhenReadingRequest();
+
+        ThenRequestIsNull();
+    }
+
     #region Given
 
     private void GivenInputOutput()

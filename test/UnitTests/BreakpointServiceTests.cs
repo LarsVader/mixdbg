@@ -1,5 +1,6 @@
 using MixDbg.Models;
 using MixDbg.Models.DapMessages.Breakpoints;
+using MixDbg.Models.DapMessages.Events;
 using MixDbg.Services;
 using MixDbg.Services.Interfaces;
 
@@ -115,6 +116,110 @@ public sealed class BreakpointServiceTests : IDisposable
         ThenAllBreakpointsAreVerified(true);
     }
 
+    // ── SetBreakpointsOnEngine (managed file, initialized) ──
+
+    [Fact]
+    public void SetBreakpointsOnEngine_WhenManagedFileAndInitialized_DelegatesToManagedService()
+    {
+        GivenSourceFileIsManaged(@"C:\src\Program.cs");
+        GivenManagedInitialized();
+        GivenManagedBreakpointServiceReturns(@"C:\src\Program.cs",
+            [new Breakpoint { Id = 1, Verified = true, Line = 10 }]);
+        GivenBreakpointRequest(@"C:\src\Program.cs", [10]);
+
+        WhenSettingBreakpointsOnEngine();
+
+        ThenBreakpointResultCountIs(1);
+        ThenBreakpointAtIndexIsVerified(0, true);
+        ThenBreakpointAtIndexHasLine(0, 10);
+    }
+
+    // ── SetNativeBreakpoint (AddCodeBreakpoint fails) ─────
+
+    [Fact]
+    public void SetBreakpointsOnEngine_WhenAddCodeBreakpointFails_ReturnsUnverified()
+    {
+        GivenSourceFileIsNative(@"C:\src\main.cpp");
+        GivenGetOffsetByLineSucceeds(@"C:\src\main.cpp", line: 50, offset: 0x4000);
+        GivenAddCodeBreakpointFails();
+        GivenBreakpointRequest(@"C:\src\main.cpp", [50]);
+
+        WhenSettingBreakpointsOnEngine();
+
+        ThenBreakpointResultCountIs(1);
+        ThenBreakpointAtIndexIsVerified(0, false);
+        ThenBreakpointAtIndexHasMessage(0, "Failed to create breakpoint");
+    }
+
+    // ── HandleBreakpointHit ───────────────────────────────
+
+    [Fact]
+    public void HandleBreakpointHit_WhenUserBreakpoint_SetsHitUserBreakpointAndSendsEvent()
+    {
+        GivenExistingBreakpointForFile(@"C:\src\main.cpp", line: 10, bpId: 5);
+
+        WhenHandlingBreakpointHit(5);
+
+        ThenHitUserBreakpointIsTrue();
+        ThenBreakpointEventWasSent();
+    }
+
+    [Fact]
+    public void HandleBreakpointHit_WhenNonUserBreakpoint_DoesNotSendEvent()
+    {
+        WhenHandlingBreakpointHit(99);
+
+        ThenHitUserBreakpointIsFalse();
+        ThenNoBreakpointEventWasSent();
+    }
+
+    [Fact]
+    public void HandleBreakpointHit_WhenUserBreakpointButKeyNotFound_DoesNotSendEvent()
+    {
+        _ = _model.UserBreakpointIds.Add(5);
+        // No entry in BreakpointIds for this ID
+
+        WhenHandlingBreakpointHit(5);
+
+        ThenHitUserBreakpointIsTrue();
+        ThenNoBreakpointEventWasSent();
+    }
+
+    // ── HandleExceptionBreakpoint ─────────────────────────
+
+    [Fact]
+    public void HandleExceptionBreakpoint_WhenManagedAddressMatches_SetsHitUserBreakpoint()
+    {
+        GivenManagedInitialized();
+        _ = _model.ManagedBreakpointAddresses.Add(0x1000UL);
+
+        WhenHandlingExceptionBreakpoint(0x1000UL);
+
+        ThenHitUserBreakpointIsTrue();
+    }
+
+    [Fact]
+    public void HandleExceptionBreakpoint_WhenNotManagedInitialized_Returns()
+    {
+        _ = _model.ManagedBreakpointAddresses.Add(0x1000UL);
+
+        WhenHandlingExceptionBreakpoint(0x1000UL);
+
+        ThenHitUserBreakpointIsFalse();
+    }
+
+    [Fact]
+    public void HandleExceptionBreakpoint_WhenLegacyBreakpointsAndNotInUserIds_SetsHitUserBreakpoint()
+    {
+        GivenManagedInitialized();
+        _model.CorWrapper.LegacyBreakpoints[1] = null!; // Make HasLegacyBreakpoints true
+        // Address not in ManagedBreakpointAddresses, and LastHitBpId not in UserBreakpointIds
+
+        WhenHandlingExceptionBreakpoint(0x2000UL);
+
+        ThenHitUserBreakpointIsTrue();
+    }
+
     #region Given
 
     private void GivenSourceFileIsNative(string path) => _ = _sourceFiles.IsNativeFile(path).Returns(true);
@@ -174,11 +279,23 @@ public sealed class BreakpointServiceTests : IDisposable
         _ = _model.UserBreakpointIds.Add(bpId);
     }
 
+    private void GivenManagedInitialized() => _model.ManagedInitialized = true;
+
+    private void GivenAddCodeBreakpointFails() => _ = _wrapper.AddCodeBreakpoint(_model.Wrapper, Arg.Any<ulong>())
+            .Returns((0u, false));
+
+    private void GivenManagedBreakpointServiceReturns(string filePath, Breakpoint[] results) => _ = _managedBp.SetManagedBreakpoints(_model, filePath, Arg.Any<SourceBreakpoint[]>())
+            .Returns(results);
+
     #endregion
 
     #region When
 
     private void WhenSettingBreakpointsOnEngine() => _bpResults = _testee.SetBreakpointsOnEngine(_model, _bpFilePath!, _bpRequested!);
+
+    private void WhenHandlingBreakpointHit(uint bpId) => _testee.HandleBreakpointHit(_model, bpId);
+
+    private void WhenHandlingExceptionBreakpoint(ulong address) => _testee.HandleExceptionBreakpoint(_model, address);
 
     #endregion
 
@@ -196,11 +313,21 @@ public sealed class BreakpointServiceTests : IDisposable
 
     private void ThenBreakpointAtIndexHasId(int index, int expected) => Assert.Equal(expected, _bpResults![index].Id);
 
+    private void ThenBreakpointAtIndexHasMessage(int index, string expected) => Assert.Equal(expected, _bpResults![index].Message);
+
     private void ThenUserBreakpointIdsContains(uint id) => Assert.Contains(id, _model.UserBreakpointIds);
 
     private void ThenUserBreakpointIdsDoesNotContain(uint id) => Assert.DoesNotContain(id, _model.UserBreakpointIds);
 
     private void ThenRemoveBreakpointWasCalled(uint bpId) => _ = _wrapper.Received(1).RemoveBreakpoint(_model.Wrapper, bpId);
+
+    private void ThenHitUserBreakpointIsTrue() => Assert.True(_model.HitUserBreakpoint);
+
+    private void ThenHitUserBreakpointIsFalse() => Assert.False(_model.HitUserBreakpoint);
+
+    private void ThenBreakpointEventWasSent() => _server.Received().SendEvent(_transport, "breakpoint", Arg.Any<BreakpointEventBody>());
+
+    private void ThenNoBreakpointEventWasSent() => _server.DidNotReceive().SendEvent(_transport, "breakpoint", Arg.Any<BreakpointEventBody>());
 
     #endregion
 

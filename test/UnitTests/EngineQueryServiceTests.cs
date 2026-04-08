@@ -1,5 +1,6 @@
 using MixDbg.Models;
 using MixDbg.Models.DapMessages.Inspection;
+using MixDbg.Models.DapMessages.Protocol;
 using MixDbg.Models.DapMessages.Threads;
 using MixDbg.Services;
 using MixDbg.Services.Interfaces;
@@ -170,6 +171,158 @@ public sealed class EngineQueryServiceTests : IDisposable
         ThenVariableAtIndexHasValue(1, "3.14");
     }
 
+    // ── GetStackTraceOnEngine ─────────────────────────────
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenCachedResultExists_ReturnsCachedResult()
+    {
+        GivenCachedStackTraceResult([new StackFrame { Id = 1, Name = "cached" }]);
+
+        WhenGettingStackTraceOnEngine();
+
+        ThenStackTraceResultCountIs(1);
+        ThenStackFrameAtIndexHasName(0, "cached");
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenNoNativeFrames_ReturnsEmpty()
+    {
+        GivenNativeStackFrames([]);
+
+        WhenGettingStackTraceOnEngine();
+
+        ThenStackTraceResultCountIs(0);
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenDbgEngSourceResolved_ReturnsFrameWithSource()
+    {
+        GivenNativeStackFrames([new NativeStackFrame(0x1000)]);
+        GivenNameByOffset(0x1000, ("MyFunc", 0UL));
+        GivenLineByOffset(0x1000, (10, @"C:\src\file.cpp"));
+
+        WhenGettingStackTraceOnEngine();
+
+        ThenStackTraceResultCountIs(1);
+        ThenStackFrameAtIndexHasName(0, "MyFunc");
+        ThenStackFrameAtIndexHasLine(0, 10);
+        ThenStackFrameAtIndexHasSourcePath(0, @"C:\src\file.cpp");
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenDbgEngFails_UsesProfilerFallback()
+    {
+        GivenNativeStackFrames([new NativeStackFrame(0x2000)]);
+        GivenNameByOffset(0x2000, ("NativeFunc", 0UL));
+        GivenLineByOffsetReturnsNull(0x2000);
+        GivenJitMethodMapHasEntries();
+        GivenProfilerResolvesFrame(0x2000, ("ManagedMethod", new Source { Name = "App.cs", Path = @"C:\src\App.cs" }, 42));
+
+        WhenGettingStackTraceOnEngine();
+
+        ThenStackTraceResultCountIs(1);
+        ThenStackFrameAtIndexHasName(0, "ManagedMethod");
+        ThenStackFrameAtIndexHasLine(0, 42);
+        ThenStackFrameAtIndexHasSourcePath(0, @"C:\src\App.cs");
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenNoSourceResolution_ReturnsHexAddressName()
+    {
+        GivenNativeStackFrames([new NativeStackFrame(0x3000)]);
+        GivenNameByOffsetReturnsNull(0x3000);
+        GivenLineByOffsetReturnsNull(0x3000);
+
+        WhenGettingStackTraceOnEngine();
+
+        ThenStackTraceResultCountIs(1);
+        ThenStackFrameAtIndexHasName(0, "0x3000");
+        ThenStackFrameAtIndexHasLine(0, 0);
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenCalled_CachesResult()
+    {
+        GivenNativeStackFrames([new NativeStackFrame(0x1000)]);
+        GivenNameByOffset(0x1000, ("Func", 0UL));
+        GivenLineByOffsetReturnsNull(0x1000);
+
+        WhenGettingStackTraceOnEngine();
+
+        Assert.NotNull(_model.CachedStackTraceResult);
+        _ = Assert.Single(_model.CachedStackTraceResult);
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenManagedInitialized_MergesManagedFrames()
+    {
+        GivenNativeStackFrames([new NativeStackFrame(0x1000)]);
+        GivenNameByOffset(0x1000, ("Func", 0UL));
+        GivenLineByOffsetReturnsNull(0x1000);
+        _model.ManagedInitialized = true;
+
+        WhenGettingStackTraceOnEngine();
+
+        _managedDebugger.Received(1).MergeManagedFrames(_model, Arg.Any<StackFrame[]>());
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenManagedNotInitialized_DoesNotMergeManagedFrames()
+    {
+        GivenNativeStackFrames([new NativeStackFrame(0x1000)]);
+        GivenNameByOffset(0x1000, ("Func", 0UL));
+        GivenLineByOffsetReturnsNull(0x1000);
+
+        WhenGettingStackTraceOnEngine();
+
+        _managedDebugger.DidNotReceive().MergeManagedFrames(Arg.Any<NativeDebuggerModel>(), Arg.Any<StackFrame[]>());
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenDisplacementGreaterThanZero_FormatsNameWithOffset()
+    {
+        GivenNativeStackFrames([new NativeStackFrame(0x1010)]);
+        GivenNameByOffset(0x1010, ("MyFunc", 0x10UL));
+        GivenLineByOffsetReturnsNull(0x1010);
+
+        WhenGettingStackTraceOnEngine();
+
+        ThenStackFrameAtIndexHasName(0, "MyFunc+0x10");
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenProfilerThrowsException_ReturnsFrameWithoutSource()
+    {
+        GivenNativeStackFrames([new NativeStackFrame(0x5000)]);
+        GivenNameByOffset(0x5000, ("Func", 0UL));
+        GivenLineByOffsetReturnsNull(0x5000);
+        GivenJitMethodMapHasEntries();
+        GivenProfilerResolvesFrameThrows(0x5000, new InvalidOperationException("PDB error"));
+
+        WhenGettingStackTraceOnEngine();
+
+        ThenStackTraceResultCountIs(1);
+        ThenStackFrameAtIndexHasName(0, "Func");
+        ThenStackFrameAtIndexHasLine(0, 0);
+    }
+
+    [Fact]
+    public void GetStackTraceOnEngine_WhenProfilerReturnsNull_ReturnsFrameWithoutSource()
+    {
+        GivenNativeStackFrames([new NativeStackFrame(0x6000)]);
+        GivenNameByOffset(0x6000, ("Func", 0UL));
+        GivenLineByOffsetReturnsNull(0x6000);
+        GivenJitMethodMapHasEntries();
+        _ = _managedDebugger.ResolveFrameFromProfilerData(_model, 0x6000)
+            .Returns(((string, Source?, int)?)null);
+
+        WhenGettingStackTraceOnEngine();
+
+        ThenStackTraceResultCountIs(1);
+        ThenStackFrameAtIndexHasName(0, "Func");
+        ThenStackFrameAtIndexHasLine(0, 0);
+    }
+
     // ── GetStoppedThreadIdOnEngine ──────────────────────────
 
     [Fact]
@@ -183,6 +336,24 @@ public sealed class EngineQueryServiceTests : IDisposable
     }
 
     #region Given
+
+    private void GivenCachedStackTraceResult(StackFrame[] cached) => _model.CachedStackTraceResult = cached;
+
+    private void GivenNativeStackFrames(NativeStackFrame[] frames) => _ = _wrapper.GetStackTrace(_model.Wrapper, Arg.Any<int>()).Returns(frames);
+
+    private void GivenNameByOffset(ulong ip, (string Name, ulong Displacement) result) => _ = _wrapper.GetNameByOffset(_model.Wrapper, ip).Returns(result);
+
+    private void GivenNameByOffsetReturnsNull(ulong ip) => _ = _wrapper.GetNameByOffset(_model.Wrapper, ip).Returns(((string, ulong)?)null);
+
+    private void GivenLineByOffset(ulong ip, (uint Line, string File) result) => _ = _wrapper.GetLineByOffset(_model.Wrapper, ip).Returns(result);
+
+    private void GivenLineByOffsetReturnsNull(ulong ip) => _ = _wrapper.GetLineByOffset(_model.Wrapper, ip).Returns(((uint, string)?)null);
+
+    private void GivenJitMethodMapHasEntries() => _model.JitMethodMap.Add(0x1000, new JitMethodInfo(0x06000001, 0x1000, 100, "TestAssembly"));
+
+    private void GivenProfilerResolvesFrame(ulong ip, (string Name, Source? Source, int Line) result) => _ = _managedDebugger.ResolveFrameFromProfilerData(_model, ip).Returns(result);
+
+    private void GivenProfilerResolvesFrameThrows(ulong ip, Exception ex) => _ = _managedDebugger.ResolveFrameFromProfilerData(_model, ip).Returns<(string, Source?, int)?>(x => throw ex);
 
     private void GivenThreadsExist((uint engineId, uint systemId)[] threads) => _ = _wrapper.GetThreads(_model.Wrapper).Returns(threads);
 
@@ -199,6 +370,8 @@ public sealed class EngineQueryServiceTests : IDisposable
     #endregion
 
     #region When
+
+    private void WhenGettingStackTraceOnEngine() => _stackTraceResults = _testee.GetStackTraceOnEngine(_model, 20);
 
     private void WhenExecutingContinueOnEngine() => _testee.ExecuteContinueOnEngine(_model);
 
@@ -217,6 +390,14 @@ public sealed class EngineQueryServiceTests : IDisposable
     #endregion
 
     #region Then
+
+    private void ThenStackTraceResultCountIs(int expected) => Assert.Equal(expected, _stackTraceResults!.Length);
+
+    private void ThenStackFrameAtIndexHasName(int index, string expected) => Assert.Equal(expected, _stackTraceResults![index].Name);
+
+    private void ThenStackFrameAtIndexHasLine(int index, int expected) => Assert.Equal(expected, _stackTraceResults![index].Line);
+
+    private void ThenStackFrameAtIndexHasSourcePath(int index, string expected) => Assert.Equal(expected, _stackTraceResults![index].Source?.Path);
 
     private void ThenConfigDoneIsTrue() => Assert.True(_model.ConfigDone);
 
@@ -258,6 +439,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     private readonly NativeDebuggerModel _model;
     private readonly EngineQueryService _testee;
 
+    private StackFrame[]? _stackTraceResults;
     private DapThread[]? _threadResults;
     private Scope[]? _scopeResults;
     private Variable[]? _variableResults;
