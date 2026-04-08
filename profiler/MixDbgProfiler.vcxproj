@@ -65,6 +65,15 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="MixDbgProfiler.cpp" />
+    <ClCompile Include="FunctionCallbacks.cpp" />
+    <ClCompile Include="ClassFactory.cpp" />
+    <ClCompile Include="DllExports.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="CoreClrTypes.h" />
+    <ClInclude Include="ProfilerInfo.h" />
+    <ClInclude Include="MixDbgProfiler.h" />
+    <ClInclude Include="ClassFactory.h" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="EnterLeaveStubs.asm" />
