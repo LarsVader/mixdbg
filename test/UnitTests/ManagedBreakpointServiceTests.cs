@@ -292,7 +292,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     }
 
     [Fact]
-    public void RemoveTransientManagedBreakpoints_WhenActiveWithBps_RemovesAllAndClearsTracking()
+    public void RemoveTransientManagedBreakpoints_WhenManagedBpHit_RemovesOnlyHitBp()
     {
         _model.ProfilerHooksActive = true;
         GivenExistingManagedBreakpointId(10);
@@ -303,19 +303,36 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         _ = _model.ManagedBreakpointAddresses.Add(0x2000);
         _model.BreakpointIds[@"C:\src\File.cs:10"] = 10;
         _model.BreakpointIds[@"C:\src\File.cs:20"] = 20;
+        _model.LastHitBpId = 10;
         GivenRemoveBreakpointSucceeds(10);
-        GivenRemoveBreakpointSucceeds(20);
 
         WhenRemovingTransientBreakpoints();
 
         ThenRemoveBreakpointWasCalled(10);
-        ThenRemoveBreakpointWasCalled(20);
-        ThenManagedBreakpointIdsIsEmpty();
-        ThenManagedBreakpointAddressesIsEmpty();
+        ThenManagedBreakpointIdsContains(20);
         ThenUserBreakpointIdsDoesNotContain(10);
-        ThenUserBreakpointIdsDoesNotContain(20);
+        Assert.Contains(20u, _model.UserBreakpointIds);
         ThenBreakpointIdKeyIsRemoved(@"C:\src\File.cs:10");
-        ThenBreakpointIdKeyIsRemoved(@"C:\src\File.cs:20");
+        Assert.True(_model.BreakpointIds.ContainsKey(@"C:\src\File.cs:20"));
+    }
+
+    [Fact]
+    public void RemoveTransientManagedBreakpoints_WhenNativeBpHit_LeavesAllManagedBpsIntact()
+    {
+        _model.ProfilerHooksActive = true;
+        GivenExistingManagedBreakpointId(10);
+        GivenExistingManagedBreakpointId(20);
+        _ = _model.UserBreakpointIds.Add(10);
+        _ = _model.UserBreakpointIds.Add(20);
+        _model.BreakpointIds[@"C:\src\File.cs:10"] = 10;
+        _model.BreakpointIds[@"C:\src\File.cs:20"] = 20;
+        _model.LastHitBpId = 99; // native BP, not in ManagedBreakpointIds
+
+        WhenRemovingTransientBreakpoints();
+
+        ThenRemoveBreakpointWasNotCalled();
+        ThenManagedBreakpointIdsContains(10);
+        ThenManagedBreakpointIdsContains(20);
     }
 
     // ── ResolveTokensFromBreakpoints ─────────────────────────

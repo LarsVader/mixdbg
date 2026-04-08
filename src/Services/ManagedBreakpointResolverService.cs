@@ -249,8 +249,9 @@ internal sealed class ManagedBreakpointResolverService(
             return false;
 
         model.PendingEnterBreakpoint = false;
-        // Find the matching deferred BP and compute exact native address
+        // Find all matching deferred BPs and compute exact native addresses
         // from the IL-to-native mapping (resolves breakpoint line → native offset).
+        // Multiple BPs may target the same method (e.g. lines before and after a native call).
         string bpKey = $"{model.EnterBreakpointAssembly}:{model.EnterBreakpointToken:X8}";
         bool matched = false;
         foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
@@ -270,7 +271,6 @@ internal sealed class ManagedBreakpointResolverService(
                 _bpService.SetTransientBreakpoint(model, addr, deferred.FilePath, deferred.Line);
                 _log.LogInfo(_logStore, $"  ENTER: transient hw BP at 0x{addr:X} for {deferred.FilePath}:{deferred.Line}");
                 matched = true;
-                break;
             }
         }
         // ACK unblocks the profiler (hooks disabled during method body).

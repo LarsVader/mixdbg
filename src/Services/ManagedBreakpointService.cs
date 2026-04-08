@@ -207,6 +207,45 @@ internal sealed class ManagedBreakpointService(
         if (!model.ProfilerHooksActive || model.ManagedBreakpointIds.Count == 0)
             return;
 
+        // If a managed BP was hit, only remove that one — other transient BPs in the
+        // same method may not have fired yet (e.g. BPs before and after a native call).
+        // If a non-managed BP was hit (e.g. native), leave all transient BPs intact —
+        // the method is still executing and the remaining BPs may still fire.
+        uint hitId = model.LastHitBpId;
+        if (model.ManagedBreakpointIds.Contains(hitId))
+            RemoveSingleTransientBreakpoint(model, hitId);
+    }
+
+    /// <summary>
+    /// Removes a single transient managed hardware breakpoint by ID.
+    /// </summary>
+    private void RemoveSingleTransientBreakpoint(NativeDebuggerModel model, uint bpId)
+    {
+        if (_dbgEng.RemoveBreakpoint(model.Wrapper, bpId))
+            _log.LogInfo(_logStore, $"Removed transient managed hw bp #{bpId}");
+        _ = model.UserBreakpointIds.Remove(bpId);
+        _ = model.ManagedBreakpointIds.Remove(bpId);
+
+        // Remove the address for this BP.
+        string? keyToRemove = model.BreakpointIds
+            .Where(kv => kv.Value == bpId)
+            .Select(kv => kv.Key)
+            .FirstOrDefault();
+        if (keyToRemove != null)
+        {
+            _ = model.BreakpointIds.Remove(keyToRemove);
+            // Try to find and remove the matching address.
+            string[] parts = keyToRemove.Split(':', 2);
+            if (parts.Length == 2 && ulong.TryParse(parts[1], out ulong addr))
+                _ = model.ManagedBreakpointAddresses.Remove(addr);
+        }
+    }
+
+    /// <summary>
+    /// Removes all transient managed hardware breakpoints.
+    /// </summary>
+    private void RemoveAllTransientBreakpoints(NativeDebuggerModel model)
+    {
         List<uint> idsToRemove = [.. model.ManagedBreakpointIds];
         foreach (uint hwBpId in idsToRemove)
         {

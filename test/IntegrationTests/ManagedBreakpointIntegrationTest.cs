@@ -151,6 +151,62 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MixedBreakpoints_WhenNativeAndManagedBothSet_BothFireInSameSession()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set managed BPs: line 65 (before native call) and line 68 (after native call returns).
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _bpFile, name = "MainWindow.xaml.cs" },
+            breakpoints = new[] { new { line = _addLine }, new { line = _afterNativeCallLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // Set a native BP on Calculator::Add (native C++).
+        await SendDapRequest(5, "setBreakpoints", new
+        {
+            source = new { path = _nativeBpFile, name = "Calculator.cpp" },
+            breakpoints = new[] { new { line = _nativeAddLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Hit 1: managed BP at OnAddClick line 65 (before the native call).
+        await WhenWaitingForStoppedEvent(timeout: 20);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 2: native BP at Calculator::Add (inside the native call).
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 3: managed BP at OnAddClick line 68 (after the native call returns).
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(hitIndex: 0, _addLine);
+        ThenBreakpointWasHit(hitIndex: 1);
+        ThenStackTraceHasSource(hitIndex: 1, "Calculator.cpp");
+        ThenBreakpointWasHit(hitIndex: 2);
+        ThenStackTraceHasSource(hitIndex: 2, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(hitIndex: 2, _afterNativeCallLine);
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task ManagedBreakpoint_WhenBreakpointInsideMethodBody_StopsAtExactLine()
     {
         GivenMixDbgAndWpfAppExist();
@@ -504,12 +560,16 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         _repoRoot, "test", "TestApp", "WpfApp", "MainWindow.xaml.cs");
     private static readonly string _cliWrapperBpFile = Path.Combine(
         _repoRoot, "test", "TestApp", "CliWrapper", "ManagedCalculator.h");
+    private static readonly string _nativeBpFile = Path.Combine(
+        _repoRoot, "test", "TestApp", "NativeLib", "Calculator.cpp");
     private const int _addLine = 65;
     private const int _multiplyLine = 74;
     private const int _addBodyLine = 67;       // int result = ManagedCalculator.Add(a, b);
     private const int _multiplyBodyLine = 76;  // int result = ManagedCalculator.Multiply(a, b);
+    private const int _afterNativeCallLine = 68; // ResultText.Text = $"{a} + {b} = {result}";
     private const int _cliWrapperAddLine = 14;      // return NativeLib::Calculator::Add(a, b);
     private const int _cliWrapperMultiplyLine = 19;  // return NativeLib::Calculator::Multiply(a, b);
+    private const int _nativeAddLine = 7;       // return a + b; (Calculator.cpp)
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-test-{Guid.NewGuid():N}.log");
