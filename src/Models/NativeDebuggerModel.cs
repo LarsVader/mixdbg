@@ -41,6 +41,7 @@ public sealed class NativeDebuggerModel : IDisposable
     internal HashSet<uint> UserBreakpointIds { get; } = [];
     internal uint LastHitBpId;
     internal uint LastContinuedBpId = uint.MaxValue;
+    internal long ContinueTimestampTicks;
     internal volatile bool HitUserBreakpoint;
     internal Dictionary<string, uint> BreakpointIds { get; } = [];
     internal int NextBpId;

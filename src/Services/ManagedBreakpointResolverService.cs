@@ -292,6 +292,10 @@ internal sealed class ManagedBreakpointResolverService(
         {
             if (model.Terminated || model.DeferredManagedBreakpoints.Count == 0)
                 return;
+            // Skip during cooldown after continue — SetInterrupt can race with the
+            // engine single-stepping past a breakpoint, causing native BPs to re-fire.
+            if (Environment.TickCount64 - model.ContinueTimestampTicks < 200)
+                return;
             try
             {
                 _dbgEng.SetInterrupt(model.Wrapper);

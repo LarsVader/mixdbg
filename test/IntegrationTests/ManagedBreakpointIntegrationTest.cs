@@ -341,6 +341,89 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MixedBreakpoints_WhenAllLayersOnBothMethods_AllEightStopsFire()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // C# BPs: before and after native call in both OnAddClick and OnMultiplyClick.
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _bpFile, name = "MainWindow.xaml.cs" },
+            breakpoints = new[]
+            {
+                new { line = _addLine },
+                new { line = _afterNativeCallLine },
+                new { line = _multiplyLine },
+                new { line = _afterMultiplyNativeCallLine },
+            },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // C++/CLI BPs: Add and Multiply.
+        await SendDapRequest(5, "setBreakpoints", new
+        {
+            source = new { path = _cliWrapperBpFile, name = "ManagedCalculator.h" },
+            breakpoints = new[] { new { line = _cliWrapperAddLine }, new { line = _cliWrapperMultiplyLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // Native BPs: Add and Multiply.
+        await SendDapRequest(6, "setBreakpoints", new
+        {
+            source = new { path = _nativeBpFile, name = "Calculator.cpp" },
+            breakpoints = new[] { new { line = _nativeAddLine }, new { line = _nativeMultiplyLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Add click: 4 stops (C# 65 → CLI 14 → native 7 → C# 68).
+        for (int i = 0; i < 4; i++)
+        {
+            await WhenWaitingForStoppedEvent(timeout: 30);
+            await WhenRequestingStackTraceForMultipleThreads();
+            await WhenSendingContinue();
+        }
+
+        // Multiply click: 4 stops (C# 74 → CLI 19 → native 12 → C# 77).
+        for (int i = 0; i < 4; i++)
+        {
+            await WhenWaitingForStoppedEvent(timeout: 30);
+            await WhenRequestingStackTraceForMultipleThreads();
+            await WhenSendingContinue();
+        }
+
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        // Add cycle: C# → CLI → native → C#.
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "MainWindow.xaml.cs");
+        ThenBreakpointWasHit(hitIndex: 1);
+        ThenStackTraceHasSource(hitIndex: 1, "ManagedCalculator.h");
+        ThenBreakpointWasHit(hitIndex: 2);
+        ThenStackTraceHasSource(hitIndex: 2, "Calculator.cpp");
+        ThenBreakpointWasHit(hitIndex: 3);
+        ThenStackTraceHasSource(hitIndex: 3, "MainWindow.xaml.cs");
+
+        // Multiply cycle: C# → CLI → native → C#.
+        ThenBreakpointWasHit(hitIndex: 4);
+        ThenStackTraceHasSource(hitIndex: 4, "MainWindow.xaml.cs");
+        ThenBreakpointWasHit(hitIndex: 5);
+        ThenStackTraceHasSource(hitIndex: 5, "ManagedCalculator.h");
+        ThenBreakpointWasHit(hitIndex: 6);
+        ThenStackTraceHasSource(hitIndex: 6, "Calculator.cpp");
+        ThenBreakpointWasHit(hitIndex: 7);
+        ThenStackTraceHasSource(hitIndex: 7, "MainWindow.xaml.cs");
+
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task ManagedBreakpoint_WhenBreakpointInsideMethodBody_StopsAtExactLine()
     {
         GivenMixDbgAndWpfAppExist();
@@ -704,6 +787,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     private const int _cliWrapperAddLine = 14;      // return NativeLib::Calculator::Add(a, b);
     private const int _cliWrapperMultiplyLine = 19;  // return NativeLib::Calculator::Multiply(a, b);
     private const int _nativeAddLine = 7;       // return a + b; (Calculator.cpp)
+    private const int _nativeMultiplyLine = 12;  // return a * b; (Calculator.cpp)
+    private const int _afterMultiplyNativeCallLine = 77; // ResultText.Text = $"{a} × {b} = {result}";
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-test-{Guid.NewGuid():N}.log");

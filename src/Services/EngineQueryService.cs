@@ -183,6 +183,7 @@ internal sealed class EngineQueryService(
     {
         _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
         model.LastContinuedBpId = model.LastHitBpId;
+        model.ContinueTimestampTicks = Environment.TickCount64;
         _managedBp.RemoveTransientManagedBreakpoints(model);
         _ = (model.ProfilerRehookEvent?.Set());
         model.ConfigDone = true;
