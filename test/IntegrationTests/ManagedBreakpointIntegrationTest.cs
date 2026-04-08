@@ -207,6 +207,69 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MixedBreakpoints_WhenAllThreeLayers_AllFire()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set C# managed BP on OnAddClick (line 65).
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _bpFile, name = "MainWindow.xaml.cs" },
+            breakpoints = new[] { new { line = _addLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // Set C++/CLI BP on ManagedCalculator::Add (line 14).
+        await SendDapRequest(5, "setBreakpoints", new
+        {
+            source = new { path = _cliWrapperBpFile, name = "ManagedCalculator.h" },
+            breakpoints = new[] { new { line = _cliWrapperAddLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // Set native C++ BP on Calculator::Add (line 7).
+        await SendDapRequest(6, "setBreakpoints", new
+        {
+            source = new { path = _nativeBpFile, name = "Calculator.cpp" },
+            breakpoints = new[] { new { line = _nativeAddLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Hit 1: C# BP at OnAddClick (line 65).
+        await WhenWaitingForStoppedEvent(timeout: 20);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 2: C++/CLI BP at ManagedCalculator::Add (line 14).
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 3: native BP at Calculator::Add (line 7).
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(hitIndex: 0, _addLine);
+        ThenBreakpointWasHit(hitIndex: 1);
+        ThenStackTraceHasSource(hitIndex: 1, "ManagedCalculator.h");
+        ThenBreakpointWasHit(hitIndex: 2);
+        ThenStackTraceHasSource(hitIndex: 2, "Calculator.cpp");
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task ManagedBreakpoint_WhenBreakpointInsideMethodBody_StopsAtExactLine()
     {
         GivenMixDbgAndWpfAppExist();

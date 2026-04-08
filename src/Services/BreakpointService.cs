@@ -212,6 +212,16 @@ internal sealed class BreakpointService(
             return;
         }
         model.HitUserBreakpoint = true;
+
+        // Resolve the hw BP ID so RemoveTransientManagedBreakpoints knows which
+        // transient BP was hit (needed when multiple BPs target the same method).
+        if (model.ManagedBreakpointSources.TryGetValue(address, out (string File, int Line) source))
+        {
+            string key = $"{source.File}:{source.Line}";
+            if (model.BreakpointIds.TryGetValue(key, out uint bpId))
+                model.LastHitBpId = bpId;
+        }
+
         _log.LogInfo(_logStore, $"Managed breakpoint hit at 0x{address:X}");
     }
 
