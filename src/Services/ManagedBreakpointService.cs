@@ -198,7 +198,13 @@ internal sealed class ManagedBreakpointService(
     }
 
     public void SetTransientBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line)
-        => SetManagedCodeBreakpoint(model, address, filePath, line);
+    {
+        uint? bpId = SetManagedCodeBreakpoint(model, address, filePath, line);
+        // Clear re-fire tracking: the new BP may reuse an ID from a recently removed BP,
+        // and we must not suppress it as a re-fire.
+        if (bpId != null)
+            model.LastContinuedBpId = uint.MaxValue;
+    }
 
     public void RemoveTransientManagedBreakpoints(NativeDebuggerModel model)
     {

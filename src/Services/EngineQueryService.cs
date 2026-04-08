@@ -182,14 +182,9 @@ internal sealed class EngineQueryService(
     public void ExecuteContinueOnEngine(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
+        model.LastContinuedBpId = model.LastHitBpId;
         _managedBp.RemoveTransientManagedBreakpoints(model);
-
-        // Only REHOOK if no transient managed BPs remain. When multiple BPs target the
-        // same method (e.g. lines before and after a native call), the unfired ones must
-        // stay active — REHOOK will happen after the last one fires.
-        if (model.ManagedBreakpointIds.Count == 0)
-            _ = (model.ProfilerRehookEvent?.Set());
-
+        _ = (model.ProfilerRehookEvent?.Set());
         model.ConfigDone = true;
         model.CachedStackTraceResult = null;
         _wrapper.ClearVariables(model.Wrapper);
@@ -199,8 +194,7 @@ internal sealed class EngineQueryService(
     public void ExecuteStepOnEngine(NativeDebuggerModel model, EngineExecutionStatus stepKind)
     {
         _managedBp.RemoveTransientManagedBreakpoints(model);
-        if (model.ManagedBreakpointIds.Count == 0)
-            _ = (model.ProfilerRehookEvent?.Set());
+        _ = (model.ProfilerRehookEvent?.Set());
         _wrapper.ClearVariables(model.Wrapper);
         _wrapper.SetExecutionStatus(model.Wrapper, stepKind);
     }

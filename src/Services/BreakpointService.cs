@@ -170,6 +170,19 @@ internal sealed class BreakpointService(
     public void HandleBreakpointHit(NativeDebuggerModel model, uint breakpointId)
     {
         model.LastHitBpId = breakpointId;
+
+        // Detect re-fire: the deferred BP poller's SetInterrupt can race with the
+        // engine single-stepping past a breakpoint after continue, causing the same
+        // BP to fire twice. Suppress the duplicate hit.
+        if (breakpointId == model.LastContinuedBpId)
+        {
+            model.LastContinuedBpId = uint.MaxValue;
+            model.HitUserBreakpoint = false;
+            _log.LogInfo(_logStore, $"OnBreakpoint: id={breakpointId} suppressed (re-fire after continue)");
+            return;
+        }
+        model.LastContinuedBpId = uint.MaxValue;
+
         model.HitUserBreakpoint = model.UserBreakpointIds.Contains(breakpointId)
             || model.ManagedBreakpointIds.Contains(breakpointId);
         _log.LogInfo(_logStore, $"OnBreakpoint: id={breakpointId} isUser={model.HitUserBreakpoint} (native: [{string.Join(",", model.UserBreakpointIds)}] managed: [{string.Join(",", model.ManagedBreakpointIds)}])");
