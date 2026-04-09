@@ -40,11 +40,23 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     }
 
     [Fact]
-    public void Break_WhenCalled_CallsSetInterrupt()
+    public void Break_WhenInWaitForEvent_CallsSetInterruptDirectly()
     {
+        _model.InWaitForEvent = true;
+
         WhenBreaking();
 
         ThenSetInterruptWasCalled();
+    }
+
+    [Fact]
+    public void Break_WhenNotInWaitForEvent_SetsInterruptRequestedFlag()
+    {
+        _model.InWaitForEvent = false;
+
+        WhenBreaking();
+
+        Assert.True(_model.Wrapper.InterruptRequested);
     }
 
     // ── Terminate ──────────────────────────────────────────

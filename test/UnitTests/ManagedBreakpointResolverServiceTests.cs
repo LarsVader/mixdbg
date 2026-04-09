@@ -440,6 +440,20 @@ public sealed class ManagedBreakpointResolverServiceTests : IDisposable
     }
 
     [Fact]
+    public void HandleEnterBreakpoint_WhenMultipleDeferredBpsMatchSameMethod_SetsAllTransientBps()
+    {
+        GivenEnterBreakpointState(token: 0x06000001, address: 0x7FFF0000, assembly: "TestAssembly");
+        GivenDeferredBreakpoint(@"C:\src\A.cs", line: 10, token: 0x06000001, ilOffset: 10, bpId: 1, assembly: "TestAssembly");
+        GivenDeferredBreakpoint(@"C:\src\A.cs", line: 20, token: 0x06000001, ilOffset: 30, bpId: 2, assembly: "TestAssembly");
+        GivenJitMethodMapping("TestAssembly", 0x06000001, codeStart: 0x1000, ilMap: [(0, 0), (10, 20), (30, 50)]);
+
+        _ = WhenHandlingEnterBreakpoint();
+
+        _bpService.Received(1).SetTransientBreakpoint(_model, 0x1000 + 20, @"C:\src\A.cs", 10);
+        _bpService.Received(1).SetTransientBreakpoint(_model, 0x1000 + 50, @"C:\src\A.cs", 20);
+    }
+
+    [Fact]
     public void HandleEnterBreakpoint_WhenNoMatch_RehooksProfiler()
     {
         GivenEnterBreakpointState(token: 0x06000099, address: 0x7FFF0000, assembly: "TestAssembly");

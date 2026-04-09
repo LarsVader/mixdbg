@@ -229,6 +229,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     {
         GivenProfilerPipeCreated();
         GivenDeferredBreakpoint(token: 0x06000001, assembly: "TestAsm");
+        GivenInWaitForEvent();
         GivenProfilerReaderStarted();
 
         WhenClientSendsLine("JIT:06000001:1000:40:TestAsm");
@@ -272,6 +273,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     public void ProfilerReaderLoop_WhenEnterNotification_SetsPendingEnterState()
     {
         GivenProfilerPipeCreated();
+        GivenInWaitForEvent();
         GivenProfilerReaderStarted();
 
         WhenClientSendsLine("ENTER:06000001:2000:1234:TestAsm");
@@ -353,6 +355,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     {
         GivenProfilerPipeCreated();
         GivenDeferredBreakpoint(token: 0x06000001, assembly: "TestAsm");
+        GivenInWaitForEvent();
         GivenProfilerReaderStarted();
 
         WhenClientSendsLine("06000001:1000:40:TestAsm");
@@ -580,6 +583,8 @@ public sealed class ProfilerPipeServiceTests : IDisposable
                 ILOffset: 0,
                 BpId: 1,
                 AssemblyName: assembly));
+
+    private void GivenInWaitForEvent() => _model.InWaitForEvent = true;
 
     private void GivenPendingEnterBreakpointAlreadySet()
     {

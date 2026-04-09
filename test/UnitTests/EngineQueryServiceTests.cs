@@ -47,6 +47,24 @@ public sealed class EngineQueryServiceTests : IDisposable
         _wrapper.Received(1).ClearVariables(_model.Wrapper);
     }
 
+    [Fact]
+    public void ExecuteContinueOnEngine_WhenCalled_SetsLastContinuedBpId()
+    {
+        _model.LastHitBpId = 7;
+
+        WhenExecutingContinueOnEngine();
+
+        Assert.Equal(7u, _model.LastContinuedBpId);
+    }
+
+    [Fact]
+    public void ExecuteContinueOnEngine_WhenCalled_SetsContinueTimestamp()
+    {
+        WhenExecutingContinueOnEngine();
+
+        Assert.True(_model.ContinueTimestampTicks > 0);
+    }
+
     // ── ExecuteStepOnEngine ─────────────────────────────────
 
     [Fact]

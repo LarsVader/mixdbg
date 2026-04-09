@@ -220,6 +220,64 @@ public sealed class BreakpointServiceTests : IDisposable
         ThenHitUserBreakpointIsTrue();
     }
 
+    [Fact]
+    public void HandleExceptionBreakpoint_WhenAddressMatchesManagedSource_SetsLastHitBpId()
+    {
+        GivenManagedInitialized();
+        GivenManagedBreakpointSource(address: 0x1000UL, file: @"C:\src\File.cs", line: 42);
+        GivenExistingBreakpointForFile(@"C:\src\File.cs", line: 42, bpId: 7);
+        _ = _model.ManagedBreakpointAddresses.Add(0x1000UL);
+
+        WhenHandlingExceptionBreakpoint(0x1000UL);
+
+        ThenLastHitBpIdIs(7);
+    }
+
+    // ── HandleBreakpointHit (re-fire suppression) ────────────
+
+    [Fact]
+    public void HandleBreakpointHit_WhenSameIdAsContinuedBp_SuppressesDuplicate()
+    {
+        GivenExistingBreakpointForFile(@"C:\src\main.cpp", line: 10, bpId: 5);
+        GivenLastContinuedBpId(5);
+
+        WhenHandlingBreakpointHit(5);
+
+        ThenHitUserBreakpointIsFalse();
+        ThenNoBreakpointEventWasSent();
+    }
+
+    [Fact]
+    public void HandleBreakpointHit_WhenDifferentIdFromContinuedBp_NotSuppressed()
+    {
+        GivenExistingBreakpointForFile(@"C:\src\main.cpp", line: 10, bpId: 5);
+        GivenLastContinuedBpId(3);
+
+        WhenHandlingBreakpointHit(5);
+
+        ThenHitUserBreakpointIsTrue();
+        ThenBreakpointEventWasSent();
+    }
+
+    [Fact]
+    public void HandleBreakpointHit_WhenReFire_ResetsLastContinuedBpId()
+    {
+        GivenExistingBreakpointForFile(@"C:\src\main.cpp", line: 10, bpId: 5);
+        GivenLastContinuedBpId(5);
+
+        WhenHandlingBreakpointHit(5);
+
+        ThenLastContinuedBpIdIs(uint.MaxValue);
+    }
+
+    [Fact]
+    public void HandleBreakpointHit_Always_SetsLastHitBpId()
+    {
+        WhenHandlingBreakpointHit(42);
+
+        ThenLastHitBpIdIs(42);
+    }
+
     #region Given
 
     private void GivenSourceFileIsNative(string path) => _ = _sourceFiles.IsNativeFile(path).Returns(true);
@@ -281,6 +339,11 @@ public sealed class BreakpointServiceTests : IDisposable
 
     private void GivenManagedInitialized() => _model.ManagedInitialized = true;
 
+    private void GivenLastContinuedBpId(uint bpId) => _model.LastContinuedBpId = bpId;
+
+    private void GivenManagedBreakpointSource(ulong address, string file, int line)
+        => _model.ManagedBreakpointSources[address] = (file, line);
+
     private void GivenAddCodeBreakpointFails() => _ = _wrapper.AddCodeBreakpoint(_model.Wrapper, Arg.Any<ulong>())
             .Returns((0u, false));
 
@@ -328,6 +391,10 @@ public sealed class BreakpointServiceTests : IDisposable
     private void ThenBreakpointEventWasSent() => _server.Received().SendEvent(_transport, "breakpoint", Arg.Any<BreakpointEventBody>());
 
     private void ThenNoBreakpointEventWasSent() => _server.DidNotReceive().SendEvent(_transport, "breakpoint", Arg.Any<BreakpointEventBody>());
+
+    private void ThenLastHitBpIdIs(uint expected) => Assert.Equal(expected, _model.LastHitBpId);
+
+    private void ThenLastContinuedBpIdIs(uint expected) => Assert.Equal(expected, _model.LastContinuedBpId);
 
     #endregion
 

@@ -267,6 +267,17 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         ThenManagedBreakpointIdsContains(77);
     }
 
+    [Fact]
+    public void SetTransientBreakpoint_WhenBpSet_ClearsLastContinuedBpId()
+    {
+        GivenAddHardwareBreakpointSucceeds(0xBEEF, bpId: 77);
+        _model.LastContinuedBpId = 5;
+
+        WhenSettingTransientBreakpoint(0xBEEF, @"C:\src\File.cs", 100);
+
+        Assert.Equal(uint.MaxValue, _model.LastContinuedBpId);
+    }
+
     // ── RemoveTransientManagedBreakpoints ────────────────────
 
     [Fact]
