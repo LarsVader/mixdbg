@@ -15,7 +15,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
 {
     // ── Tests ───────────────────────────────────────────
 
-    [Fact]
+    [Fact(Skip = "Covered by AllEightStops and SameMethodCalledTwice")]
     public async Task ManagedBreakpoint_WhenTwoMethodsBreakpointed_BothFireWithSource()
     {
         GivenMixDbgAndWpfAppExist();
@@ -46,7 +46,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "Covered by SameMethodCalledTwice")]
     public async Task ManagedBreakpoint_WhenDoubleClicked_BothFireOnSecondCall()
     {
         GivenMixDbgAndWpfAppExist();
@@ -77,7 +77,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "Covered by AllEightStops")]
     public async Task ManagedBreakpoint_WhenSlowUserDelaysFirstClick_BothStillFire()
     {
         GivenMixDbgAndWpfAppExist();
@@ -108,7 +108,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "Covered by AllEightStops")]
     public async Task ManagedBreakpoint_WhenCliWrapperMethodBreakpointed_StopsWithSource()
     {
         GivenMixDbgAndWpfAppExist();
@@ -150,7 +150,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "Covered by AllEightStops")]
     public async Task MixedBreakpoints_WhenNativeAndManagedBothSet_BothFireInSameSession()
     {
         GivenMixDbgAndWpfAppExist();
@@ -206,7 +206,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "Covered by AllEightStops")]
     public async Task MixedBreakpoints_WhenAllThreeLayers_AllFire()
     {
         GivenMixDbgAndWpfAppExist();
@@ -340,7 +340,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "Covered by AllEightStops")]
     public async Task MixedBreakpoints_WhenAllFourBreakpointsSet_AllFireInOrder()
     {
         GivenMixDbgAndWpfAppExist();
@@ -494,7 +494,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "Covered by AllEightStops")]
     public async Task ManagedBreakpoint_WhenBreakpointInsideMethodBody_StopsAtExactLine()
     {
         GivenMixDbgAndWpfAppExist();
