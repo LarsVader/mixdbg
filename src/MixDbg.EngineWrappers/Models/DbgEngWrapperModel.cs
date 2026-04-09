@@ -1,3 +1,4 @@
+using System.Threading;
 using MixDbg.Engine.DbgEng;
 
 namespace MixDbg.Models;
@@ -58,6 +59,33 @@ public sealed class DbgEngWrapperModel
     // ── Variable inspection state (internal, managed by DbgEngWrapperService) ──
 
     internal VariableStore Variables { get; } = new();
+
+    // ── Cross-thread interrupt request flag ──
+
+    /// <summary>
+    /// Set by non-engine threads to request an interrupt. The engine thread
+    /// checks this during WaitForEvent timeouts and calls SetInterrupt on
+    /// the engine thread to avoid cross-thread COM corruption.
+    /// </summary>
+    public volatile bool InterruptRequested;
+
+    /// <summary>
+    /// Signaled when <see cref="InterruptRequested"/> is set, so the
+    /// WaitForEvent polling loop wakes immediately instead of waiting
+    /// for the next timeout.
+    /// </summary>
+    public ManualResetEventSlim InterruptEvent { get; } = new(false);
+
+    // ── COM reference retention — prevents GC finalizer from releasing
+    //    COM objects on the wrong thread, which corrupts dbgeng state ──
+
+    /// <summary>
+    /// Retains COM interface references to prevent the .NET GC from calling
+    /// Release() on the finalizer thread while the engine thread is doing
+    /// COM operations. The finalizer thread's Release() can corrupt dbgeng
+    /// internal state, causing ACCESS_VIOLATION (0xC0000005).
+    /// </summary>
+    internal List<object> RetainedComObjects { get; } = [];
 
     // ── Cached stack frames for SetScope (internal, raw dbgeng structs) ──
 

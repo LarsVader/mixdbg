@@ -12,6 +12,14 @@ internal sealed class VariableStore
     private int _nextRef = 1;
     private readonly Dictionary<int, VariableContainer> _containers = [];
 
+    // Keep old COM symbol groups alive to prevent the .NET GC from calling
+    // Release() on the RCW from a finalizer thread. Releasing COM objects
+    // on a non-engine thread while the engine thread is doing COM calls
+    // (GetNameByOffset, GetLineByOffset) causes ACCESS_VIOLATION in dbgeng.
+    // The objects are small metadata holders — the leak is bounded by the
+    // number of continue/step cycles per session.
+    private readonly List<IDebugSymbolGroup2> _retainedGroups = [];
+
     /// <summary>
     /// Allocates a new variablesReference handle for the given symbol group
     /// and index range.
@@ -36,6 +44,8 @@ internal sealed class VariableStore
     /// </summary>
     internal void Clear()
     {
+        foreach (VariableContainer container in _containers.Values)
+            _retainedGroups.Add(container.Group);
         _containers.Clear();
         _nextRef = 1;
     }

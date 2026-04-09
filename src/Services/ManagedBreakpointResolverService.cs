@@ -292,15 +292,15 @@ internal sealed class ManagedBreakpointResolverService(
         {
             if (model.Terminated || model.DeferredManagedBreakpoints.Count == 0)
                 return;
-            // Skip during cooldown after continue — SetInterrupt can race with the
-            // engine single-stepping past a breakpoint, causing native BPs to re-fire.
+            // Skip during cooldown after continue to avoid native BP re-fires.
             if (Environment.TickCount64 - model.ContinueTimestampTicks < 200)
                 return;
-            try
+            // Call SetInterrupt only when engine is in WaitForEvent (safe per dbgeng docs).
+            // During other COM operations, cross-thread calls corrupt .NET RCW state.
+            if (model.InWaitForEvent)
             {
-                _dbgEng.SetInterrupt(model.Wrapper);
+                try { _dbgEng.SetInterrupt(model.Wrapper); } catch { }
             }
-            catch { }
         }, null, 2000, 2000);
 
         // Store the timer so it can be disposed.

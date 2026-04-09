@@ -52,11 +52,14 @@ internal sealed class EngineLifecycleService(
         return model;
     }
 
-    /// <summary>Requests the target to break. Thread-safe — uses SetInterrupt.</summary>
+    /// <summary>Requests the target to break. Safe from any thread.</summary>
     public void Break(NativeDebuggerModel model)
     {
         model.PauseRequested = true;
-        _wrapper.SetInterrupt(model.Wrapper);
+        if (model.InWaitForEvent)
+            _wrapper.SetInterrupt(model.Wrapper);
+        else
+            model.Wrapper.InterruptRequested = true;
     }
 
     /// <summary>Terminates the debugged process and wakes the engine thread to exit.</summary>
@@ -126,8 +129,17 @@ internal sealed class EngineLifecycleService(
 
     private bool EngineLoopStep(NativeDebuggerModel model, DbgEngWrapperModel dbgEngWrapperModel)
     {
+        // Check for deferred interrupt requests from non-engine threads.
+        // These are set when InWaitForEvent was false during the request.
+        if (dbgEngWrapperModel.InterruptRequested)
+        {
+            dbgEngWrapperModel.InterruptRequested = false;
+            _wrapper.SetInterrupt(dbgEngWrapperModel);
+        }
         _log.LogInfo(_logStore, "WaitForEvent...");
+        model.InWaitForEvent = true;
         WaitForEventResult waitResult = _wrapper.WaitForEvent(dbgEngWrapperModel);
+        model.InWaitForEvent = false;
         _log.LogInfo(_logStore, $"WaitForEvent returned {waitResult}");
         if (waitResult == WaitForEventResult.Failed)
         {

@@ -241,7 +241,7 @@ internal sealed class ProfilerPipeService(
             model.JitNotifications.Enqueue(new JitNotification(jToken, jAddr, jSize, jAsm));
             _log.LogInfo(_logStore,
                 $"ProfilerReader: JIT: match! token=0x{jToken:X8} addr=0x{jAddr:X} asm={jAsm} — interrupting engine");
-            try { _dbgEng.SetInterrupt(model.Wrapper); } catch { }
+            RequestInterrupt(model);
         }
     }
 
@@ -265,7 +265,7 @@ internal sealed class ProfilerPipeService(
             model.EnterBreakpointAssembly = eAsm;
             _log.LogInfo(_logStore,
                 $"ProfilerReader: ENTER token=0x{eToken:X8} addr=0x{eAddr:X} tid={eTid} asm={eAsm} — interrupting engine");
-            try { _dbgEng.SetInterrupt(model.Wrapper); } catch { }
+            RequestInterrupt(model);
         }
         else
         {
@@ -291,7 +291,25 @@ internal sealed class ProfilerPipeService(
             model.JitNotifications.Enqueue(new JitNotification(token, address, codeSize, assembly));
             _log.LogInfo(_logStore,
                 $"ProfilerReader: JIT match! token=0x{token:X8} addr=0x{address:X} asm={assembly} — interrupting engine");
+            RequestInterrupt(model);
+        }
+    }
+
+    /// <summary>
+    /// Requests an engine interrupt. Calls SetInterrupt directly when the engine
+    /// is in WaitForEvent (safe per dbgeng docs). Otherwise sets a flag for the
+    /// engine thread to pick up — avoids cross-thread COM calls during active
+    /// operations which corrupt .NET RCW state.
+    /// </summary>
+    private void RequestInterrupt(NativeDebuggerModel model)
+    {
+        if (model.InWaitForEvent)
+        {
             try { _dbgEng.SetInterrupt(model.Wrapper); } catch { }
+        }
+        else
+        {
+            model.Wrapper.InterruptRequested = true;
         }
     }
 

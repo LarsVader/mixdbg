@@ -270,6 +270,77 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MixedBreakpoints_WhenSameMethodCalledTwice_AllStopsFireBothPasses()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // C# BPs: before and after native call in OnAddClick.
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _bpFile, name = "MainWindow.xaml.cs" },
+            breakpoints = new[] { new { line = _addLine }, new { line = _afterNativeCallLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // C++/CLI BP: ManagedCalculator::Add.
+        await SendDapRequest(5, "setBreakpoints", new
+        {
+            source = new { path = _cliWrapperBpFile, name = "ManagedCalculator.h" },
+            breakpoints = new[] { new { line = _cliWrapperAddLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // Native BP: Calculator::Add.
+        await SendDapRequest(6, "setBreakpoints", new
+        {
+            source = new { path = _nativeBpFile, name = "Calculator.cpp" },
+            breakpoints = new[] { new { line = _nativeAddLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // --auto-test-double: clicks Add twice (15s apart), then Multiply twice, then exit.
+        await WhenLaunchingWithAutoTestDouble();
+        await WhenSendingConfigurationDone();
+
+        // First Add click: 4 stops (C# 65 → CLI 14 → native 7 → C# 68).
+        for (int i = 0; i < 4; i++)
+        {
+            await WhenWaitingForStoppedEvent(timeout: 30);
+            await WhenRequestingStackTraceForMultipleThreads();
+            await WhenSendingContinue();
+        }
+
+        // Second Add click: same 4 stops again — tests that hooks re-arm correctly.
+        for (int i = 0; i < 4; i++)
+        {
+            await WhenWaitingForStoppedEvent(timeout: 30);
+            await WhenRequestingStackTraceForMultipleThreads();
+            await WhenSendingContinue();
+        }
+
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        // Both passes should produce the same stop pattern.
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int b = pass * 4;
+            ThenBreakpointWasHit(hitIndex: b);
+            ThenStackTraceHasSource(hitIndex: b, "MainWindow.xaml.cs");
+            ThenBreakpointWasHit(hitIndex: b + 1);
+            ThenStackTraceHasSource(hitIndex: b + 1, "ManagedCalculator.h");
+            ThenBreakpointWasHit(hitIndex: b + 2);
+            ThenStackTraceHasSource(hitIndex: b + 2, "Calculator.cpp");
+            ThenBreakpointWasHit(hitIndex: b + 3);
+            ThenStackTraceHasSource(hitIndex: b + 3, "MainWindow.xaml.cs");
+        }
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task MixedBreakpoints_WhenAllFourBreakpointsSet_AllFireInOrder()
     {
         GivenMixDbgAndWpfAppExist();

@@ -35,6 +35,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         model.Callbacks.OnBreakpoint += bp =>
         {
             _ = bp.GetId(out uint id);
+            model.RetainedComObjects.Add(bp);
             model.RaiseBreakpointHit(id);
         };
         model.Callbacks.OnExitProcess += model.RaiseExitProcess;
@@ -181,6 +182,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         _ = bp.SetOffset(offset);
         _ = bp.AddFlags(DebugBreakpointFlag.Enabled);
         _ = bp.GetId(out uint bpId);
+        model.RetainedComObjects.Add(bp);
         return (bpId, true);
     }
 
@@ -197,12 +199,14 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         if (hr < 0)
         {
             _ = model.Control.RemoveBreakpoint(bp);
+            model.RetainedComObjects.Add(bp);
             return (0, false);
         }
 
         _ = bp.SetOffset(address);
         _ = bp.AddFlags(DebugBreakpointFlag.Enabled);
         _ = bp.GetId(out uint bpId);
+        model.RetainedComObjects.Add(bp);
         return (bpId, true);
     }
 
@@ -212,6 +216,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         if (hr < 0)
             return false;
         _ = model.Control.RemoveBreakpoint(bp);
+        model.RetainedComObjects.Add(bp!);
         return true;
     }
 
@@ -227,6 +232,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         if (hr < 0 || bp == null)
             return null;
         _ = bp.GetId(out uint id);
+        model.RetainedComObjects.Add(bp);
         return id;
     }
 
@@ -247,6 +253,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
             return (0, false);
 
         _ = bp.GetId(out uint id);
+        model.RetainedComObjects.Add(bp);
         return (id, true);
     }
 

@@ -36,6 +36,7 @@ public sealed class NativeDebuggerModel : IDisposable
     internal volatile bool ConfigDone;
     internal volatile bool Stepping;
     internal volatile bool PauseRequested;
+    internal volatile bool InWaitForEvent;
 
     // Native breakpoint tracking.
     internal HashSet<uint> UserBreakpointIds { get; } = [];
