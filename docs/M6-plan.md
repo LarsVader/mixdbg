@@ -1,5 +1,7 @@
 # M6: Stepping (Native + Managed + Cross-Boundary)
 
+## Status: IN PROGRESS (Phases 1-6 implemented, manual verification remaining)
+
 ## Context
 
 Stepping DAP handlers (`next`, `stepIn`, `stepOut`) exist and are wired up to dbgeng's
@@ -27,7 +29,7 @@ via `FindContainingMethod`. If yes → managed stepping. If no → native steppi
 
 ---
 
-## Phase 1: Fix step-out (bug fix)
+## Phase 1: Fix step-out (bug fix) — DONE
 
 **Problem**: `StepOutRequestHandlerService` doesn't set `model.Stepping = true`. After `gu`
 completes, `DetermineStopReason` returns null → auto-continues silently.
@@ -41,7 +43,7 @@ same as the next/stepIn handlers.
 
 ---
 
-## Phase 2: Managed step-over
+## Phase 2: Managed step-over — DONE
 
 ### New: `IPdbSourceMapper.GetMethodSequencePoints`
 
@@ -112,7 +114,7 @@ Same for starting a new step while one is active.
 
 ---
 
-## Phase 3: Managed step-out
+## Phase 3: Managed step-out — DONE
 
 ### Algorithm (in `ExecuteStepOutOnEngine`)
 
@@ -125,69 +127,80 @@ Same for starting a new step while one is active.
    d. Track in `model.ActiveManagedStep`.
    e. Call `SetExecutionStatus(Go)`.
 
-Same event loop handling as Phase 2.
+Same event loop handling as Phase 2. This replaces native `gu` for managed frames because
+`gu` fails across native-to-managed boundaries.
 
 ### Files
 - `src/Services/EngineQueryService.cs` — branch `ExecuteStepOutOnEngine`
 
 ---
 
-## Phase 4: Managed step-into
+## Phase 4: Managed step-into — DONE
 
-### Approach: native single-step loop
+### Approach: IL call target parsing (replaced original single-step loop plan)
 
-For step-into, we don't know the call target without disassembling JIT'd code. Use a tight
-native single-step loop on the engine thread: step one native instruction, check if the new IP
-is at a different source line, repeat until it is.
+Instead of a native single-step loop (slow, unpredictable), parse IL bytecode at the current
+offset to identify the call target method, then set a temp BP at its first source line.
 
 ### Algorithm (in `ExecuteStepOnEngine` when stepKind == StepInto)
 
 1. Get current IP, check if in JitMethodMap. If native → use existing
    `SetExecutionStatus(StepInto)`.
 2. If managed:
-   a. Record current source file:line (from `ResolveSourceLocation`).
-   b. Enter a loop (max ~10,000 iterations):
-      - `SetExecutionStatus(StepInto)` (single native instruction)
-      - `WaitForEvent()` — blocks until one instruction executes
-      - Check `model.HitUserBreakpoint` → if true, break (report as breakpoint)
-      - Check `model.TargetExited` → if true, break
-      - Get new IP, call `ResolveSourceLocation(model, newIp)`
-      - If new source line differs from start → step complete, set `model.Stepping = true`, break
-   c. After loop, return to normal event loop flow.
+   a. `GetCallTargetAtOffset` scans IL for `call`/`callvirt` opcodes at the current IL offset.
+   b. Resolve target method token via `FindMethodToken` (PE metadata lookup by type+method name).
+   c. **C# → C# calls**: Look up target in `JitMethodMap`. Set temp BP at first source line's
+      native address (via IL-to-native mapping).
+   d. **C# → C++/CLI calls**: Send profiler `WATCH` command + wait for `ENTER` hook + transient BP
+      (reuses M4 breakpoint infrastructure).
+   e. **C++/CLI → native calls**: `GetOffsetByName` on `IDbgEngWrapper` resolves symbol names to
+      native addresses (IDebugSymbols slot 5). Hardware BP skips opening brace, lands on first
+      statement.
+   f. **Fallback**: When call target cannot be resolved, set temp BP at next source line
+      (step-over behavior).
+   g. Call `SetExecutionStatus(Go)`.
 
-### Why this works for cross-boundary stepping
+### New APIs added
+- `IPdbSourceMapper.GetCallTargetAtOffset(assemblyPath, methodToken, ilOffset)` — scans IL for
+  call/callvirt opcodes, returns target type+method name
+- `IPdbSourceMapper.FindMethodToken(assemblyPath, typeName, methodName)` — finds MethodDef token
+  by type+method name in PE metadata
+- `IDbgEngWrapper.GetOffsetByName(model, symbolName)` — resolves symbol names to native addresses
+  (IDebugSymbols vtable slot 5)
 
-- **Managed → native (step-into)**: The single-step loop enters native code. `ResolveSourceLocation`
-  resolves via dbgeng `GetLineByOffset` (native PDB). Different source line → stop.
-- **Native → managed (step-into)**: The existing `SetExecutionStatus(StepInto)` enters JIT'd code.
-  The normal event loop detects `Stepping=true`. But we're now in managed code with no source
-  line. **Fix**: after the event loop detects a step stop, check if the IP is in managed code
-  with no dbgeng source info. If so, enter the single-step loop to advance to the first
-  managed source line.
+### Step-into completion detection
+- `ManagedStepIntoCompleted` volatile flag on `NativeDebuggerModel` signals completion inside
+  `ProcessCommandsUntilResume` for blocking commands.
+- Step-into deferred BPs use BpId=-1 marker, cleaned up in `DetermineStopReason`.
 
 ### Files
-- `src/Services/EngineQueryService.cs` — managed step-into loop
-- `src/Services/EngineLifecycleService.cs` — post-step managed source resolution
+- `src/MixDbg.EngineWrappers/Services/Interfaces/IPdbSourceMapper.cs` — add `GetCallTargetAtOffset`, `FindMethodToken`
+- `src/MixDbg.EngineWrappers/Engine/Sos/PdbSourceMapperService.cs` — implement IL parsing + PE metadata lookup
+- `src/MixDbg.EngineWrappers/Services/Interfaces/IDbgEngWrapper.cs` — add `GetOffsetByName`
+- `src/MixDbg.EngineWrappers/Services/DbgEngWrapperService.cs` — implement via IDebugSymbols
+- `src/MixDbg.EngineWrappers/Engine/DbgEng/Interfaces/IDebugSymbols.cs` — add GetNameByOffset (slot 5)
+- `src/Services/EngineQueryService.cs` — managed step-into logic with call target resolution
+- `src/Services/EngineLifecycleService.cs` — `ProcessCommandsUntilResume` step-into detection
+- `src/Services/ManagedDebuggerService.cs` — step-into helper methods
+- `src/Services/Interfaces/IManagedDebugger.cs` — step-into interface additions
 
 ---
 
-## Phase 5: Cross-boundary step-over
+## Phase 5: Cross-boundary step-over — DONE (no extra work needed)
 
-Step-over across boundaries should stay in the current frame (not enter a cross-boundary call).
+Step-over across boundaries works automatically:
 
 - **Managed frame, call into native**: Phase 2 temp BP at the next managed source line handles
   this — the native call executes fully, returns to managed code, temp BP fires. Correct.
 - **Native frame, call into managed**: dbgeng's native `StepOver` handles this — steps over the
   entire managed call because dbgeng treats it as one function call. Correct.
-- No extra work needed.
 
 ---
 
-## Phase 6: Edge cases and hardening
+## Phase 6: Edge cases and hardening — DONE
 
-1. **Hardware BP slot limit (4 on x64)**: Step temp BPs may conflict with existing managed
-   BPs. Mitigate: use only 1 temp BP per step (next-line OR return-address, not both).
-   Detect end-of-method explicitly to choose return-address path.
+1. **Hardware BP slot limit (4 on x64)**: Step temp BPs use only 1 temp BP per step (next-line
+   OR return-address, not both). End-of-method detected explicitly to choose return-address path.
 
 2. **Exception during managed step-over**: Temp BP at next line won't fire if the method
    throws. The exception callback fires instead. Check `ActiveManagedStep` in the exception
@@ -201,7 +214,24 @@ Step-over across boundaries should stay in the current frame (not enter a cross-
    (temp BP at caller return address).
 
 5. **Cleanup on new step/continue**: Cancel any `ActiveManagedStep` before starting a new
-   operation.
+   operation. `ExecuteContinueOnEngine` removes temp BPs and clears state.
+
+6. **`ProcessCommandsUntilResume` step detection**: Detects step completion for blocking
+   commands (`gu`, managed step-into) via `ManagedStepIntoCompleted` volatile flag.
+
+7. **`DetermineStopReason` managed step handling**: Handles `ActiveManagedStep` temp BPs
+   (returns `"step"`) and step-into deferred BPs (BpId=-1 marker, cleaned up on hit).
+
+8. **`IsInfrastructureSource` filtering**: Filters profiler, coreclr, Windows Kits, VC CRT,
+   and non-existent paths from step targets to avoid stopping in framework code.
+
+---
+
+## Remaining Work
+
+- **Step-out source resolution**: Step-out from managed code currently stops but source
+  resolution may not work for all frames (especially when returning to managed code from
+  native). Needs manual verification across all boundary types.
 
 ---
 
@@ -209,7 +239,8 @@ Step-over across boundaries should stay in the current frame (not enter a cross-
 
 1. **Build**: `dotnet build src/MixDbg.csproj -c Debug` — no warnings
 2. **Unit tests**: `dotnet test test/UnitTests/UnitTests.csproj` — all pass
-3. **Manual integration test with TestApp**:
+3. **Integration tests**: `dotnet test test/IntegrationTests/MixDbg.IntegrationTests.csproj`
+4. **Manual integration test with TestApp**:
    - Set BP in C# code (`WpfApp/MainWindow.xaml.cs`), hit it
    - Step over (`F10`) — should advance to next C# line, not jump to random JIT'd code
    - Step into (`F11`) a method call — should enter the called method's first line
@@ -223,9 +254,15 @@ Step-over across boundaries should stay in the current frame (not enter a cross-
 | File | Phase | Changes |
 |------|-------|---------|
 | `src/Services/Handlers/Execution/StepOutRequestHandlerService.cs` | 1 | Set `Stepping = true` |
-| `src/MixDbg.EngineWrappers/Services/Interfaces/IPdbSourceMapper.cs` | 2 | Add `GetMethodSequencePoints` |
-| `src/MixDbg.EngineWrappers/Engine/Sos/PdbSourceMapperService.cs` | 2 | Implement `GetMethodSequencePoints` |
-| `src/Models/NativeDebuggerModel.cs` | 2 | Add `ManagedStepState`, `ActiveManagedStep` |
+| `src/MixDbg.EngineWrappers/Services/Interfaces/IPdbSourceMapper.cs` | 2,4 | Add `GetMethodSequencePoints`, `GetCallTargetAtOffset`, `FindMethodToken` |
+| `src/MixDbg.EngineWrappers/Engine/Sos/PdbSourceMapperService.cs` | 2,4 | Implement sequence points, IL parsing, PE metadata lookup |
+| `src/MixDbg.EngineWrappers/Services/Interfaces/IDbgEngWrapper.cs` | 4 | Add `GetOffsetByName` |
+| `src/MixDbg.EngineWrappers/Services/DbgEngWrapperService.cs` | 4 | Implement `GetOffsetByName` via IDebugSymbols |
+| `src/Models/NativeDebuggerModel.cs` | 2 | Add `ManagedStepState`, `ActiveManagedStep`, `ManagedStepIntoCompleted` |
 | `src/Services/EngineQueryService.cs` | 2-4 | Managed step-over/out/into logic |
-| `src/Services/EngineLifecycleService.cs` | 2,4 | `DetermineStopReason` managed step handling |
+| `src/Services/EngineLifecycleService.cs` | 2,4,6 | `DetermineStopReason` + `ProcessCommandsUntilResume` managed step handling |
+| `src/Services/ManagedDebuggerService.cs` | 4 | Step-into helper methods |
+| `src/Services/Interfaces/IManagedDebugger.cs` | 4 | Step-into interface additions |
 | `test/UnitTests/` | 1-4 | Tests per phase |
+| `test/IntegrationTests/SteppingIntegrationTest.cs` | all | Cross-boundary stepping integration tests |
+| `test/IntegrationTests/xunit.runner.json` | all | Disable parallel execution for integration tests |
