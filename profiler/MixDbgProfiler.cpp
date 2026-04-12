@@ -13,12 +13,13 @@ MixDbgProfiler* g_pProfiler = nullptr;
 // ============================================================================
 
 MixDbgProfiler::MixDbgProfiler() : m_refCount(1), m_pInfo(nullptr),
-    m_hPipe(INVALID_HANDLE_VALUE),
+    m_hPipe(INVALID_HANDLE_VALUE), m_hCmdPipe(INVALID_HANDLE_VALUE),
     m_hAckEvent(nullptr), m_hRehookEvent(nullptr),
     m_watchCount(0), m_watchAssemblyCount(0) {
     memset(m_watchEntries, 0, sizeof(m_watchEntries));
     memset(m_watchAssemblies, 0, sizeof(m_watchAssemblies));
     InitializeCriticalSection(&m_pipeLock);
+    InitializeCriticalSection(&m_watchLock);
     InitializeCriticalSection(&m_funcLock);
 }
 
@@ -26,9 +27,12 @@ MixDbgProfiler::~MixDbgProfiler() {
     delete m_pInfo;
     if (m_hPipe != INVALID_HANDLE_VALUE)
         CloseHandle(m_hPipe);
+    if (m_hCmdPipe != INVALID_HANDLE_VALUE)
+        CloseHandle(m_hCmdPipe);
     if (m_hAckEvent) CloseHandle(m_hAckEvent);
     if (m_hRehookEvent) CloseHandle(m_hRehookEvent);
     DeleteCriticalSection(&m_pipeLock);
+    DeleteCriticalSection(&m_watchLock);
     DeleteCriticalSection(&m_funcLock);
 }
 
@@ -77,12 +81,17 @@ void MixDbgProfiler::WriteToPipe(const char* data, int len) {
 // ============================================================================
 
 bool MixDbgProfiler::IsWatchedMethod(const char* asmName, unsigned int token) {
+    EnterCriticalSection(&m_watchLock);
+    bool found = false;
     for (int i = 0; i < m_watchCount; i++) {
         if (m_watchEntries[i].token == token &&
-            _stricmp(m_watchEntries[i].assembly, asmName) == 0)
-            return true;
+            _stricmp(m_watchEntries[i].assembly, asmName) == 0) {
+            found = true;
+            break;
+        }
     }
-    return false;
+    LeaveCriticalSection(&m_watchLock);
+    return found;
 }
 
 bool MixDbgProfiler::IsWatchedAssembly(const char* asmName) {
@@ -161,6 +170,72 @@ void MixDbgProfiler::OnFunctionEnter(FunctionID funcId) {
 }
 
 // ============================================================================
+// Command pipe reader — receives WATCH commands from MixDbg at runtime
+// ============================================================================
+
+void MixDbgProfiler::CmdReaderLoop() {
+    if (m_hCmdPipe == INVALID_HANDLE_VALUE) return;
+
+    char buf[4096];
+    int bufLen = 0;
+
+    while (m_hCmdPipe != INVALID_HANDLE_VALUE) {
+        DWORD bytesRead = 0;
+        if (!ReadFile(m_hCmdPipe, buf + bufLen, sizeof(buf) - bufLen - 1, &bytesRead, nullptr) || bytesRead == 0)
+            break;
+
+        bufLen += (int)bytesRead;
+        buf[bufLen] = '\0';
+
+        // Process complete lines (newline-terminated).
+        char* start = buf;
+        char* nl;
+        while ((nl = strchr(start, '\n')) != nullptr) {
+            *nl = '\0';
+
+            // Parse "WATCH:Assembly:TokenHex"
+            if (strncmp(start, "WATCH:", 6) == 0) {
+                char* payload = start + 6;
+                // Strip trailing \r from CRLF line endings.
+                char* cr = strchr(payload, '\r');
+                if (cr) *cr = '\0';
+                char* colon = strchr(payload, ':');
+                if (colon) {
+                    *colon = '\0';
+                    unsigned int token = strtoul(colon + 1, nullptr, 16);
+                    EnterCriticalSection(&m_watchLock);
+                    if (m_watchCount < MAX_WATCH) {
+                        strncpy_s(m_watchEntries[m_watchCount].assembly, 256, payload, _TRUNCATE);
+                        m_watchEntries[m_watchCount].token = token;
+                        m_watchCount++;
+                    }
+                    LeaveCriticalSection(&m_watchLock);
+
+                    // Ensure enter/leave hooks are set up (may be first watch token
+                    // if no pre-launch BPs existed).
+                    if (!m_hooksActive && m_pInfo && g_pProfiler) {
+                        HRESULT hr = m_pInfo->SetEnterLeaveFunctionHooks(
+                            (void*)FunctionEnterNaked, (void*)FunctionLeaveNaked, (void*)FunctionTailcallNaked);
+                        if (SUCCEEDED(hr)) {
+                            m_pInfo->SetEventMask(
+                                COR_PRF_MONITOR_JIT_COMPILATION | COR_PRF_MONITOR_ENTERLEAVE);
+                            m_hooksActive = true;
+                        }
+                    }
+                }
+            }
+
+            start = nl + 1;
+        }
+
+        // Move any remaining partial line to the beginning of the buffer.
+        bufLen = (int)(buf + bufLen - start);
+        if (bufLen > 0 && start != buf)
+            memmove(buf, start, bufLen);
+    }
+}
+
+// ============================================================================
 // ICorProfilerCallback — Initialize
 // ============================================================================
 
@@ -217,6 +292,29 @@ HRESULT STDMETHODCALLTYPE MixDbgProfiler::Initialize(IUnknown* pICorProfilerInfo
                         self->m_pInfo->SetEventMask(
                             COR_PRF_MONITOR_JIT_COMPILATION | COR_PRF_MONITOR_ENTERLEAVE);
                 }
+                return 0;
+            }, this, 0, nullptr);
+        }
+    }
+
+    // Connect to MixDbg's command pipe for receiving dynamic WATCH commands.
+    WCHAR cmdPipeName[256] = {};
+    len = GetEnvironmentVariableW(L"MIXDBG_CMD_PIPE", cmdPipeName, 256);
+    if (len > 0 && len < 256) {
+        m_hCmdPipe = CreateFileW(
+            cmdPipeName,
+            GENERIC_READ,
+            0,          // no sharing
+            nullptr,    // default security
+            OPEN_EXISTING,
+            0,          // default attributes
+            nullptr);
+
+        if (m_hCmdPipe != INVALID_HANDLE_VALUE) {
+            // Start a reader thread for WATCH commands.
+            CreateThread(nullptr, 0, [](LPVOID param) -> DWORD {
+                auto* self = (MixDbgProfiler*)param;
+                self->CmdReaderLoop();
                 return 0;
             }, this, 0, nullptr);
         }
@@ -343,7 +441,7 @@ HRESULT STDMETHODCALLTYPE MixDbgProfiler::JITCompilationFinished(
             (unsigned int)token, (unsigned long long)(UINT_PTR)codeStart,
             (unsigned int)codeSize, asmUtf8);
 
-        if (lineLen > 0 && (IsWatchedMethod(asmUtf8, token) || IsWatchedAssembly(asmUtf8))) {
+        if (lineLen > 0) {
             // Append IL-to-native mapping for exact-line BP resolution: :IL0=N0,IL1=N1,...
             ILNativeMap maps[128];
             ULONG32 mapCount = 0;

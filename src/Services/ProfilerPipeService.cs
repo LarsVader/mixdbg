@@ -89,6 +89,19 @@ internal sealed class ProfilerPipeService(
         if (watchTokens != null)
             Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", watchTokens);
 
+        // Create a command pipe for sending dynamic WATCH commands to the profiler.
+        // Used for mid-session breakpoints set after the debugger is already running.
+        string cmdPipeName = $"MixDbgProfilerCmd-{pipeName}";
+        model.ProfilerCmdPipe = new NamedPipeServerStream(
+            cmdPipeName,
+            PipeDirection.Out,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous,
+            0,     // inBufferSize
+            65536); // outBufferSize
+        Environment.SetEnvironmentVariable("MIXDBG_CMD_PIPE", $@"\\.\pipe\{cmdPipeName}");
+
         // Resolve C++/CLI assembly names for assembly-level watching.
         // FunctionIDMapper is called once per method (result cached by CLR), so we
         // can't add watches dynamically. Instead, set an env var at pre-launch time
@@ -124,6 +137,45 @@ internal sealed class ProfilerPipeService(
             IsBackground = true,
         };
         model.ProfilerReaderThread.Start();
+
+        // Wait for the command pipe connection on a separate thread.
+        if (model.ProfilerCmdPipe != null)
+        {
+            Thread cmdThread = new(() =>
+            {
+                try
+                {
+                    model.ProfilerCmdPipe.WaitForConnection();
+                    // Use UTF8 WITHOUT BOM — the profiler's parser is a byte-level
+                    // strncmp and would fail to match "WATCH:" if a BOM prefix is present.
+                    StreamWriter writer = new(model.ProfilerCmdPipe, new System.Text.UTF8Encoding(false))
+                    {
+                        AutoFlush = true,
+                    };
+
+                    // Drain any WATCH commands queued before the pipe connected.
+                    while (model.PendingWatchCommands.TryDequeue(out string? line))
+                    {
+                        writer.WriteLine(line);
+                        _log.LogInfo(_logStore, $"ProfilerCmd: flushed queued {line}");
+                    }
+
+                    // Publish the writer AFTER draining so queued commands aren't missed
+                    // by a concurrent SendWatchToken call (it checks writer == null).
+                    model.ProfilerCmdPipeWriter = writer;
+                    _log.LogInfo(_logStore, "ProfilerCmd: command pipe connected");
+                }
+                catch (Exception ex)
+                {
+                    _log.LogInfo(_logStore, $"ProfilerCmd: connection failed: {ex.Message}");
+                }
+            })
+            {
+                Name = "profiler-cmd-connect",
+                IsBackground = true,
+            };
+            cmdThread.Start();
+        }
     }
 
     /// <summary>

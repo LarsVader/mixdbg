@@ -494,6 +494,100 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
+    /// <summary>
+    /// Reproduces bug: C# breakpoints set AFTER the debugger is already running
+    /// (mid-session) don't hit. Uses --auto-test-double (clicks Add twice, 15s apart).
+    /// The C# BP is set WHILE STOPPED at the first click's native BP (so the engine
+    /// processes it immediately). OnAddClick is already JIT'd from the first call →
+    /// BindResolvedMethod finds it in JitMethodMap with IL-to-native mapping for
+    /// exact-line address. The permanent BP persists through Continue and fires on
+    /// the second Add click.
+    /// </summary>
+    [Fact]
+    public async Task ManagedBreakpoint_WhenCSharpAddedMidSession_StillFires()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set only C++/CLI and native BPs BEFORE launch.
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _cliWrapperBpFile, name = "ManagedCalculator.h" },
+            breakpoints = new[] { new { line = _cliWrapperAddLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        await SendDapRequest(5, "setBreakpoints", new
+        {
+            source = new { path = _nativeBpFile, name = "Calculator.cpp" },
+            breakpoints = new[] { new { line = _nativeAddLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // Launch with --auto-test-double: clicks Add twice (15s apart).
+        await WhenLaunchingWithAutoTestDouble();
+        await WhenSendingConfigurationDone();
+
+        // First click: CLI and native BPs fire. OnAddClick gets JIT'd.
+        // Hit 1: C++/CLI BP at ManagedCalculator::Add.
+        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 2: native BP at Calculator::Add. Engine is stopped here.
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+
+        // Add C# BP WHILE STOPPED — engine processes it immediately on the engine
+        // thread. OnAddClick is already JIT'd → JitMethodMap + IL-to-native mapping.
+        await SendDapRequest(7, "setBreakpoints", new
+        {
+            source = new { path = _bpFile, name = "MainWindow.xaml.cs" },
+            breakpoints = new[] { new { line = _addLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 10);
+
+        // Continue from the native BP.
+        await WhenSendingContinue();
+
+        // Second click: permanent C# BP fires first, then CLI, then native.
+        // Hit 3: C# BP at OnAddClick (mid-session, already-JIT'd method).
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 4: C++/CLI BP at ManagedCalculator::Add.
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        // Hit 5: native BP at Calculator::Add.
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        // First click: only CLI and native fired (no C# BP set yet).
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "ManagedCalculator.h");
+        ThenBreakpointWasHit(hitIndex: 1);
+        ThenStackTraceHasSource(hitIndex: 1, "Calculator.cpp");
+        // Second click: C# mid-session BP must fire at the exact requested line.
+        ThenBreakpointWasHit(hitIndex: 2);
+        ThenStackTraceHasSource(hitIndex: 2, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(hitIndex: 2, _addLine);
+        // Then CLI and native again.
+        ThenBreakpointWasHit(hitIndex: 3);
+        ThenStackTraceHasSource(hitIndex: 3, "ManagedCalculator.h");
+        ThenBreakpointWasHit(hitIndex: 4);
+        ThenStackTraceHasSource(hitIndex: 4, "Calculator.cpp");
+        ThenNoLogErrors();
+    }
+
     [Fact(Skip = "Covered by AllEightStops")]
     public async Task ManagedBreakpoint_WhenBreakpointInsideMethodBody_StopsAtExactLine()
     {

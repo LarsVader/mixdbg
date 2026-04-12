@@ -138,18 +138,30 @@ internal sealed class ManagedBreakpointService(
         NativeDebuggerModel model, string filePath, int line, int bpId,
         (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod) resolved)
     {
-        // Try direct resolution via GetOffsetByLine (works if method is already JIT'd).
-        // Skip for C++/CLI: GetOffsetByLine returns the IL section address (not JIT'd code).
-        // C++/CLI methods must go through the deferred + JIT notification path.
-        if (!resolved.IsCliMethod)
+        // For managed methods (C# and C++/CLI), skip GetOffsetByLine — dbgeng returns
+        // bogus IL stub addresses for managed code, not actual JIT'd native addresses.
+        // Instead, check the profiler's JitMethodMap for already-JIT'd methods and use
+        // IL-to-native mapping for exact-line breakpoint addresses.
+        if (resolved.AssemblyName != null)
         {
-            (ulong offset, bool offsetResolved) = _dbgEng.GetOffsetByLine(model.Wrapper, (uint)line, filePath);
-            if (offsetResolved && offset != 0)
+            JitMethodInfo? jitInfo = FindInJitMethodMap(model, resolved.MethodToken, resolved.AssemblyName);
+            if (jitInfo != null)
             {
-                _log.LogInfo(_logStore, $"  GetOffsetByLine({line}) -> 0x{offset:X} — setting hardware breakpoint");
-                uint? hwBpId = SetManagedCodeBreakpoint(model, offset, filePath, line);
+                // Use IL-to-native mapping for exact-line address if available.
+                ulong targetAddress = jitInfo.StartAddress;
+                string mappingKey = $"{resolved.AssemblyName}:{resolved.MethodToken:X8}";
+                if (model.JitMethodMappings.TryGetValue(mappingKey, out JitMethodMapping? mapping))
+                {
+                    targetAddress = mapping.GetNativeAddress(resolved.ILOffset);
+                    _log.LogInfo(_logStore, $"  JitMethodMap: IL 0x{resolved.ILOffset:X} -> native 0x{targetAddress:X}");
+                }
+
+                _log.LogInfo(_logStore, $"  Found in JitMethodMap: token=0x{resolved.MethodToken:X8} addr=0x{targetAddress:X}");
+                uint? hwBpId = SetManagedCodeBreakpoint(model, targetAddress, filePath, line);
                 if (hwBpId != null)
                 {
+                    // Mark as permanent — NOT removed on Continue (unlike transient ENTER-hook BPs).
+                    _ = model.PermanentManagedBreakpointIds.Add(hwBpId.Value);
                     TrackFileBreakpoint(model, filePath, bpId);
                     return true;
                 }
@@ -158,12 +170,20 @@ internal sealed class ManagedBreakpointService(
             }
         }
 
-        // Method not JIT'd yet — store as deferred for periodic polling.
+        // Method not JIT'd yet — store as deferred. Send a WATCH command to the
+        // profiler so it enables FunctionEnter hooks for this method (mid-session BPs).
         model.DeferredManagedBreakpoints.Add(
             new DeferredManagedBreakpoint(filePath, line, resolved.MethodToken, resolved.ILOffset,
                 bpId, resolved.AssemblyName, resolved.IsCliMethod));
         TrackFileBreakpoint(model, filePath, bpId);
         _log.LogInfo(_logStore, $"  Deferred managed bp #{bpId}: method not JIT'd yet");
+
+        // Send watch token to profiler so it blocks on JIT and enables ENTER hooks.
+        if (resolved.AssemblyName != null && !resolved.IsCliMethod)
+        {
+            SendWatchToken(model, resolved.AssemblyName, resolved.MethodToken);
+        }
+
         return true;
     }
 
@@ -227,6 +247,11 @@ internal sealed class ManagedBreakpointService(
     /// </summary>
     private void RemoveSingleTransientBreakpoint(NativeDebuggerModel model, uint bpId)
     {
+        // Permanent BPs (set via JitMethodMap for already-JIT'd methods) persist across
+        // continue/step cycles — only removed by ClearManagedBreakpointsForFile.
+        if (model.PermanentManagedBreakpointIds.Contains(bpId))
+            return;
+
         if (_dbgEng.RemoveBreakpoint(model.Wrapper, bpId))
             _log.LogInfo(_logStore, $"Removed transient managed hw bp #{bpId}");
         _ = model.UserBreakpointIds.Remove(bpId);
@@ -252,17 +277,18 @@ internal sealed class ManagedBreakpointService(
     /// </summary>
     private void RemoveAllTransientBreakpoints(NativeDebuggerModel model)
     {
-        List<uint> idsToRemove = [.. model.ManagedBreakpointIds];
+        // Skip permanent BPs — only remove transient (ENTER hook) BPs.
+        List<uint> idsToRemove = [.. model.ManagedBreakpointIds
+            .Where(id => !model.PermanentManagedBreakpointIds.Contains(id))];
         foreach (uint hwBpId in idsToRemove)
         {
             if (_dbgEng.RemoveBreakpoint(model.Wrapper, hwBpId))
                 _log.LogInfo(_logStore, $"Removed transient managed hw bp #{hwBpId}");
             _ = model.UserBreakpointIds.Remove(hwBpId);
+            _ = model.ManagedBreakpointIds.Remove(hwBpId);
         }
-        model.ManagedBreakpointIds.Clear();
-        model.ManagedBreakpointAddresses.Clear();
 
-        // Clear the key→id mappings for managed breakpoints.
+        // Clear the key→id mappings for removed (transient) breakpoints only.
         List<string> keysToRemove = [.. model.BreakpointIds
             .Where(kv => idsToRemove.Contains(kv.Value))
             .Select(kv => kv.Key)];
@@ -351,6 +377,7 @@ internal sealed class ManagedBreakpointService(
                     _ = _dbgEng.RemoveBreakpoint(model.Wrapper, hwId);
                     _ = model.UserBreakpointIds.Remove(hwId);
                     _ = model.ManagedBreakpointIds.Remove(hwId);
+                    _ = model.PermanentManagedBreakpointIds.Remove(hwId);
                     _ = model.BreakpointIds.Remove(key.Key);
                 }
 
@@ -414,6 +441,56 @@ internal sealed class ManagedBreakpointService(
             }
         }
 
+        return null;
+    }
+
+    /// <summary>
+    /// Sends a WATCH command directly to the profiler's command pipe so it enables
+    /// FunctionEnter hooks for the specified method. Used for mid-session breakpoints.
+    /// If the pipe is not yet connected, the command is queued and flushed later
+    /// by the command pipe connect thread.
+    /// Writes directly to the model's pipe writer to avoid a DI circular dependency
+    /// with <see cref="IProfilerPipeService"/>.
+    /// </summary>
+    private void SendWatchToken(NativeDebuggerModel model, string assembly, int token)
+    {
+        string line = $"WATCH:{assembly}:{token:X8}";
+        StreamWriter? writer = model.ProfilerCmdPipeWriter;
+        if (writer == null)
+        {
+            model.PendingWatchCommands.Enqueue(line);
+            _log.LogInfo(_logStore, $"  ProfilerCmd: queued {line} (pipe not connected yet)");
+            return;
+        }
+
+        try
+        {
+            writer.WriteLine(line);
+            _log.LogInfo(_logStore, $"  ProfilerCmd: sent {line}");
+        }
+        catch (Exception ex)
+        {
+            _log.LogInfo(_logStore, $"  ProfilerCmd: send failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Searches the profiler's JitMethodMap for a method with the given token and assembly name.
+    /// Returns the JIT info if found (method was already JIT'd before this BP was set).
+    /// </summary>
+    private static JitMethodInfo? FindInJitMethodMap(NativeDebuggerModel model, int methodToken, string assemblyName)
+    {
+        lock (model.JitMethodMap)
+        {
+            foreach (JitMethodInfo info in model.JitMethodMap.Values)
+            {
+                if (info.MethodToken == methodToken &&
+                    info.AssemblyName.Equals(assemblyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return info;
+                }
+            }
+        }
         return null;
     }
 

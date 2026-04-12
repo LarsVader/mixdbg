@@ -178,6 +178,7 @@ internal sealed class EngineLifecycleService(
             return true;
         }
 
+        DrainPendingCommands(model);
         _log.LogInfo(_logStore, "System stop — auto-continuing");
         model.Stopped.Reset();
         _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
@@ -261,6 +262,27 @@ internal sealed class EngineLifecycleService(
         _profilerPipe.StartProfilerReader(model);
     }
 
+    /// <summary>
+    /// Non-blocking drain of pending commands. Called during ENTER processing and
+    /// system stops so that mid-session DAP requests (like setBreakpoints) don't
+    /// stall behind auto-continued stops.
+    /// </summary>
+    private void DrainPendingCommands(NativeDebuggerModel model)
+    {
+        while (model.Commands.TryTake(out Action? cmd))
+        {
+            _log.LogInfo(_logStore, "DrainPendingCommands: executing queued command");
+            cmd();
+            EngineExecutionStatus status = _wrapper.GetExecutionStatus(model.Wrapper);
+            if (status != EngineExecutionStatus.Break
+                && status != EngineExecutionStatus.NoDebuggee)
+            {
+                _log.LogInfo(_logStore, "DrainPendingCommands: command caused resume — stopping drain");
+                return;
+            }
+        }
+    }
+
     private void ProcessCommandsUntilResume(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "ProcessCommandsUntilResume: waiting for commands");
@@ -296,6 +318,7 @@ internal sealed class EngineLifecycleService(
     {
         DbgEngWrapperModel wrapperModel = _wrapper.CreateModel();
         model.Wrapper = wrapperModel;
+        model.InterruptAction = () => _wrapper.SetInterrupt(wrapperModel);
 
         _wrapper.CreateEngine(wrapperModel);
 

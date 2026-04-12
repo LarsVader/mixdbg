@@ -18,7 +18,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         GivenLoadedModule(@"C:\out\MyApp.dll", @"C:\out\MyApp.pdb");
         GivenPdbResolvesMethodAtLine(@"C:\out\MyApp.dll", @"C:\src\Program.cs", 10,
             ("MyApp", "Main", 0x06000001, 0));
-        GivenGetOffsetByLineSucceeds(@"C:\src\Program.cs", 10, 0xABCD);
+        GivenMethodInJitMethodMap("MyApp", 0x06000001, 0xABCD);
         GivenAddHardwareBreakpointSucceeds(0xABCD, bpId: 1);
 
         WhenSettingManagedBreakpoints(@"C:\src\Program.cs", [10]);
@@ -50,7 +50,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         GivenLoadedModule(@"C:\out\MyApp.dll", @"C:\out\MyApp.pdb");
         GivenPdbResolvesMethodAtLineForAny(@"C:\out\MyApp.dll",
             ("MyApp", "MethodA", 0x06000001, 0));
-        GivenGetOffsetByLineSucceedsForAny(0x1000);
+        GivenMethodInJitMethodMap("MyApp", 0x06000001, 0x1000);
         GivenAddHardwareBreakpointSucceedsSequential([1, 2, 3]);
 
         WhenSettingManagedBreakpoints(@"C:\src\Program.cs", [10, 20, 30]);
@@ -98,7 +98,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         GivenLoadedModule(@"C:\out\MyApp.dll", @"C:\out\MyApp.pdb");
         GivenPdbResolvesMethodAtLine(@"C:\out\MyApp.dll", @"C:\src\Program.cs", 10,
             ("MyApp", "Main", 0x06000001, 0));
-        GivenGetOffsetByLineSucceeds(@"C:\src\Program.cs", 10, 0x5000);
+        GivenMethodInJitMethodMap("MyApp", 0x06000001, 0x5000);
         GivenAddHardwareBreakpointSucceeds(0x5000, bpId: 42);
 
         bool result = WhenTryingToBindBreakpoint(@"C:\src\Program.cs", 10, bpId: 100);
@@ -108,6 +108,46 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         ThenUserBreakpointIdsContains(42);
         ThenManagedBreakpointAddressesContains(0x5000);
         ThenBreakpointSourcesContains(0x5000, @"C:\src\Program.cs", 10);
+    }
+
+    /// <summary>
+    /// Reproduces bug: GetOffsetByLine returns bogus IL stub addresses for C# managed
+    /// methods (e.g. 0x21AF62D026E instead of JIT'd code at 0x7FF7B6C8xxxx).
+    /// When the method IS already in JitMethodMap (profiler reported correct address),
+    /// BindResolvedMethod must use the JitMethodMap address with IL-to-native mapping,
+    /// NOT the bogus GetOffsetByLine address.
+    /// </summary>
+    [Fact]
+    public void TryBindBreakpoint_WhenMethodInJitMethodMap_UsesJitAddressNotGetOffsetByLine()
+    {
+        // Method resolved from loaded module PDB → token 0x06000010, IL offset 0x20.
+        GivenLoadedModule(@"C:\out\WpfApp.dll", @"C:\out\WpfApp.pdb");
+        GivenPdbResolvesMethodAtLine(@"C:\out\WpfApp.dll", @"C:\src\MainWindow.xaml.cs", 65,
+            ("WpfApp", "OnAddClick", 0x06000010, 0x20));
+
+        // GetOffsetByLine returns a bogus IL stub address (the bug we're fixing).
+        GivenGetOffsetByLineSucceeds(@"C:\src\MainWindow.xaml.cs", 65, 0x21AF62D026E);
+
+        // Method is already JIT'd — profiler reported the correct native address.
+        ulong correctJitStart = 0x7FF7B6C82EC0;
+        lock (_model.JitMethodMap)
+            _model.JitMethodMap[correctJitStart] = new JitMethodInfo(0x06000010, correctJitStart, 0x200, "WpfApp");
+        _model.JitMethodMappings["WpfApp:06000010"] = new JitMethodMapping
+        {
+            CodeStart = correctJitStart,
+            ILToNativeMap = [(0x00, 0x00), (0x10, 0x30), (0x20, 0x70), (0x30, 0xA0)],
+        };
+
+        // Accept any address for the HW BP.
+        GivenAddHardwareBreakpointSucceedsForAnyAddress(bpId: 42);
+
+        bool result = WhenTryingToBindBreakpoint(@"C:\src\MainWindow.xaml.cs", 65, bpId: 100);
+
+        Assert.True(result);
+        // BP must be at JIT'd code start + native offset for IL 0x20, NOT the bogus stub address.
+        ulong expectedAddress = correctJitStart + 0x70; // IL 0x20 → native offset 0x70
+        ThenAddHardwareBreakpointWasCalledWith(expectedAddress);
+        ThenManagedBreakpointAddressesContains(expectedAddress);
     }
 
     [Fact]
@@ -346,6 +386,55 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         ThenManagedBreakpointIdsContains(20);
     }
 
+    // ── Permanent BP tracking (JitMethodMap path) ─────────────
+
+    [Fact]
+    public void TryBindBreakpoint_WhenMethodInJitMethodMap_MarksBpAsPermanent()
+    {
+        GivenLoadedModule(@"C:\out\WpfApp.dll", @"C:\out\WpfApp.pdb");
+        GivenPdbResolvesMethodAtLine(@"C:\out\WpfApp.dll", @"C:\src\Program.cs", 65,
+            ("WpfApp", "OnAddClick", 0x06000010, 0));
+        GivenMethodInJitMethodMap("WpfApp", 0x06000010, 0x7000);
+        GivenAddHardwareBreakpointSucceeds(0x7000, bpId: 42);
+
+        _ = WhenTryingToBindBreakpoint(@"C:\src\Program.cs", 65, bpId: 100);
+
+        Assert.Contains(42u, _model.PermanentManagedBreakpointIds);
+    }
+
+    [Fact]
+    public void RemoveTransientManagedBreakpoints_WhenPermanentBpHit_SkipsRemoval()
+    {
+        _model.ProfilerHooksActive = true;
+        GivenExistingManagedBreakpointId(42);
+        _ = _model.UserBreakpointIds.Add(42);
+        _ = _model.PermanentManagedBreakpointIds.Add(42);
+        _model.BreakpointIds[@"C:\src\File.cs:65"] = 42;
+        _model.LastHitBpId = 42;
+
+        WhenRemovingTransientBreakpoints();
+
+        // Permanent BP must NOT be removed.
+        ThenRemoveBreakpointWasNotCalled();
+        ThenManagedBreakpointIdsContains(42);
+        ThenUserBreakpointIdsContains(42);
+    }
+
+    [Fact]
+    public void ClearManagedBreakpointsForFile_ClearsPermanentBreakpointIds()
+    {
+        string src = GivenSourceFileOnDisk();
+        GivenExistingManagedBreakpointForFile(src, 65, hwBpId: 42, bpId: 1);
+        _ = _model.PermanentManagedBreakpointIds.Add(42);
+        GivenRemoveBreakpointSucceeds(42);
+        GivenNoLoadedModules();
+        GivenSourceFileIsNotCli(src);
+
+        WhenSettingManagedBreakpoints(src, [70]); // triggers ClearManagedBreakpointsForFile
+
+        Assert.DoesNotContain(42u, _model.PermanentManagedBreakpointIds);
+    }
+
     // ── ResolveTokensFromBreakpoints ─────────────────────────
 
     [Fact]
@@ -552,7 +641,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         GivenLoadedModule(@"C:\out\MyApp.dll", @"C:\out\MyApp.pdb");
         GivenPdbResolvesMethodAtLine(@"C:\out\MyApp.dll", @"C:\src\Program.cs", 10,
             ("MyApp", "Main", 0x06000001, 0));
-        GivenGetOffsetByLineSucceeds(@"C:\src\Program.cs", 10, 0xABCD);
+        GivenMethodInJitMethodMap("MyApp", 0x06000001, 0xABCD);
         GivenAddHardwareBreakpointFails(0xABCD);
 
         bool result = WhenTryingToBindBreakpoint(@"C:\src\Program.cs", 10, bpId: 970);
@@ -625,6 +714,16 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         _ = _dbgEng.AddHardwareBreakpoint(_model.Wrapper, Arg.Any<ulong>(), 1)
             .Returns(_ => (bpIds[idx++], true));
     }
+
+    private void GivenMethodInJitMethodMap(string assembly, int token, ulong startAddress)
+    {
+        lock (_model.JitMethodMap)
+            _model.JitMethodMap[startAddress] = new JitMethodInfo(token, startAddress, 0x200, assembly);
+    }
+
+    private void GivenAddHardwareBreakpointSucceedsForAnyAddress(uint bpId)
+        => _dbgEng.AddHardwareBreakpoint(_model.Wrapper, Arg.Any<ulong>(), 1)
+            .Returns((bpId, true));
 
     private void GivenAddHardwareBreakpointFails(ulong address)
         => _dbgEng.AddHardwareBreakpoint(_model.Wrapper, address, 1)

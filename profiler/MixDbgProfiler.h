@@ -23,16 +23,21 @@ class MixDbgProfiler : public IUnknown {
     volatile LONG m_refCount;
     ProfilerInfo* m_pInfo;
     HANDLE m_hPipe;
+    HANDLE m_hCmdPipe;   // Command pipe — reads WATCH commands from MixDbg at runtime.
     HANDLE m_hAckEvent;  // Signaled by MixDbg after processing a notification.
     HANDLE m_hRehookEvent; // Signaled by MixDbg on Continue — re-enables enter/leave hooks.
     CRITICAL_SECTION m_pipeLock;
+    CRITICAL_SECTION m_watchLock; // Protects m_watchEntries/m_watchCount (written by cmd reader thread).
 
     // Exact (assembly, token) pairs that have breakpoints — only block JIT for these.
     // All other methods send notifications without blocking.
+    // Updated at runtime via WATCH commands from MixDbg (mid-session breakpoints).
     static const int MAX_WATCH = 64;
     struct WatchEntry { char assembly[256]; unsigned int token; };
     WatchEntry m_watchEntries[MAX_WATCH];
-    int m_watchCount;
+    volatile int m_watchCount;
+
+    void CmdReaderLoop();
 
     // Assembly-level watches for C++/CLI — hook ALL methods from these assemblies.
     // Set via MIXDBG_WATCH_ASSEMBLIES env var at pre-launch time because

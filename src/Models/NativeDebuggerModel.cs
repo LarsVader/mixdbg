@@ -52,6 +52,13 @@ public sealed class NativeDebuggerModel : IDisposable
 
     // Managed breakpoint tracking (ICorDebug V4).
     internal HashSet<uint> ManagedBreakpointIds { get; } = [];
+
+    /// <summary>
+    /// Managed breakpoint IDs set via the JitMethodMap path (already-JIT'd methods).
+    /// These are permanent — NOT removed on Continue like transient ENTER-hook BPs.
+    /// Cleared only by ClearManagedBreakpointsForFile (new setBreakpoints for the file).
+    /// </summary>
+    internal HashSet<uint> PermanentManagedBreakpointIds { get; } = [];
     internal List<SetBreakpointsArguments> PendingManagedBreakpoints { get; } = [];
 
     // CLR detection state.
@@ -86,6 +93,16 @@ public sealed class NativeDebuggerModel : IDisposable
     internal StreamReader? ProfilerPipeReader { get; set; }
     internal Thread? ProfilerReaderThread { get; set; }
     internal string? ProfilerPipeName { get; set; }
+
+    // Command pipe — sends WATCH commands to the profiler for mid-session breakpoints.
+    internal NamedPipeServerStream? ProfilerCmdPipe { get; set; }
+    internal StreamWriter? ProfilerCmdPipeWriter { get; set; }
+
+    /// <summary>
+    /// Pending WATCH lines queued while the command pipe was not yet connected.
+    /// Drained by the cmd pipe connect thread once the profiler connects.
+    /// </summary>
+    internal ConcurrentQueue<string> PendingWatchCommands { get; } = new();
     internal ConcurrentQueue<JitNotification> JitNotifications { get; } = new();
     internal volatile bool ProfilerConnected;
     internal volatile bool ProfilerHooksActive; // True when profiler uses ENTER: notifications (enter/leave hooks).
@@ -135,6 +152,14 @@ public sealed class NativeDebuggerModel : IDisposable
     internal ManualResetEventSlim EngineReady { get; } = new(false);
     internal Exception? EngineInitError;
 
+    /// <summary>
+    /// Calls SetInterrupt via IDbgEngWrapper. Set by EngineLifecycleService during
+    /// engine creation. Used by <see cref="QueueEngineQuery{T}"/> to wake the engine
+    /// when it's in WaitForEvent. Same cross-thread pattern as
+    /// <see cref="Services.ProfilerPipeService.RequestInterrupt"/>.
+    /// </summary>
+    internal Action? InterruptAction { get; set; }
+
     internal Action? DisposeAction { get; set; }
 
     public bool IsTargetStopped => Stopped.IsSet;
@@ -142,6 +167,9 @@ public sealed class NativeDebuggerModel : IDisposable
     /// <summary>
     /// Queues a query on the engine thread and blocks until it completes.
     /// Used by handlers to marshal calls that return a result to the engine thread.
+    /// When the engine is in WaitForEvent (GO state), sets InterruptRequested so the
+    /// engine wakes up and processes the command promptly instead of waiting for the
+    /// next debug event.
     /// </summary>
     public T QueueEngineQuery<T>(Func<T> engineCall)
     {
@@ -151,6 +179,14 @@ public sealed class NativeDebuggerModel : IDisposable
             try { tcs.SetResult(engineCall()); }
             catch (Exception ex) { tcs.SetException(ex); }
         });
+
+        // Wake the engine if it's in WaitForEvent so the command is processed promptly.
+        // Same cross-thread SetInterrupt pattern used by ProfilerPipeService.RequestInterrupt.
+        if (InWaitForEvent)
+        {
+            try { InterruptAction?.Invoke(); } catch { }
+        }
+
         return tcs.Task.Result;
     }
 
