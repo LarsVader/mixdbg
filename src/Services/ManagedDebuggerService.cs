@@ -386,7 +386,7 @@ internal sealed class ManagedDebuggerService(
     /// Parses the output of <c>!clrstack -a</c> to extract PARAMETERS and LOCALS
     /// from the top (first) managed frame.
     /// </summary>
-    private static VariableInfo[] ParseClrStackLocals(string output)
+    internal static VariableInfo[] ParseClrStackLocals(string output)
     {
         // !clrstack -a output format:
         //   OS Thread Id: 0x1234 (0)
@@ -505,7 +505,7 @@ internal sealed class ManagedDebuggerService(
     /// are shown as decimal (likely primitives). Large values are kept as hex
     /// (likely heap addresses / object references).
     /// </summary>
-    private static string FormatSosValue(string hexValue)
+    internal static string FormatSosValue(string hexValue)
     {
         if (!hexValue.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
             return hexValue;
