@@ -26,6 +26,10 @@ public sealed class CorDebugWrapperModel
 
     internal Dictionary<long, CorDebugWrapperModule> Modules { get; } = [];
 
+    // ── Managed variable inspection ──
+
+    internal ManagedVariableStore ManagedVariables { get; } = new();
+
     // ── Legacy ICorDebug breakpoints (deactivate-only) ──
 
     internal Dictionary<int, CorDebugFunctionBreakpoint> LegacyBreakpoints { get; } = [];

@@ -266,6 +266,323 @@ internal sealed class ManagedDebuggerService(
         return (null, 0);
     }
 
+    public int TryGetManagedLocals(NativeDebuggerModel model, ulong instructionPointer)
+    {
+        if (!model.ManagedInitialized || model.CorWrapper == null)
+            return 0;
+
+        JitMethodInfo? method;
+        lock (model.JitMethodMap)
+        {
+            method = FindContainingMethod(model.JitMethodMap, instructionPointer);
+        }
+        if (method == null)
+            return 0;
+
+        string? assemblyPath = FindAssemblyPath(model, method.AssemblyName);
+        int ilOffset = ComputeILOffset(model, method, instructionPointer);
+
+        uint osThreadId = _dbgEng.GetCurrentThreadSystemId(model.Wrapper);
+
+        _corDebug.FlushProcessState(model.CorWrapper);
+
+        int result = _corDebug.InitializeManagedLocals(
+            model.CorWrapper, osThreadId, instructionPointer,
+            assemblyPath, method.MethodToken, ilOffset);
+
+        // Fallback: ICorDebug thread enumeration fails on piggybacked V4 process.
+        // Use SOS !clrstack via dbgeng to read locals from the DAC instead.
+        if (result == 0)
+        {
+            if (_corDebug.LastDiagnostic != null)
+                _log.LogInfo(_logStore, $"ICorDebug locals failed: {_corDebug.LastDiagnostic}, trying SOS");
+            result = TryGetLocalsViaSos(model, assemblyPath, method.MethodToken, ilOffset);
+        }
+
+        _log.LogInfo(_logStore, $"TryGetManagedLocals: ip=0x{instructionPointer:X} token=0x{method.MethodToken:X8} ilOffset={ilOffset} -> ref={result}");
+        return result;
+    }
+
+    /// <summary>
+    /// Fallback: reads managed locals via SOS <c>!clrstack -a</c> command through dbgeng.
+    /// Loads the SOS extension on first use, captures command output, and parses
+    /// PARAMETERS/LOCALS sections for the top frame.
+    /// </summary>
+    private int TryGetLocalsViaSos(NativeDebuggerModel model, string? assemblyPath, int methodToken, int ilOffset)
+    {
+        try
+        {
+            // Load SOS extension on first use.
+            if (!model.SosLoaded)
+            {
+                string? sosPath = FindSosPath(model);
+                if (sosPath == null)
+                {
+                    _log.LogWarning(_logStore, "SOS: sos.dll not found");
+                    return 0;
+                }
+                string loadOutput = _dbgEng.ExecuteCommandWithCapture(model.Wrapper, $".load {sosPath}");
+                _log.LogInfo(_logStore, $"SOS: .load {sosPath} -> {loadOutput.Trim()}");
+                model.SosLoaded = true;
+            }
+
+            // Run !clrstack -a to get parameters and locals for all managed frames.
+            string output = _dbgEng.ExecuteCommandWithCapture(model.Wrapper, "!clrstack -a");
+            _log.LogInfo(_logStore, $"SOS: !clrstack -a output ({output.Length} chars)");
+
+            // Parse PARAMETERS and LOCALS from the top frame.
+            VariableInfo[] vars = ParseClrStackLocals(output);
+
+            // Enrich with PDB names and PE types where possible.
+            if (assemblyPath != null)
+            {
+                (string Name, int Index)[] pdbLocals = _pdbMapper.GetLocalVariableNames(assemblyPath, methodToken, ilOffset);
+                string[] paramNames = _pdbMapper.GetParameterNames(assemblyPath, methodToken);
+                string[] paramTypes = _pdbMapper.GetParameterTypes(assemblyPath, methodToken);
+                string[] localTypes = _pdbMapper.GetLocalVariableTypes(assemblyPath, methodToken);
+                vars = EnrichWithPdbNames(vars, pdbLocals, paramNames, paramTypes, localTypes);
+            }
+
+            if (vars.Length == 0)
+            {
+                _log.LogInfo(_logStore, "SOS: no locals parsed from !clrstack output");
+                return 0;
+            }
+
+            return _corDebug.StoreSimpleLocals(model.CorWrapper, vars);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(_logStore, $"SOS locals failed: {ex.GetType().Name}: {ex.Message}");
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Finds the SOS extension DLL. Checks dotnet-sos install location first,
+    /// then the runtime directory next to coreclr.dll.
+    /// </summary>
+    private static string? FindSosPath(NativeDebuggerModel model)
+    {
+        // dotnet-sos global tool install location.
+        string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string dotnetSos = Path.Combine(userProfile, ".dotnet", "sos", "sos.dll");
+        if (File.Exists(dotnetSos))
+            return dotnetSos;
+
+        // Next to coreclr.dll in the runtime directory.
+        if (model.CoreClrPath != null)
+        {
+            string runtimeDir = Path.GetDirectoryName(model.CoreClrPath)!;
+            string rtSos = Path.Combine(runtimeDir, "sos.dll");
+            if (File.Exists(rtSos))
+                return rtSos;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Parses the output of <c>!clrstack -a</c> to extract PARAMETERS and LOCALS
+    /// from the top (first) managed frame.
+    /// </summary>
+    internal static VariableInfo[] ParseClrStackLocals(string output)
+    {
+        // !clrstack -a output format:
+        //   OS Thread Id: 0x1234 (0)
+        //           Child SP               IP Call Site
+        //   000000AB 00007FF7B6D3CC66 Namespace.Type.Method(args) [...\file.cs @ 65]
+        //       PARAMETERS:
+        //           this (0x...) = 0x...
+        //           sender (0x...) = 0x...
+        //       LOCALS:
+        //           0x... = 0x...
+        //
+        //   000000AB 00007FF7XXXXXXXX Next.Frame(...)
+        //   ...
+
+        List<VariableInfo> vars = [];
+        string[] lines = output.Split('\n');
+        bool inFirstFrame = false;
+        bool inParams = false;
+        bool inLocals = false;
+        bool pastFirstFrame = false;
+        int localIdx = 0;
+
+        foreach (string rawLine in lines)
+        {
+            string line = rawLine.TrimEnd('\r');
+            string trimmed = line.Trim();
+
+            // Skip header lines.
+            if (trimmed.StartsWith("OS Thread Id:", StringComparison.Ordinal) ||
+                trimmed.StartsWith("Child SP", StringComparison.Ordinal) ||
+                trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            // Detect frame lines (start with hex address).
+            if (!trimmed.StartsWith("PARAMETERS", StringComparison.OrdinalIgnoreCase) &&
+                !trimmed.StartsWith("LOCALS", StringComparison.OrdinalIgnoreCase) &&
+                !trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                !trimmed.StartsWith("this ", StringComparison.OrdinalIgnoreCase) &&
+                trimmed.Length > 16 && IsHexPrefix(trimmed))
+            {
+                if (inFirstFrame)
+                {
+                    pastFirstFrame = true;
+                    break; // Stop at the second frame.
+                }
+                inFirstFrame = true;
+                inParams = false;
+                inLocals = false;
+                continue;
+            }
+
+            if (pastFirstFrame) break;
+            if (!inFirstFrame) continue;
+
+            if (trimmed.StartsWith("PARAMETERS:", StringComparison.OrdinalIgnoreCase))
+            {
+                inParams = true;
+                inLocals = false;
+                continue;
+            }
+            if (trimmed.StartsWith("LOCALS:", StringComparison.OrdinalIgnoreCase))
+            {
+                inLocals = true;
+                inParams = false;
+                localIdx = 0;
+                continue;
+            }
+
+            // Parse variable line: "name (0x...) = 0x..." or "0x... = 0x..."
+            if (inParams || inLocals)
+            {
+                (string? name, string? value) = ParseSosVariableLine(trimmed);
+                if (value != null)
+                {
+                    string varName = name ?? (inParams ? $"arg{vars.Count}" : $"local{localIdx}");
+                    string section = inParams ? "param" : "local";
+                    vars.Add(new VariableInfo(varName, FormatSosValue(value), section, 0));
+                    if (inLocals) localIdx++;
+                }
+            }
+        }
+
+        return [.. vars];
+    }
+
+    /// <summary>
+    /// Parses a single SOS variable line like <c>this (0x...) = 0x...</c> or <c>0x... = 0x...</c>.
+    /// Returns (name, value) where name may be null for unnamed locals.
+    /// </summary>
+    private static (string? Name, string? Value) ParseSosVariableLine(string line)
+    {
+        // Named: "varname (0x...) = 0x..." or "varname = 0x..."
+        // Unnamed: "0x... = 0x..."
+        int eqIdx = line.IndexOf('=');
+        if (eqIdx < 0)
+            return (null, null);
+
+        string lhs = line[..eqIdx].Trim();
+        string value = line[(eqIdx + 1)..].Trim();
+
+        // Strip address hint: "sender (0x000000AB12CD)" -> "sender"
+        string? name = null;
+        int parenIdx = lhs.IndexOf('(');
+        if (parenIdx > 0)
+            name = lhs[..parenIdx].Trim();
+        else if (!lhs.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            name = lhs;
+
+        return (name, value);
+    }
+
+    /// <summary>
+    /// Formats a raw SOS hex value for display. Small values (upper 32 bits zero)
+    /// are shown as decimal (likely primitives). Large values are kept as hex
+    /// (likely heap addresses / object references).
+    /// </summary>
+    internal static string FormatSosValue(string hexValue)
+    {
+        if (!hexValue.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return hexValue;
+
+        if (!ulong.TryParse(hexValue.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out ulong val))
+            return hexValue;
+
+        // Zero is always "0".
+        if (val == 0)
+            return "0";
+
+        // If upper 32 bits are zero, this is likely a primitive value — show decimal.
+        return val <= uint.MaxValue
+            ? val.ToString()
+            : hexValue;
+    }
+
+    /// <summary>Checks if a string starts with hex digits (frame line detection).</summary>
+    private static bool IsHexPrefix(string s)
+    {
+        if (s.Length < 8) return false;
+        for (int i = 0; i < 8; i++)
+        {
+            char c = s[i];
+            if (!char.IsAsciiHexDigit(c)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Enriches SOS-parsed variables with PDB names. Parameters get PDB names by order;
+    /// locals get PDB names by slot index.
+    /// </summary>
+    private static VariableInfo[] EnrichWithPdbNames(VariableInfo[] vars,
+        (string Name, int Index)[] pdbLocals, string[] paramNames,
+        string[] paramTypes, string[] localTypes)
+    {
+        int paramIdx = 0;
+        int localIdx = 0;
+        Dictionary<int, string> localNameMap = [];
+        foreach ((string name, int idx) in pdbLocals)
+            localNameMap[idx] = name;
+
+        VariableInfo[] result = new VariableInfo[vars.Length];
+        for (int i = 0; i < vars.Length; i++)
+        {
+            VariableInfo v = vars[i];
+            if (v.Type == "param")
+            {
+                string name = v.Name;
+                string? type = null;
+                if (name != "this")
+                {
+                    if (paramIdx < paramNames.Length)
+                        name = paramNames[paramIdx];
+                    if (paramIdx < paramTypes.Length)
+                        type = paramTypes[paramIdx];
+                    paramIdx++;
+                }
+                else
+                {
+                    type = "object";
+                }
+                result[i] = new VariableInfo(name, v.Value, type, 0);
+            }
+            else
+            {
+                string name = localNameMap.TryGetValue(localIdx, out string? pdbName)
+                    ? pdbName : v.Name;
+                string? type = localIdx < localTypes.Length ? localTypes[localIdx] : null;
+                result[i] = new VariableInfo(name, v.Value, type, 0);
+                localIdx++;
+            }
+        }
+        return result;
+    }
+
     public void MergeManagedFrames(NativeDebuggerModel model, StackFrame[] nativeFrames)
     {
         StackFrame[] managedFrames = GetManagedStackFrames(model);

@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
@@ -220,6 +221,140 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     }
 
     /// <summary>
+    /// Reads the portable PDB's local scope table and returns (name, slot index) pairs
+    /// for local variables in scope at the given IL offset.
+    /// </summary>
+    public (string Name, int Index)[] GetLocalVariableNames(string assemblyPath, int methodToken, int ilOffset)
+    {
+        MetadataReader? reader = GetOrLoadReader(assemblyPath);
+        if (reader == null)
+            return [];
+
+        MethodDefinitionHandle methodHandle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        if (methodHandle.IsNil)
+            return [];
+
+        try
+        {
+            List<(string Name, int Index)> result = [];
+            foreach (LocalScopeHandle scopeHandle in reader.GetLocalScopes(methodHandle))
+            {
+                LocalScope scope = reader.GetLocalScope(scopeHandle);
+
+                // Filter: only scopes that contain the IL offset.
+                if (ilOffset < scope.StartOffset || ilOffset >= scope.EndOffset)
+                    continue;
+
+                foreach (LocalVariableHandle varHandle in scope.GetLocalVariables())
+                {
+                    LocalVariable localVar = reader.GetLocalVariable(varHandle);
+                    string name = reader.GetString(localVar.Name);
+                    result.Add((name, localVar.Index));
+                }
+            }
+            return [.. result];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Reads the PE metadata to return parameter names for the given method, in order.
+    /// </summary>
+    public string[] GetParameterNames(string assemblyPath, int methodToken)
+    {
+        (PEReader Pe, MetadataReader Reader)? peReaderAndStream = GetOrLoadPeReader(assemblyPath);
+        if (peReaderAndStream == null)
+            return [];
+
+        MetadataReader peReader = peReaderAndStream.Value.Reader;
+        MethodDefinitionHandle handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        if (handle.IsNil)
+            return [];
+
+        try
+        {
+            MethodDefinition method = peReader.GetMethodDefinition(handle);
+            List<string> names = [];
+            foreach (ParameterHandle paramHandle in method.GetParameters())
+            {
+                Parameter param = peReader.GetParameter(paramHandle);
+                // Skip the return parameter (sequence 0).
+                if (param.SequenceNumber == 0)
+                    continue;
+                names.Add(peReader.GetString(param.Name));
+            }
+            return [.. names];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Decodes the method signature to return parameter type names in order.
+    /// </summary>
+    public string[] GetParameterTypes(string assemblyPath, int methodToken)
+    {
+        (PEReader Pe, MetadataReader Reader)? peReaderAndStream = GetOrLoadPeReader(assemblyPath);
+        if (peReaderAndStream == null)
+            return [];
+
+        MetadataReader peReader = peReaderAndStream.Value.Reader;
+        MethodDefinitionHandle handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        if (handle.IsNil)
+            return [];
+
+        try
+        {
+            MethodDefinition method = peReader.GetMethodDefinition(handle);
+            MethodSignature<string> sig = method.DecodeSignature(new SimpleTypeProvider(), genericContext: null);
+            return [.. sig.ParameterTypes];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Decodes the local variable signature to return type names in slot order.
+    /// </summary>
+    public string[] GetLocalVariableTypes(string assemblyPath, int methodToken)
+    {
+        (PEReader Pe, MetadataReader Reader)? peReaderAndStream = GetOrLoadPeReader(assemblyPath);
+        if (peReaderAndStream == null)
+            return [];
+
+        MetadataReader peReader = peReaderAndStream.Value.Reader;
+        MethodDefinitionHandle handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        if (handle.IsNil)
+            return [];
+
+        try
+        {
+            MethodDefinition method = peReader.GetMethodDefinition(handle);
+            if (method.RelativeVirtualAddress == 0)
+                return [];
+
+            MethodBodyBlock body = peReaderAndStream.Value.Pe.GetMethodBody(method.RelativeVirtualAddress);
+            if (body.LocalSignature.IsNil)
+                return [];
+
+            StandaloneSignature localSig = peReader.GetStandaloneSignature(body.LocalSignature);
+            ImmutableArray<string> types = localSig.DecodeLocalSignature(new SimpleTypeProvider(), genericContext: null);
+            return [.. types];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
     /// Finds a method token by a relative virtual address (RVA) that falls inside the
     /// method body. dbgeng's <c>GetOffsetByLine</c> may return an address past the IL
     /// method header (e.g. +12 bytes into the body), so we find the method whose RVA
@@ -268,5 +403,65 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
         _providers.Clear();
         _readers.Clear();
         _peStreams.Clear();
+    }
+
+    /// <summary>
+    /// Minimal <see cref="ISignatureTypeProvider{TType,TGenericContext}"/> that maps
+    /// ECMA-335 type signatures to friendly C# type name strings.
+    /// </summary>
+    private sealed class SimpleTypeProvider
+        : ISignatureTypeProvider<string, object?>
+    {
+        public string GetPrimitiveType(PrimitiveTypeCode typeCode) => typeCode switch
+        {
+            PrimitiveTypeCode.Boolean => "bool",
+            PrimitiveTypeCode.Byte => "byte",
+            PrimitiveTypeCode.SByte => "sbyte",
+            PrimitiveTypeCode.Char => "char",
+            PrimitiveTypeCode.Int16 => "short",
+            PrimitiveTypeCode.UInt16 => "ushort",
+            PrimitiveTypeCode.Int32 => "int",
+            PrimitiveTypeCode.UInt32 => "uint",
+            PrimitiveTypeCode.Int64 => "long",
+            PrimitiveTypeCode.UInt64 => "ulong",
+            PrimitiveTypeCode.Single => "float",
+            PrimitiveTypeCode.Double => "double",
+            PrimitiveTypeCode.String => "string",
+            PrimitiveTypeCode.Object => "object",
+            PrimitiveTypeCode.IntPtr => "nint",
+            PrimitiveTypeCode.UIntPtr => "nuint",
+            PrimitiveTypeCode.Void => "void",
+            _ => typeCode.ToString(),
+        };
+
+        public string GetTypeFromDefinition(MetadataReader r, TypeDefinitionHandle handle, byte rawTypeKind)
+        {
+            TypeDefinition td = r.GetTypeDefinition(handle);
+            return r.GetString(td.Name);
+        }
+
+        public string GetTypeFromReference(MetadataReader r, TypeReferenceHandle handle, byte rawTypeKind)
+        {
+            TypeReference tr = r.GetTypeReference(handle);
+            return r.GetString(tr.Name);
+        }
+
+        public string GetTypeFromSpecification(MetadataReader r, object? genericContext, TypeSpecificationHandle handle, byte rawTypeKind)
+        {
+            TypeSpecification ts = r.GetTypeSpecification(handle);
+            return ts.DecodeSignature(this, genericContext);
+        }
+
+        public string GetSZArrayType(string elementType) => $"{elementType}[]";
+        public string GetArrayType(string elementType, ArrayShape shape) => $"{elementType}[{new string(',', shape.Rank - 1)}]";
+        public string GetByReferenceType(string elementType) => $"ref {elementType}";
+        public string GetPointerType(string elementType) => $"{elementType}*";
+        public string GetPinnedType(string elementType) => elementType;
+        public string GetGenericInstantiation(string genericType, ImmutableArray<string> typeArguments) =>
+            $"{genericType}<{string.Join(", ", typeArguments)}>";
+        public string GetGenericMethodParameter(object? genericContext, int index) => $"!!{index}";
+        public string GetGenericTypeParameter(object? genericContext, int index) => $"!{index}";
+        public string GetModifiedType(string modifier, string unmodifiedType, bool isRequired) => unmodifiedType;
+        public string GetFunctionPointerType(MethodSignature<string> signature) => "delegate*";
     }
 }

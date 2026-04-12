@@ -255,6 +255,7 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 - Thread enumeration
 - Breakpoint classification (native vs managed vs CLI)
 - Native variable inspection (locals, types, values, struct/pointer expansion)
+- **Managed variable inspection** — when stopped at a C# frame, locals and arguments are shown with names (from portable PDB local scope tables), types, and values via `ICorDebugILFrame`. Objects expand to show fields (walks superclass chain), arrays show first 100 elements. Variable refs use a separate range (100,000+) to avoid collision with native refs.
 - Managed module/function resolution via ICorDebug V4 piggybacked on dbgeng (`OpenVirtualProcessImpl` + `DbgEngDataTarget` bridge)
 - PDB-based source mapping for C# via `System.Reflection.Metadata`
 - Command-line argument passthrough in DAP launch requests
@@ -263,7 +264,6 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 - **Managed stack traces** via profiler JIT method map + IL-to-native mapping — binary search maps native IPs to method tokens, reverse IL mapping resolves exact source file:line
 
 **Not yet implemented:**
-- Managed variable inspection (M5)
 - Cross-boundary stepping (M6)
 
 ## Build and Run

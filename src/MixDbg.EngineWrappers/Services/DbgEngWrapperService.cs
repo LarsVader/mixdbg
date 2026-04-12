@@ -150,6 +150,22 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
 
     public int ExecuteCommand(DbgEngWrapperModel model, string command) => model.Control.Execute(DebugOutCtl.Ignore, command, DebugExecute.Default);
 
+    public string ExecuteCommandWithCapture(DbgEngWrapperModel model, string command)
+    {
+        OutputCapture capture = new();
+        _ = model.Client.GetOutputCallbacks(out IDebugOutputCallbacks? prev);
+        _ = model.Client.SetOutputCallbacks(capture);
+        try
+        {
+            _ = model.Control.Execute(DebugOutCtl.ThisClient, command, DebugExecute.Default);
+            return capture.Text;
+        }
+        finally
+        {
+            _ = model.Client.SetOutputCallbacks(prev);
+        }
+    }
+
     public EngineEventInfo GetLastEventInfo(DbgEngWrapperModel model)
     {
         IntPtr descBuf = Marshal.AllocHGlobal(256);
@@ -372,7 +388,13 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
 
                 string value = "";
                 if (group.GetSymbolValueText(idx, valBuf, 1024, out _) >= 0)
+                {
                     value = Marshal.PtrToStringAnsi(valBuf) ?? "";
+                    // dbgeng uses "0n" prefix for decimal in its hex-default context.
+                    // Strip it for user-facing display.
+                    if (value.StartsWith("0n", StringComparison.Ordinal))
+                        value = value[2..];
+                }
 
                 int childRef = 0;
                 if (hr >= 0 && paramArray[i].SubElements > 0)

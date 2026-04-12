@@ -73,6 +73,12 @@ public interface IDbgEngWrapper
     /// </summary>
     int ExecuteCommand(DbgEngWrapperModel model, string command);
 
+    /// <summary>
+    /// Executes a dbgeng text command and captures its text output.
+    /// Used for SOS extension commands like <c>!clrstack -a</c>.
+    /// </summary>
+    string ExecuteCommandWithCapture(DbgEngWrapperModel model, string command);
+
     /// <summary>Gets information about the last debug event.</summary>
     EngineEventInfo GetLastEventInfo(DbgEngWrapperModel model);
 

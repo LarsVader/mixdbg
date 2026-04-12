@@ -796,6 +796,96 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
         ThenFrameNameIs(nativeFrames, 0, null!);
     }
 
+    // ── FormatSosValue ──────────────────────────────────────
+
+    [Theory]
+    [InlineData("0x0000000000000007", "7")]
+    [InlineData("0x0000000000000000", "0")]
+    [InlineData("0x00000000000000FF", "255")]
+    [InlineData("0x00000000FFFFFFFF", "4294967295")]
+    [InlineData("0x00000250d00012a0", "0x00000250d00012a0")] // heap address stays hex
+    [InlineData("0xFFFFFFFFFFFFFFFF", "0xFFFFFFFFFFFFFFFF")] // large stays hex
+    [InlineData("not-hex", "not-hex")] // non-hex passthrough
+    public void FormatSosValue_WhenGivenValue_FormatsCorrectly(string input, string expected)
+        => Assert.Equal(expected, ManagedDebuggerService.FormatSosValue(input));
+
+    // ── ParseClrStackLocals ─────────────────────────────────
+
+    [Fact]
+    public void ParseClrStackLocals_WhenTypicalOutput_ParsesParamsAndLocals()
+    {
+        GivenClrStackOutput("""
+            OS Thread Id: 0x1234 (0)
+                    Child SP               IP Call Site
+            000000AB12340000 00007FF7B6D3CC66 WpfApp.MainWindow.OnAddClick(System.Object, System.Windows.RoutedEventArgs) [D:\src\MainWindow.xaml.cs @ 65]
+                PARAMETERS:
+                    this (0x000000AB12340010) = 0x00000250d00012a0
+                    sender (0x000000AB12340018) = 0x00000250d00012b0
+                    e (0x000000AB12340020) = 0x00000250d00012c0
+                LOCALS:
+                    0x000000AB12340028 = 0x0000000000000007
+                    0x000000AB12340030 = 0x0000000000000003
+
+            000000AB12350000 00007FF7XXXXXXXX Next.Frame.Method()
+            """);
+
+        WhenParsingClrStackLocals();
+
+        ThenParsedVariableCountIs(5);
+        ThenParsedVariableAtIndexHasName(0, "this");
+        ThenParsedVariableAtIndexHasName(1, "sender");
+        ThenParsedVariableAtIndexHasName(2, "e");
+        ThenParsedVariableAtIndexHasValue(3, "7");    // local formatted as decimal
+        ThenParsedVariableAtIndexHasValue(4, "3");    // local formatted as decimal
+    }
+
+    [Fact]
+    public void ParseClrStackLocals_WhenEmptyOutput_ReturnsEmpty()
+    {
+        GivenClrStackOutput("");
+
+        WhenParsingClrStackLocals();
+
+        ThenParsedVariableCountIs(0);
+    }
+
+    [Fact]
+    public void ParseClrStackLocals_WhenNoLocalsSection_ReturnsOnlyParams()
+    {
+        GivenClrStackOutput("""
+            OS Thread Id: 0x5678 (0)
+                    Child SP               IP Call Site
+            000000AB12340000 00007FF7B6D3CC66 Namespace.Type.Method()
+                PARAMETERS:
+                    this (0x000000AB12340010) = 0x00000250d00012a0
+            """);
+
+        WhenParsingClrStackLocals();
+
+        ThenParsedVariableCountIs(1);
+        ThenParsedVariableAtIndexHasName(0, "this");
+    }
+
+    [Fact]
+    public void ParseClrStackLocals_WhenOnlySecondFrame_StopsAtSecondFrame()
+    {
+        GivenClrStackOutput("""
+            OS Thread Id: 0x1234 (0)
+                    Child SP               IP Call Site
+            000000AB12340000 00007FF7B6D3CC66 First.Frame()
+                LOCALS:
+                    0x000000AB12340028 = 0x0000000000000001
+            000000AB12350000 00007FF7XXXXXXXX Second.Frame()
+                LOCALS:
+                    0x000000AB12350028 = 0x0000000000000099
+            """);
+
+        WhenParsingClrStackLocals();
+
+        ThenParsedVariableCountIs(1);
+        ThenParsedVariableAtIndexHasValue(0, "1");
+    }
+
     #region Given
 
     private void GivenManagedNotInitialized() => _model.ManagedInitialized = false;
@@ -842,6 +932,8 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
         foreach (DeferredManagedBreakpoint d in deferred)
             _model.DeferredManagedBreakpoints.Add(d);
     }
+
+    private void GivenClrStackOutput(string output) => _clrStackOutput = output;
 
     private void GivenNoProfilerPipe() => _model.ProfilerPipe = null;
 
@@ -915,6 +1007,8 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
         => _resolvedFrame = _testee.ResolveFrameFromProfilerData(_model, ip);
 
     private void WhenMergingManagedFrames(StackFrame[] frames) => _testee.MergeManagedFrames(_model, frames);
+
+    private void WhenParsingClrStackLocals() => _parsedVars = ManagedDebuggerService.ParseClrStackLocals(_clrStackOutput!);
 
     #endregion
 
@@ -1007,6 +1101,14 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
     private static void ThenFrameNameIs(StackFrame[] frames, int index, string expected)
         => Assert.Equal(expected, frames[index].Name);
 
+    private void ThenParsedVariableCountIs(int expected) => Assert.Equal(expected, _parsedVars!.Length);
+
+    private void ThenParsedVariableAtIndexHasName(int index, string expected)
+        => Assert.Equal(expected, _parsedVars![index].Name);
+
+    private void ThenParsedVariableAtIndexHasValue(int index, string expected)
+        => Assert.Equal(expected, _parsedVars![index].Value);
+
     #endregion
 
     #region Helpers
@@ -1034,6 +1136,8 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
     private bool _runtimeResult;
     private StackFrame[]? _stackFrames;
     private (string Name, Source? Source, int Line)? _resolvedFrame;
+    private string? _clrStackOutput;
+    private VariableInfo[]? _parsedVars;
 
     public ManagedDebuggerServiceTests()
     {
