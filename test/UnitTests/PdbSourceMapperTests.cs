@@ -169,4 +169,59 @@ public sealed class PdbSourceMapperTests
 
         Assert.Empty(localTypes);
     }
+
+    // ── GetMethodSequencePoints ─────────────────────────
+
+    [Fact]
+    public void GetMethodSequencePoints_WhenMethodHasSequencePoints_ReturnsNonEmpty()
+    {
+        if (!File.Exists(_wpfAppDll)) return;
+
+        using PdbSourceMapperService mapper = new();
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? method =
+            mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 65);
+        if (method == null) return;
+
+        (int ILOffset, string File, int Line)[] seqPoints =
+            mapper.GetMethodSequencePoints(_wpfAppDll, method.Value.MethodToken);
+
+        Assert.NotEmpty(seqPoints);
+        // All IL offsets should be non-negative.
+        Assert.All(seqPoints, sp => Assert.True(sp.ILOffset >= 0));
+        // All files should be non-empty.
+        Assert.All(seqPoints, sp => Assert.False(string.IsNullOrEmpty(sp.File)));
+        // All lines should be positive.
+        Assert.All(seqPoints, sp => Assert.True(sp.Line > 0));
+    }
+
+    [Fact]
+    public void GetMethodSequencePoints_WhenCalled_ReturnsSortedByILOffset()
+    {
+        if (!File.Exists(_wpfAppDll)) return;
+
+        using PdbSourceMapperService mapper = new();
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? method =
+            mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 65);
+        if (method == null) return;
+
+        (int ILOffset, string File, int Line)[] seqPoints =
+            mapper.GetMethodSequencePoints(_wpfAppDll, method.Value.MethodToken);
+
+        for (int i = 1; i < seqPoints.Length; i++)
+        {
+            Assert.True(seqPoints[i].ILOffset >= seqPoints[i - 1].ILOffset,
+                $"Sequence points not sorted: IL 0x{seqPoints[i - 1].ILOffset:X} > 0x{seqPoints[i].ILOffset:X}");
+        }
+    }
+
+    [Fact]
+    public void GetMethodSequencePoints_WhenAssemblyDoesNotExist_ReturnsEmpty()
+    {
+        using PdbSourceMapperService mapper = new();
+
+        (int ILOffset, string File, int Line)[] seqPoints =
+            mapper.GetMethodSequencePoints(@"C:\nonexistent.dll", 0x06000001);
+
+        Assert.Empty(seqPoints);
+    }
 }

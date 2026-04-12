@@ -440,6 +440,50 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         ThenStoppedEventWasSentWithReason("step");
     }
 
+    // ── DetermineStopReason with ActiveManagedStep ────────
+
+    [Fact]
+    public void EngineLoopStep_WhenActiveManagedStepAndTempBpHit_ReportsStep()
+    {
+        GivenWrapperCreateModelReturns();
+        GivenConfigDone();
+        GivenWaitForEventSucceedsThenTerminates();
+        GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
+        GivenHandleEnterBreakpointReturns(false);
+        GivenActiveManagedStep(tempBpIds: [42]);
+        GivenHitUserBreakpointWithBpId(42);
+        GivenGetCurrentThreadIdReturns(1);
+        GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
+
+        WhenStartingEngineThread();
+        WhenWaitingForEngineReady();
+        WhenQueuingCommand(() => { });
+        WhenWaitingForEngineThreadToExit();
+
+        ThenStoppedEventWasSentWithReason("step");
+    }
+
+    [Fact]
+    public void EngineLoopStep_WhenActiveManagedStepAndRealBpHit_ReportsBreakpoint()
+    {
+        GivenWrapperCreateModelReturns();
+        GivenConfigDone();
+        GivenWaitForEventSucceedsThenTerminates();
+        GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
+        GivenHandleEnterBreakpointReturns(false);
+        GivenActiveManagedStep(tempBpIds: [42]);
+        GivenHitUserBreakpointWithBpId(99); // Not a temp BP.
+        GivenGetCurrentThreadIdReturns(1);
+        GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
+
+        WhenStartingEngineThread();
+        WhenWaitingForEngineReady();
+        WhenQueuingCommand(() => { });
+        WhenWaitingForEngineThreadToExit();
+
+        ThenStoppedEventWasSentWithReason("breakpoint");
+    }
+
     // ── AttachOrCreateProcess ──────────────────────────────
 
     [Fact]
@@ -1038,6 +1082,22 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     private void GivenStepping() => _model.Stepping = true;
 
     private void GivenPauseRequested() => _model.PauseRequested = true;
+
+    private void GivenActiveManagedStep(uint[] tempBpIds)
+    {
+        _model.ActiveManagedStep = new ManagedStepState();
+        foreach (uint id in tempBpIds)
+        {
+            _model.ActiveManagedStep.TempBreakpointIds.Add(id);
+            _ = _model.UserBreakpointIds.Add(id);
+        }
+    }
+
+    private void GivenHitUserBreakpointWithBpId(uint bpId)
+    {
+        _model.HitUserBreakpoint = true;
+        _model.LastHitBpId = bpId;
+    }
 
     private void GivenNoStopReason()
     {

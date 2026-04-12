@@ -20,6 +20,8 @@ public class StepOutRequestHandlerService(
     {
         if (sessionModel.Engine is NativeDebuggerModel model)
         {
+            model.Stepping = true;
+            model.CachedStackTraceResult = null;
             model.Commands.Add(() => engineQuery.ExecuteStepOutOnEngine(model));
         }
         sessionModel.State = SessionState.Running;

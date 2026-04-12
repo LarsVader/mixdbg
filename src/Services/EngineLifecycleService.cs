@@ -206,8 +206,36 @@ internal sealed class EngineLifecycleService(
         ProcessCommandsUntilResume(model);
     }
 
-    private static string? DetermineStopReason(NativeDebuggerModel model)
+    private string? DetermineStopReason(NativeDebuggerModel model)
     {
+        // Check for active managed step (temp BP approach for step-over/out).
+        if (model.ActiveManagedStep != null)
+        {
+            if (model.HitUserBreakpoint)
+            {
+                bool isTempBp = model.ActiveManagedStep.TempBreakpointIds.Contains(model.LastHitBpId);
+                model.HitUserBreakpoint = false;
+
+                if (isTempBp)
+                {
+                    // Temp step BP fired — step complete.
+                    CompleteManagedStep(model);
+                    return "step";
+                }
+
+                // Real user BP hit during managed step — cancel step, report breakpoint.
+                CompleteManagedStep(model);
+                return "breakpoint";
+            }
+
+            // Non-BP stop during managed step (e.g. exception) — cancel step.
+            if (model.Stepping || model.PauseRequested)
+            {
+                CompleteManagedStep(model);
+                // Fall through to normal handling below.
+            }
+        }
+
         string? reason = null;
         if (model.HitUserBreakpoint)
         {
@@ -226,6 +254,25 @@ internal sealed class EngineLifecycleService(
         }
 
         return reason;
+    }
+
+    /// <summary>
+    /// Completes a managed step by removing temp breakpoints and clearing state.
+    /// </summary>
+    private void CompleteManagedStep(NativeDebuggerModel model)
+    {
+        if (model.ActiveManagedStep == null)
+            return;
+
+        foreach (uint bpId in model.ActiveManagedStep.TempBreakpointIds)
+        {
+            _ = _wrapper.RemoveBreakpoint(model.Wrapper, bpId);
+            _ = model.UserBreakpointIds.Remove(bpId);
+        }
+
+        _log.LogInfo(_logStore,
+            $"Managed step complete: removed {model.ActiveManagedStep.TempBreakpointIds.Count} temp BPs");
+        model.ActiveManagedStep = null;
     }
 
     private void AttachOrCreateProcess(NativeDebuggerModel model)
@@ -302,7 +349,51 @@ internal sealed class EngineLifecycleService(
             _log.LogInfo(_logStore, "ProcessCommandsUntilResume: executing command");
             cmd();
 
+            // Step completed inside the command (managed step-into loop, or native "gu").
+            // Send stopped event and stay in the loop — engine is already stopped.
+            if (model.ManagedStepIntoCompleted)
+            {
+                model.ManagedStepIntoCompleted = false;
+                string reason;
+                if (model.HitUserBreakpoint)
+                {
+                    model.HitUserBreakpoint = false;
+                    reason = "breakpoint";
+                }
+                else
+                {
+                    model.Stepping = false;
+                    reason = "step";
+                }
+                uint threadId = _wrapper.GetCurrentThreadId(model.Wrapper);
+                _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: step-into done, reason={reason} threadId={threadId}");
+                _server.SendEvent(_transport, "stopped", new StoppedEventBody
+                {
+                    Reason = reason,
+                    ThreadId = (int)threadId,
+                    AllThreadsStopped = true,
+                });
+                continue;
+            }
+
             EngineExecutionStatus status = _wrapper.GetExecutionStatus(model.Wrapper);
+
+            // The "gu" command blocks until step-out completes, leaving the engine in
+            // Break state. If Stepping is set and status is Break, the step-out finished
+            // inside the command — send stopped event and stay in the loop.
+            if (model.Stepping && status == EngineExecutionStatus.Break)
+            {
+                model.Stepping = false;
+                uint threadId = _wrapper.GetCurrentThreadId(model.Wrapper);
+                _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: step-out (gu) done, threadId={threadId}");
+                _server.SendEvent(_transport, "stopped", new StoppedEventBody
+                {
+                    Reason = "step",
+                    ThreadId = (int)threadId,
+                    AllThreadsStopped = true,
+                });
+                continue;
+            }
             _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: execStatus={status}");
             if (status != EngineExecutionStatus.Break
                 && status != EngineExecutionStatus.NoDebuggee)

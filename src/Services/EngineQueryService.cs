@@ -17,6 +17,7 @@ internal sealed class EngineQueryService(
     IManagedDebugger _managedDebugger,
     IManagedBreakpointService _managedBp,
     ICorDebugWrapper _corDebug,
+    IPdbSourceMapper _pdbMapper,
     IDbgEngWrapper _wrapper) : IEngineQueryService
 {
     public StackFrame[] GetStackTraceOnEngine(NativeDebuggerModel model, int maxFrames)
@@ -200,6 +201,7 @@ internal sealed class EngineQueryService(
     public void ExecuteContinueOnEngine(NativeDebuggerModel model)
     {
         _log.LogInfo(_logStore, "Continue executing: SetExecutionStatus(GO)");
+        CancelActiveManagedStep(model);
         model.LastContinuedBpId = model.LastHitBpId;
         model.ContinueTimestampTicks = Environment.TickCount64;
         _managedBp.RemoveTransientManagedBreakpoints(model);
@@ -214,19 +216,220 @@ internal sealed class EngineQueryService(
 
     public void ExecuteStepOnEngine(NativeDebuggerModel model, EngineExecutionStatus stepKind)
     {
+        CancelActiveManagedStep(model);
         _managedBp.RemoveTransientManagedBreakpoints(model);
-        _ = (model.ProfilerRehookEvent?.Set());
         _wrapper.ClearVariables(model.Wrapper);
         if (model.CorWrapper != null)
             _corDebug.ClearManagedVariables(model.CorWrapper);
+
+        // Check if current IP is in managed code.
+        if (model.JitMethodMap.Count > 0)
+        {
+            NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 2);
+            if (frames.Length > 0)
+            {
+                ulong ip = frames[0].InstructionOffset;
+                JitMethodInfo? method;
+                lock (model.JitMethodMap)
+                {
+                    method = ManagedDebuggerService.FindContainingMethod(model.JitMethodMap, ip);
+                }
+
+                if (method != null)
+                {
+                    if (stepKind == EngineExecutionStatus.StepOver)
+                    {
+                        _ = (model.ProfilerRehookEvent?.Set());
+                        if (TryManagedStepOver(model, method, ip, frames))
+                            return;
+                    }
+                    else if (stepKind == EngineExecutionStatus.StepInto)
+                    {
+                        // Do NOT rehook — step-into needs raw call path without ENTER hooks.
+                        if (TryManagedStepInto(model, method, ip))
+                            return;
+                    }
+                }
+            }
+        }
+
+        // Native step — rehook and use dbgeng directly.
+        _ = (model.ProfilerRehookEvent?.Set());
         _wrapper.SetExecutionStatus(model.Wrapper, stepKind);
     }
 
     public void ExecuteStepOutOnEngine(NativeDebuggerModel model)
     {
+        CancelActiveManagedStep(model);
+        _managedBp.RemoveTransientManagedBreakpoints(model);
+        _ = (model.ProfilerRehookEvent?.Set());
         _wrapper.ClearVariables(model.Wrapper);
         if (model.CorWrapper != null)
             _corDebug.ClearManagedVariables(model.CorWrapper);
+
+        // Use temp BP at caller's return address for reliable cross-boundary step-out.
+        // The dbgeng "gu" command doesn't stop reliably when returning from native to managed.
+        NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 2);
+        if (frames.Length >= 2)
+        {
+            ulong returnAddress = frames[1].InstructionOffset;
+            if (SetManagedStepBreakpoint(model, returnAddress))
+            {
+                _log.LogInfo(_logStore, $"Step-out: temp BP at return addr 0x{returnAddress:X}");
+                _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
+                return;
+            }
+        }
+
+        // Fallback: native step-out via dbgeng "gu".
         _ = _wrapper.ExecuteCommand(model.Wrapper, "gu");
+    }
+
+    /// <summary>
+    /// Attempts a managed step-over by setting a temp BP at the next source line's
+    /// native address. Returns <c>true</c> if handled, <c>false</c> to fall back to native.
+    /// </summary>
+    private bool TryManagedStepOver(NativeDebuggerModel model, JitMethodInfo method,
+        ulong ip, NativeStackFrame[] frames)
+    {
+        string? assemblyPath = _managedDebugger.FindAssemblyPath(model, method.AssemblyName);
+        if (assemblyPath == null)
+            return false;
+
+        int currentIL = ManagedDebuggerService.ComputeILOffset(model, method, ip);
+        (int ILOffset, string File, int Line)[] seqPoints = _pdbMapper.GetMethodSequencePoints(assemblyPath, method.MethodToken);
+        if (seqPoints.Length == 0)
+            return false;
+
+        // Find the first sequence point with IL offset > current.
+        (int ILOffset, string File, int Line)? nextPoint = null;
+        foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+        {
+            if (sp.ILOffset > currentIL)
+            {
+                nextPoint = sp;
+                break;
+            }
+        }
+
+        string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
+        if (nextPoint != null && model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+        {
+            // Next line exists — set BP at its native address.
+            ulong targetAddr = mapping.GetNativeAddress(nextPoint.Value.ILOffset);
+            if (SetManagedStepBreakpoint(model, targetAddr))
+            {
+                _log.LogInfo(_logStore,
+                    $"Managed step-over: temp BP at 0x{targetAddr:X} (IL 0x{nextPoint.Value.ILOffset:X} -> {nextPoint.Value.File}:{nextPoint.Value.Line})");
+                _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
+                return true;
+            }
+        }
+
+        // No next line (end of method) — fall back to step-out behavior.
+        if (frames.Length >= 2)
+        {
+            ulong returnAddress = frames[1].InstructionOffset;
+            if (SetManagedStepBreakpoint(model, returnAddress))
+            {
+                _log.LogInfo(_logStore, $"Managed step-over (end of method): temp BP at return addr 0x{returnAddress:X}");
+                _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Managed step-into: finds the next sequence point in the current method (the call
+    /// instruction target) and sets a temp BP there, plus at the next line in the caller
+    /// (in case the call target can't be resolved). Returns true if handled.
+    /// Falls back to native StepInto if no managed targets can be resolved.
+    /// </summary>
+    private bool TryManagedStepInto(NativeDebuggerModel model, JitMethodInfo method, ulong ip)
+    {
+        // Strategy: set temp BPs at the first source line of every method called from
+        // the current IL offset. Since we can't easily determine the call target, set
+        // temp BPs at the next source line in the CURRENT method (step-over fallback)
+        // AND use native StepInto. When native StepInto crosses into a method with
+        // dbgeng source symbols (C++/CLI, native), it stops there. If it enters JIT'd
+        // code without source, the DetermineStopReason + post-step check handles it.
+
+        // Set a step-over temp BP as fallback (if the call returns without stopping).
+        string? assemblyPath = _managedDebugger.FindAssemblyPath(model, method.AssemblyName);
+        if (assemblyPath != null)
+        {
+            int currentIL = ManagedDebuggerService.ComputeILOffset(model, method, ip);
+            (int ILOffset, string File, int Line)[] seqPoints = _pdbMapper.GetMethodSequencePoints(assemblyPath, method.MethodToken);
+            string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
+
+            // Find next sequence point as fallback.
+            if (model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+            {
+                foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+                {
+                    if (sp.ILOffset > currentIL)
+                    {
+                        ulong fallbackAddr = mapping.GetNativeAddress(sp.ILOffset);
+                        _ = SetManagedStepBreakpoint(model, fallbackAddr);
+                        _log.LogInfo(_logStore,
+                            $"Managed step-into: fallback BP at 0x{fallbackAddr:X} ({sp.File}:{sp.Line})");
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Use native StepInto — dbgeng will step into the called function.
+        // For C++/CLI and native calls, dbgeng has PDB symbols and stops at the right line.
+        // The fallback temp BP catches the case where the call returns without stopping
+        // (e.g., if the called method has no source).
+        _log.LogInfo(_logStore,
+            $"Managed step-into: native StepInto from {method.AssemblyName}:0x{method.MethodToken:X8} ip=0x{ip:X}");
+        model.Stepping = true;
+        _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.StepInto);
+        return true;
+    }
+
+    /// <summary>
+    /// Sets a temporary hardware breakpoint for a managed step operation.
+    /// Tracks the BP ID in <see cref="NativeDebuggerModel.ActiveManagedStep"/>.
+    /// </summary>
+    private bool SetManagedStepBreakpoint(NativeDebuggerModel model, ulong address)
+    {
+        (uint bpId, bool success) = _wrapper.AddHardwareBreakpoint(model.Wrapper, address, 1);
+        if (!success)
+        {
+            _log.LogWarning(_logStore, $"Failed to set managed step temp BP at 0x{address:X}");
+            return false;
+        }
+
+        _ = model.UserBreakpointIds.Add(bpId);
+        model.ActiveManagedStep ??= new ManagedStepState();
+        model.ActiveManagedStep.TempBreakpointIds.Add(bpId);
+        // Clear the Stepping flag — managed step completion is detected via ActiveManagedStep.
+        model.Stepping = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Cancels any active managed step operation by removing temp breakpoints
+    /// and clearing the state.
+    /// </summary>
+    internal void CancelActiveManagedStep(NativeDebuggerModel model)
+    {
+        if (model.ActiveManagedStep == null)
+            return;
+
+        foreach (uint bpId in model.ActiveManagedStep.TempBreakpointIds)
+        {
+            _ = _wrapper.RemoveBreakpoint(model.Wrapper, bpId);
+            _ = model.UserBreakpointIds.Remove(bpId);
+        }
+
+        _log.LogInfo(_logStore,
+            $"Cancelled managed step: removed {model.ActiveManagedStep.TempBreakpointIds.Count} temp BPs");
+        model.ActiveManagedStep = null;
     }
 }

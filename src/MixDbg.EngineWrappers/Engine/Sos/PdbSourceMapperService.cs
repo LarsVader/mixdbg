@@ -221,6 +221,47 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     }
 
     /// <summary>
+    /// Returns all non-hidden sequence points for a method, sorted by IL offset.
+    /// </summary>
+    public (int ILOffset, string File, int Line)[] GetMethodSequencePoints(string assemblyPath, int methodToken)
+    {
+        MetadataReader? reader = GetOrLoadReader(assemblyPath);
+        if (reader == null)
+            return [];
+
+        MethodDefinitionHandle handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        if (handle.IsNil)
+            return [];
+
+        MethodDebugInformation debugInfo;
+        try
+        {
+            debugInfo = reader.GetMethodDebugInformation(handle.ToDebugInformationHandle());
+        }
+        catch
+        {
+            return [];
+        }
+
+        if (debugInfo.SequencePointsBlob.IsNil)
+            return [];
+
+        List<(int ILOffset, string File, int Line)> result = [];
+        foreach (SequencePoint sp in debugInfo.GetSequencePoints())
+        {
+            if (sp.IsHidden)
+                continue;
+
+            string file = reader.GetString(reader.GetDocument(sp.Document).Name);
+            result.Add((sp.Offset, file, sp.StartLine));
+        }
+
+        // Sort by IL offset (usually already sorted, but be safe).
+        result.Sort((a, b) => a.ILOffset.CompareTo(b.ILOffset));
+        return [.. result];
+    }
+
+    /// <summary>
     /// Reads the portable PDB's local scope table and returns (name, slot index) pairs
     /// for local variables in scope at the given IL offset.
     /// </summary>

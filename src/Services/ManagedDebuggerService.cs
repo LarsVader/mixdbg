@@ -152,7 +152,7 @@ internal sealed class ManagedDebuggerService(
     /// Finds the assembly DLL path by matching the assembly name against loaded ICorDebug
     /// modules. Falls back to searching near known module paths on disk.
     /// </summary>
-    private string? FindAssemblyPath(NativeDebuggerModel model, string assemblyName)
+    public string? FindAssemblyPath(NativeDebuggerModel model, string assemblyName)
     {
         if (model.CorWrapper == null)
             return null;
@@ -230,7 +230,7 @@ internal sealed class ManagedDebuggerService(
     /// Computes the IL offset for a native instruction pointer using the profiler's
     /// IL-to-native mapping. Returns 0 if no mapping is available.
     /// </summary>
-    private static int ComputeILOffset(NativeDebuggerModel model, JitMethodInfo method, ulong instructionPointer)
+    internal static int ComputeILOffset(NativeDebuggerModel model, JitMethodInfo method, ulong instructionPointer)
     {
         string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
         if (!model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? methodMapping))
@@ -628,7 +628,7 @@ internal sealed class ManagedDebuggerService(
     /// Binary searches the sorted JIT method map for the method containing the given IP.
     /// Returns <c>null</c> if no method contains the address.
     /// </summary>
-    private static JitMethodInfo? FindContainingMethod(SortedList<ulong, JitMethodInfo> map, ulong ip)
+    internal static JitMethodInfo? FindContainingMethod(SortedList<ulong, JitMethodInfo> map, ulong ip)
     {
         if (map.Count == 0)
             return null;

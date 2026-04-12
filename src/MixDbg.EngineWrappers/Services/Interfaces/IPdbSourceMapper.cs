@@ -52,4 +52,11 @@ public interface IPdbSourceMapper
     /// Decodes the local variable signature to return type names in slot order.
     /// </summary>
     string[] GetLocalVariableTypes(string assemblyPath, int methodToken);
+
+    /// <summary>
+    /// Returns all non-hidden sequence points for a method, sorted by IL offset.
+    /// Each entry contains the IL offset, source file path, and line number.
+    /// Used for managed stepping to find the next source line.
+    /// </summary>
+    (int ILOffset, string File, int Line)[] GetMethodSequencePoints(string assemblyPath, int methodToken);
 }
