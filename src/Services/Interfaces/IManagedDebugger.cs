@@ -47,4 +47,12 @@ public interface IManagedDebugger
     /// that lack source information.
     /// </summary>
     void MergeManagedFrames(NativeDebuggerModel model, StackFrame[] nativeFrames);
+
+    /// <summary>
+    /// Attempts to initialize managed locals for a frame identified by its instruction pointer.
+    /// Uses the profiler's JIT method map to find the method token, assembly path, and IL offset,
+    /// then delegates to <see cref="ICorDebugWrapper.InitializeManagedLocals"/>.
+    /// Returns a managed variablesReference handle, or 0 on failure.
+    /// </summary>
+    int TryGetManagedLocals(NativeDebuggerModel model, ulong instructionPointer);
 }

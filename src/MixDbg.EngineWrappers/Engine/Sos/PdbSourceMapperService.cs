@@ -220,6 +220,80 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     }
 
     /// <summary>
+    /// Reads the portable PDB's local scope table and returns (name, slot index) pairs
+    /// for local variables in scope at the given IL offset.
+    /// </summary>
+    public (string Name, int Index)[] GetLocalVariableNames(string assemblyPath, int methodToken, int ilOffset)
+    {
+        MetadataReader? reader = GetOrLoadReader(assemblyPath);
+        if (reader == null)
+            return [];
+
+        MethodDefinitionHandle methodHandle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        if (methodHandle.IsNil)
+            return [];
+
+        try
+        {
+            List<(string Name, int Index)> result = [];
+            foreach (LocalScopeHandle scopeHandle in reader.GetLocalScopes(methodHandle))
+            {
+                LocalScope scope = reader.GetLocalScope(scopeHandle);
+
+                // Filter: only scopes that contain the IL offset.
+                if (ilOffset < scope.StartOffset || ilOffset >= scope.EndOffset)
+                    continue;
+
+                foreach (LocalVariableHandle varHandle in scope.GetLocalVariables())
+                {
+                    LocalVariable localVar = reader.GetLocalVariable(varHandle);
+                    string name = reader.GetString(localVar.Name);
+                    result.Add((name, localVar.Index));
+                }
+            }
+            return [.. result];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Reads the PE metadata to return parameter names for the given method, in order.
+    /// </summary>
+    public string[] GetParameterNames(string assemblyPath, int methodToken)
+    {
+        (PEReader Pe, MetadataReader Reader)? peReaderAndStream = GetOrLoadPeReader(assemblyPath);
+        if (peReaderAndStream == null)
+            return [];
+
+        MetadataReader peReader = peReaderAndStream.Value.Reader;
+        MethodDefinitionHandle handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        if (handle.IsNil)
+            return [];
+
+        try
+        {
+            MethodDefinition method = peReader.GetMethodDefinition(handle);
+            List<string> names = [];
+            foreach (ParameterHandle paramHandle in method.GetParameters())
+            {
+                Parameter param = peReader.GetParameter(paramHandle);
+                // Skip the return parameter (sequence 0).
+                if (param.SequenceNumber == 0)
+                    continue;
+                names.Add(peReader.GetString(param.Name));
+            }
+            return [.. names];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
     /// Finds a method token by a relative virtual address (RVA) that falls inside the
     /// method body. dbgeng's <c>GetOffsetByLine</c> may return an address past the IL
     /// method header (e.g. +12 bytes into the body), so we find the method whose RVA

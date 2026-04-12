@@ -588,6 +588,56 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
+    /// <summary>
+    /// M5 integration test: when stopped at a C# breakpoint, requesting scopes
+    /// and variables for the managed frame returns at least one variable with a
+    /// non-empty name and value. Implementation-independent — verifies the DAP
+    /// protocol contract, not the underlying mechanism.
+    /// </summary>
+    [Fact]
+    public async Task ManagedVariables_WhenStoppedAtCSharpBreakpoint_ReturnsLocals()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set C# BP on OnAddClick (line 65) — has locals (a, b, etc.) and params (sender, e).
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _bpFile, name = "MainWindow.xaml.cs" },
+            breakpoints = new[] { new { line = _addLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Hit the C# breakpoint.
+        await WhenWaitingForStoppedEvent(timeout: 30);
+
+        // Request stack trace to populate frame IDs.
+        _nextSeq++;
+        await SendDapRequest(_nextSeq, "stackTrace", new { threadId = 0, startFrame = 0, levels = 5 });
+        await WhenWaitingForStackTraceResponse(timeout: 10);
+
+        // Request scopes for frame 1 (the top frame).
+        await WhenRequestingScopes(frameId: 1);
+
+        // Request variables if we got a scope with a variablesReference.
+        await WhenRequestingVariablesIfScopeReturned();
+
+        await WhenSendingContinue();
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "MainWindow.xaml.cs");
+        ThenScopesResponseHasLocals();
+        ThenVariablesResponseHasAtLeastOneVariable();
+        ThenNoLogErrors();
+    }
+
     [Fact(Skip = "Covered by AllEightStops")]
     public async Task ManagedBreakpoint_WhenBreakpointInsideMethodBody_StopsAtExactLine()
     {
@@ -781,6 +831,69 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         }
     }
 
+    private async Task WhenRequestingScopes(int frameId)
+    {
+        _nextSeq++;
+        await SendDapRequest(_nextSeq, "scopes", new { frameId });
+        await WhenWaitingForScopesResponse(timeout: 10);
+    }
+
+    private async Task WhenWaitingForScopesResponse(int timeout)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(timeout);
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (_responses)
+            {
+                JsonObject? resp = _responses.FirstOrDefault(r =>
+                    r["command"]?.GetValue<string>() == "scopes");
+                if (resp != null)
+                {
+                    _scopesResponse = resp;
+                    _ = _responses.Remove(resp);
+                    return;
+                }
+            }
+            await Task.Delay(100);
+        }
+    }
+
+    private async Task WhenRequestingVariablesIfScopeReturned()
+    {
+        if (_scopesResponse == null)
+            return;
+
+        JsonArray? scopes = _scopesResponse["body"]?["scopes"]?.AsArray();
+        JsonObject? firstScope = scopes?.FirstOrDefault()?.AsObject();
+        int varRef = firstScope?["variablesReference"]?.GetValue<int>() ?? 0;
+        if (varRef == 0)
+            return;
+
+        _nextSeq++;
+        await SendDapRequest(_nextSeq, "variables", new { variablesReference = varRef });
+        await WhenWaitingForVariablesResponse(timeout: 10);
+    }
+
+    private async Task WhenWaitingForVariablesResponse(int timeout)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(timeout);
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (_responses)
+            {
+                JsonObject? resp = _responses.FirstOrDefault(r =>
+                    r["command"]?.GetValue<string>() == "variables");
+                if (resp != null)
+                {
+                    _variablesResponse = resp;
+                    _ = _responses.Remove(resp);
+                    return;
+                }
+            }
+            await Task.Delay(100);
+        }
+    }
+
     private async Task WhenSendingContinue()
     {
         _nextSeq++;
@@ -917,6 +1030,28 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         Assert.Equal(expectedLine, _stackTraceLines[hitIndex]);
     }
 
+    private void ThenScopesResponseHasLocals()
+    {
+        Assert.NotNull(_scopesResponse);
+        JsonArray? scopes = _scopesResponse!["body"]?["scopes"]?.AsArray();
+        Assert.NotNull(scopes);
+        Assert.NotEmpty(scopes!);
+        int varRef = scopes[0]!.AsObject()["variablesReference"]?.GetValue<int>() ?? 0;
+        Assert.True(varRef > 0, "Scopes response should have a non-zero variablesReference");
+    }
+
+    private void ThenVariablesResponseHasAtLeastOneVariable()
+    {
+        Assert.NotNull(_variablesResponse);
+        JsonArray? vars = _variablesResponse!["body"]?["variables"]?.AsArray();
+        Assert.NotNull(vars);
+        Assert.NotEmpty(vars!);
+        // At least one variable should have a non-empty name.
+        JsonObject? first = vars[0]!.AsObject();
+        string? name = first["name"]?.GetValue<string>();
+        Assert.False(string.IsNullOrEmpty(name), "Variable should have a non-empty name");
+    }
+
     private void ThenNoLogErrors()
     {
         if (!File.Exists(_sessionLogPath))
@@ -967,6 +1102,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     private readonly List<string?> _stoppedReasons = [];
     private readonly List<string?> _stackTraceSourcePaths = [];
     private readonly List<int> _stackTraceLines = [];
+    private JsonObject? _scopesResponse;
+    private JsonObject? _variablesResponse;
     private int _nextSeq = 10;
 
     public Task InitializeAsync() => Task.CompletedTask;

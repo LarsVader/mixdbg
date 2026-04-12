@@ -61,6 +61,9 @@ public sealed class NativeDebuggerModel : IDisposable
     internal HashSet<uint> PermanentManagedBreakpointIds { get; } = [];
     internal List<SetBreakpointsArguments> PendingManagedBreakpoints { get; } = [];
 
+    // SOS extension state.
+    internal volatile bool SosLoaded;
+
     // CLR detection state.
     internal volatile bool ClrLoaded;
     internal volatile bool ManagedInitialized;

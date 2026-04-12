@@ -16,6 +16,7 @@ internal sealed class EngineQueryService(
     LogStore _logStore,
     IManagedDebugger _managedDebugger,
     IManagedBreakpointService _managedBp,
+    ICorDebugWrapper _corDebug,
     IDbgEngWrapper _wrapper) : IEngineQueryService
 {
     public StackFrame[] GetStackTraceOnEngine(NativeDebuggerModel model, int maxFrames)
@@ -126,6 +127,19 @@ internal sealed class EngineQueryService(
     {
         int localsRef = _wrapper.SetScopeAndGetLocals(model.Wrapper, frameId);
         _log.LogInfo(_logStore, $"SetScopeAndGetLocals(frameId={frameId}) -> ref={localsRef}");
+
+        // Fallback to managed locals if native returned 0 (managed frame).
+        if (localsRef == 0 && model.ManagedInitialized)
+        {
+            int index = frameId - 1;
+            if (index >= 0 && index < model.Wrapper.CachedStackFrames.Length)
+            {
+                ulong ip = model.Wrapper.CachedStackFrames[index].InstructionOffset;
+                localsRef = _managedDebugger.TryGetManagedLocals(model, ip);
+                _log.LogInfo(_logStore, $"TryGetManagedLocals(ip=0x{ip:X}) -> ref={localsRef}");
+            }
+        }
+
         return localsRef == 0
             ? []
             : [
@@ -141,7 +155,11 @@ internal sealed class EngineQueryService(
     public Variable[] GetVariablesOnEngine(NativeDebuggerModel model, int variablesReference)
     {
         _log.LogInfo(_logStore, $"GetVariables: ref={variablesReference}");
-        VariableInfo[] vars = _wrapper.GetVariables(model.Wrapper, variablesReference);
+
+        // Route by reference range: managed refs start at BaseOffset.
+        VariableInfo[] vars = ManagedVariableStore.IsManaged(variablesReference) && model.CorWrapper != null
+            ? _corDebug.GetManagedVariables(model.CorWrapper, variablesReference)
+            : _wrapper.GetVariables(model.Wrapper, variablesReference);
 
         Variable[] result = new Variable[vars.Length];
         for (int i = 0; i < vars.Length; i++)
@@ -189,6 +207,8 @@ internal sealed class EngineQueryService(
         model.ConfigDone = true;
         model.CachedStackTraceResult = null;
         _wrapper.ClearVariables(model.Wrapper);
+        if (model.CorWrapper != null)
+            _corDebug.ClearManagedVariables(model.CorWrapper);
         _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
     }
 
@@ -197,12 +217,16 @@ internal sealed class EngineQueryService(
         _managedBp.RemoveTransientManagedBreakpoints(model);
         _ = (model.ProfilerRehookEvent?.Set());
         _wrapper.ClearVariables(model.Wrapper);
+        if (model.CorWrapper != null)
+            _corDebug.ClearManagedVariables(model.CorWrapper);
         _wrapper.SetExecutionStatus(model.Wrapper, stepKind);
     }
 
     public void ExecuteStepOutOnEngine(NativeDebuggerModel model)
     {
         _wrapper.ClearVariables(model.Wrapper);
+        if (model.CorWrapper != null)
+            _corDebug.ClearManagedVariables(model.CorWrapper);
         _ = _wrapper.ExecuteCommand(model.Wrapper, "gu");
     }
 }

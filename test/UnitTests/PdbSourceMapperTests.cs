@@ -48,4 +48,66 @@ public sealed class PdbSourceMapperTests
         Assert.Equal("WpfApp", result.Value.AssemblyName);
         Assert.Contains("OnAddClick", result.Value.MethodName);
     }
+
+    [Fact]
+    public void GetLocalVariableNames_WhenMethodHasLocals_ReturnsNameIndexPairs()
+    {
+        if (!File.Exists(_wpfAppDll)) return;
+
+        using PdbSourceMapperService mapper = new();
+        // Find OnAddClick to get its token and IL offset.
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? method =
+            mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 65);
+        if (method == null) return;
+
+        (string Name, int Index)[] locals = mapper.GetLocalVariableNames(
+            _wpfAppDll, method.Value.MethodToken, method.Value.ILOffset);
+
+        Assert.NotEmpty(locals);
+        // All names should be non-empty, indices non-negative.
+        Assert.All(locals, l =>
+        {
+            Assert.False(string.IsNullOrEmpty(l.Name));
+            Assert.True(l.Index >= 0);
+        });
+    }
+
+    [Fact]
+    public void GetLocalVariableNames_WhenAssemblyDoesNotExist_ReturnsEmpty()
+    {
+        using PdbSourceMapperService mapper = new();
+
+        (string Name, int Index)[] locals = mapper.GetLocalVariableNames(
+            @"C:\nonexistent.dll", 0x06000001, 0);
+
+        Assert.Empty(locals);
+    }
+
+    [Fact]
+    public void GetParameterNames_WhenMethodHasParameters_ReturnsNames()
+    {
+        if (!File.Exists(_wpfAppDll)) return;
+
+        using PdbSourceMapperService mapper = new();
+        // OnAddClick(object sender, RoutedEventArgs e) has 2 params.
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? method =
+            mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 65);
+        if (method == null) return;
+
+        string[] paramNames = mapper.GetParameterNames(_wpfAppDll, method.Value.MethodToken);
+
+        Assert.NotEmpty(paramNames);
+        Assert.Contains("sender", paramNames);
+        Assert.Contains("e", paramNames);
+    }
+
+    [Fact]
+    public void GetParameterNames_WhenAssemblyDoesNotExist_ReturnsEmpty()
+    {
+        using PdbSourceMapperService mapper = new();
+
+        string[] paramNames = mapper.GetParameterNames(@"C:\nonexistent.dll", 0x06000001);
+
+        Assert.Empty(paramNames);
+    }
 }

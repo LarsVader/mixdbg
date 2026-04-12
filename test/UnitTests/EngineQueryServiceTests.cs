@@ -1,3 +1,4 @@
+using MixDbg.Engine.DbgEng;
 using MixDbg.Models;
 using MixDbg.Models.DapMessages.Inspection;
 using MixDbg.Models.DapMessages.Protocol;
@@ -48,6 +49,14 @@ public sealed class EngineQueryServiceTests : IDisposable
     }
 
     [Fact]
+    public void ExecuteContinueOnEngine_WhenCalled_ClearsManagedVariables()
+    {
+        WhenExecutingContinueOnEngine();
+
+        _corDebug.Received(1).ClearManagedVariables(_model.CorWrapper);
+    }
+
+    [Fact]
     public void ExecuteContinueOnEngine_WhenCalled_SetsLastContinuedBpId()
     {
         _model.LastHitBpId = 7;
@@ -91,6 +100,14 @@ public sealed class EngineQueryServiceTests : IDisposable
         _wrapper.Received(1).ClearVariables(_model.Wrapper);
     }
 
+    [Fact]
+    public void ExecuteStepOnEngine_WhenCalled_ClearsManagedVariables()
+    {
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
+
+        _corDebug.Received(1).ClearManagedVariables(_model.CorWrapper);
+    }
+
     // ── ExecuteStepOutOnEngine ──────────────────────────────
 
     [Fact]
@@ -107,6 +124,14 @@ public sealed class EngineQueryServiceTests : IDisposable
         WhenExecutingStepOutOnEngine();
 
         _wrapper.Received(1).ClearVariables(_model.Wrapper);
+    }
+
+    [Fact]
+    public void ExecuteStepOutOnEngine_WhenCalled_ClearsManagedVariables()
+    {
+        WhenExecutingStepOutOnEngine();
+
+        _corDebug.Received(1).ClearManagedVariables(_model.CorWrapper);
     }
 
     // ── GetThreadsOnEngine ──────────────────────────────────
@@ -159,7 +184,70 @@ public sealed class EngineQueryServiceTests : IDisposable
         ThenScopeAtIndexHasVariablesReference(0, 42);
     }
 
+    [Fact]
+    public void GetScopesOnEngine_WhenNativeZeroAndManagedReturnsRef_ReturnsManagedScope()
+    {
+        GivenSetScopeAndGetLocalsReturns(0);
+        GivenManagedInitialized();
+        GivenCachedNativeFrame(frameId: 1, ip: 0x7000);
+        GivenTryGetManagedLocalsReturns(0x7000, 100_001);
+
+        WhenGettingScopesOnEngine(frameId: 1);
+
+        ThenScopeResultCountIs(1);
+        ThenScopeAtIndexHasName(0, "Locals");
+        ThenScopeAtIndexHasVariablesReference(0, 100_001);
+    }
+
+    [Fact]
+    public void GetScopesOnEngine_WhenNativeZeroAndManagedReturnsZero_ReturnsEmpty()
+    {
+        GivenSetScopeAndGetLocalsReturns(0);
+        GivenManagedInitialized();
+        GivenCachedNativeFrame(frameId: 1, ip: 0x8000);
+        GivenTryGetManagedLocalsReturns(0x8000, 0);
+
+        WhenGettingScopesOnEngine(frameId: 1);
+
+        ThenScopeResultCountIs(0);
+    }
+
+    [Fact]
+    public void GetScopesOnEngine_WhenNativeZeroAndManagedNotInitialized_ReturnsEmpty()
+    {
+        GivenSetScopeAndGetLocalsReturns(0);
+
+        WhenGettingScopesOnEngine(frameId: 1);
+
+        ThenScopeResultCountIs(0);
+    }
+
     // ── GetVariablesOnEngine ────────────────────────────────
+
+    [Fact]
+    public void GetVariablesOnEngine_WhenManagedRef_RoutesToCorDebug()
+    {
+        GivenGetManagedVariablesReturns(100_001, [
+            new VariableInfo("x", "42", "int", 0),
+        ]);
+
+        WhenGettingVariablesOnEngine(variablesReference: 100_001);
+
+        ThenVariableResultCountIs(1);
+        ThenVariableAtIndexHasName(0, "x");
+        ThenVariableAtIndexHasValue(0, "42");
+    }
+
+    [Fact]
+    public void GetVariablesOnEngine_WhenNativeRef_RoutesToWrapper()
+    {
+        GivenGetVariablesReturns([new VariableInfo("y", "3.14", "float", 0)]);
+
+        WhenGettingVariablesOnEngine(variablesReference: 1);
+
+        ThenVariableResultCountIs(1);
+        ThenVariableAtIndexHasName(0, "y");
+    }
 
     [Fact]
     public void GetVariablesOnEngine_WhenWrapperReturnsEmpty_ReturnsEmpty()
@@ -385,6 +473,21 @@ public sealed class EngineQueryServiceTests : IDisposable
     private void GivenGetVariablesReturns(VariableInfo[] vars) => _ = _wrapper.GetVariables(_model.Wrapper, Arg.Any<int>())
             .Returns(vars);
 
+    private void GivenManagedInitialized() => _model.ManagedInitialized = true;
+
+    private void GivenCachedNativeFrame(int frameId, ulong ip)
+    {
+        Engine.DbgEng.Constants.DEBUG_STACK_FRAME[] frames = new Engine.DbgEng.Constants.DEBUG_STACK_FRAME[frameId];
+        frames[frameId - 1].InstructionOffset = ip;
+        _model.Wrapper.CachedStackFrames = frames;
+    }
+
+    private void GivenTryGetManagedLocalsReturns(ulong ip, int managedRef) =>
+        _ = _managedDebugger.TryGetManagedLocals(_model, ip).Returns(managedRef);
+
+    private void GivenGetManagedVariablesReturns(int variablesReference, VariableInfo[] vars) =>
+        _ = _corDebug.GetManagedVariables(_model.CorWrapper, variablesReference).Returns(vars);
+
     #endregion
 
     #region When
@@ -452,6 +555,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     private readonly ILoggingService _log = Substitute.For<ILoggingService>();
     private readonly IManagedDebugger _managedDebugger = Substitute.For<IManagedDebugger>();
     private readonly IManagedBreakpointService _managedBp = Substitute.For<IManagedBreakpointService>();
+    private readonly ICorDebugWrapper _corDebug = Substitute.For<ICorDebugWrapper>();
     private readonly IDbgEngWrapper _wrapper = Substitute.For<IDbgEngWrapper>();
     private readonly LogStore _logStore;
     private readonly NativeDebuggerModel _model;
@@ -466,7 +570,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     public EngineQueryServiceTests()
     {
         _logStore = new LogStore(Path.Combine(Path.GetTempPath(), "test.log"));
-        _testee = new EngineQueryService(_log, _logStore, _managedDebugger, _managedBp, _wrapper);
+        _testee = new EngineQueryService(_log, _logStore, _managedDebugger, _managedBp, _corDebug, _wrapper);
         _model = new NativeDebuggerModel
         {
             Wrapper = new DbgEngWrapperModel(),

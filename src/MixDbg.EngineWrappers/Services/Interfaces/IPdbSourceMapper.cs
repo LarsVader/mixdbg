@@ -31,4 +31,15 @@ public interface IPdbSourceMapper
     /// the method body.
     /// </summary>
     int? FindTokenByRva(string assemblyPath, int rva);
+
+    /// <summary>
+    /// Reads the portable PDB's local scope table and returns (name, slot index) pairs
+    /// for local variables in scope at the given IL offset.
+    /// </summary>
+    (string Name, int Index)[] GetLocalVariableNames(string assemblyPath, int methodToken, int ilOffset);
+
+    /// <summary>
+    /// Reads the PE metadata to return parameter names for the given method, in order.
+    /// </summary>
+    string[] GetParameterNames(string assemblyPath, int methodToken);
 }

@@ -57,6 +57,7 @@ src/
       DbgEngWrapperModel.cs      # Public: dbgeng COM wrapper state (COM refs internal), engine events
       CorDebugWrapperModel.cs    # Public: ICorDebug V4 wrapper state (ClrDebug refs internal)
       VariableStore.cs           # Internal: variablesReference → symbol group mapping
+      ManagedVariableStore.cs    # Internal: managed variablesReference → ICorDebug value mapping
       EngineExecutionStatus.cs   # Public enum: Go, StepOver, StepInto, Break, etc.
       EngineEventInfo.cs         # Public record: last debug event info
       NativeStackFrame.cs        # Public record struct: instruction pointer
@@ -144,7 +145,7 @@ test/
 
 **DbgEng COM isolation**: All dbgeng COM interop is encapsulated behind `IDbgEngWrapper` / `DbgEngWrapperService`. COM interface types (`IDebugClient`, `IDebugControl`, etc.) are `internal` to the `Engine.DbgEng` namespace and stored on `DbgEngWrapperModel` (also `internal` properties). The rest of the codebase uses only the wrapper's public API: `EngineExecutionStatus`, `NativeStackFrame`, `VariableInfo`, `EngineEventInfo`. Engine callback events (breakpoint hit, module load, etc.) are exposed as C# events on `DbgEngWrapperModel`. `NativeDebuggerModel` holds a `DbgEngWrapperModel Wrapper` property. `ManagedBreakpointService`, `ManagedBreakpointResolverService`, and `ProfilerPipeService` also use `IDbgEngWrapper` for their COM needs (breakpoints, symbols, SetInterrupt).
 
-**ICorDebug V4 isolation**: All ClrDebug NuGet package types (`CorDebugProcess`, `SOSDacInterface`, `XCLRDataProcess`, etc.) are encapsulated behind `ICorDebugWrapper` / `CorDebugWrapperService`. ClrDebug types are `internal` on `CorDebugWrapperModel`. The rest of the codebase uses `ManagedModuleInfo`, `RawManagedFrame`, and wrapper methods. `NativeDebuggerModel` holds a `CorDebugWrapperModel CorWrapper` property. The managed debugging services delegate all ICorDebug operations (runtime init, module enumeration, stack traces, DAC resolution) to `ICorDebugWrapper`. The wrapper is a thin COM call layer — PDB source resolution and orchestration logic stay in the managed services.
+**ICorDebug V4 isolation**: All ClrDebug NuGet package types (`CorDebugProcess`, `SOSDacInterface`, `XCLRDataProcess`, `CorDebugILFrame`, `CorDebugValue` subtypes, etc.) are encapsulated behind `ICorDebugWrapper` / `CorDebugWrapperService`. ClrDebug types are `internal` on `CorDebugWrapperModel` (including `ManagedVariableStore` which holds `CorDebugValue` refs). The rest of the codebase uses `ManagedModuleInfo`, `RawManagedFrame`, `VariableInfo`, and wrapper methods. `NativeDebuggerModel` holds a `CorDebugWrapperModel CorWrapper` property. The managed debugging services delegate all ICorDebug operations (runtime init, module enumeration, stack traces, DAC resolution, variable inspection) to `ICorDebugWrapper`. The wrapper handles COM calls, marshaling, and value formatting — PDB source resolution and orchestration logic stay in the managed services.
 
 Three threads, one command queue:
 
@@ -259,7 +260,18 @@ C# uses exact token watches (`MIXDBG_WATCH_TOKENS`); C++/CLI uses assembly-level
 
 **Launch args:** DAP `launch` request `args` field is threaded through to `CreateProcess` command line.
 
-### M5: Managed Variable Inspection via ClrMD — TODO
+### M5: Managed Variable Inspection via SOS/dbgeng — IN PROGRESS
+
+When stopped at a C# stack frame, selecting it shows locals/args with names, types, and values. Variable names come from portable PDB local scope tables (`IPdbSourceMapper.GetLocalVariableNames`) and PE parameter metadata (`GetParameterNames`).
+
+**ICorDebug V4 approach failed (2026-04-12):** `Process.Threads` throws `CORDBG_E_READVIRTUAL_FAILURE` on piggybacked V4 process — same fundamental limitation that forced M4 to use the CLR profiler. See `docs/M5-plan.md` for full post-mortem.
+
+**Current approach: SOS via dbgeng.** Run `!clrstack -l` with output capture, parse text for local names/values. The DAC (already loaded) has all GC info parsing for local variable stack layout. `ExecuteCommand` + `OutputCapture` infrastructure already exists in dbgeng wrapper.
+
+**Variable routing**: `ManagedVariableStore` allocates refs starting at 100,000 (native `VariableStore` starts at 1). `EngineQueryService.GetVariablesOnEngine` routes by `ManagedVariableStore.IsManaged(ref)`. `GetScopesOnEngine` falls back to `TryGetManagedLocals` when native returns 0.
+
+**Clear on continue/step**: `ClearManagedVariables` called alongside `ClearVariables` in all execution paths.
+
 ### M6: Stepping Across Boundaries — TODO
 ### M7: Polish + Integration — TODO
 
