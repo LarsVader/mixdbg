@@ -137,6 +137,40 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ManagedStepOver_WhenAtLastCliLine_StepsOutToCSharpLine68()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // BP at C++/CLI ManagedCalculator.h line 14 (return NativeLib::Calculator::Add(a, b);).
+        await WhenSettingBreakpoint(_cliWrapperBpFile, "ManagedCalculator.h", _cliWrapperAddLine);
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Hit the C++/CLI breakpoint.
+        await WhenWaitingForStoppedEvent(timeout: 60);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(0, "breakpoint");
+        ThenStackTraceHasSource(0, "ManagedCalculator.h");
+
+        // Step over at the last line of the CLI wrapper — no next line,
+        // so should behave like step-out and land in C# line 68.
+        await WhenSendingNext();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(1, "step");
+        ThenStackTraceHasSource(1, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(1, 68);
+
+        await WhenSendingContinue();
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task ManagedStepOut_WhenInCliWrapper_ReturnsToCSharpCallSite()
     {
         GivenMixDbgAndWpfAppExist();

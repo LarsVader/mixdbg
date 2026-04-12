@@ -240,7 +240,7 @@ internal sealed class EngineQueryService(
                     if (stepKind == EngineExecutionStatus.StepOver)
                     {
                         _ = (model.ProfilerRehookEvent?.Set());
-                        if (TryManagedStepOver(model, method, ip, frames))
+                        if (TryManagedStepOver(model, method, ip))
                             return;
                     }
                     else if (stepKind == EngineExecutionStatus.StepInto)
@@ -376,7 +376,7 @@ internal sealed class EngineQueryService(
     /// native address. Returns <c>true</c> if handled, <c>false</c> to fall back to native.
     /// </summary>
     private bool TryManagedStepOver(NativeDebuggerModel model, JitMethodInfo method,
-        ulong ip, NativeStackFrame[] frames)
+        ulong ip)
     {
         string? assemblyPath = _managedDebugger.FindAssemblyPath(model, method.AssemblyName);
         if (assemblyPath == null)
@@ -384,41 +384,44 @@ internal sealed class EngineQueryService(
 
         int currentIL = ManagedDebuggerService.ComputeILOffset(model, method, ip);
         (int ILOffset, string File, int Line)[] seqPoints = _pdbMapper.GetMethodSequencePoints(assemblyPath, method.MethodToken);
-        if (seqPoints.Length == 0)
-            return false;
 
-        // Find the first sequence point with IL offset > current.
-        (int ILOffset, string File, int Line)? nextPoint = null;
-        foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+        if (seqPoints.Length > 0)
         {
-            if (sp.ILOffset > currentIL)
+            // Find the first sequence point with IL offset > current.
+            (int ILOffset, string File, int Line)? nextPoint = null;
+            foreach ((int ILOffset, string File, int Line) sp in seqPoints)
             {
-                nextPoint = sp;
-                break;
+                if (sp.ILOffset > currentIL)
+                {
+                    nextPoint = sp;
+                    break;
+                }
+            }
+
+            string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
+            if (nextPoint != null && model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+            {
+                // Next line exists — set BP at its native address.
+                ulong targetAddr = mapping.GetNativeAddress(nextPoint.Value.ILOffset);
+                if (SetManagedStepBreakpoint(model, targetAddr))
+                {
+                    _log.LogInfo(_logStore,
+                        $"Managed step-over: temp BP at 0x{targetAddr:X} (IL 0x{nextPoint.Value.ILOffset:X} -> {nextPoint.Value.File}:{nextPoint.Value.Line})");
+                    _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
+                    return true;
+                }
             }
         }
 
-        string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
-        if (nextPoint != null && model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+        // No next line (end of method) or no sequence points (C++/CLI) —
+        // fall back to step-out via FindStepOutTarget which skips sourceless frames.
+        NativeStackFrame[] stepOutFrames = _wrapper.GetStackTrace(model.Wrapper, 5);
+        if (stepOutFrames.Length >= 2)
         {
-            // Next line exists — set BP at its native address.
-            ulong targetAddr = mapping.GetNativeAddress(nextPoint.Value.ILOffset);
-            if (SetManagedStepBreakpoint(model, targetAddr))
+            ulong? target = FindStepOutTarget(model, stepOutFrames);
+            if (target != null && SetManagedStepBreakpoint(model, target.Value))
             {
-                _log.LogInfo(_logStore,
-                    $"Managed step-over: temp BP at 0x{targetAddr:X} (IL 0x{nextPoint.Value.ILOffset:X} -> {nextPoint.Value.File}:{nextPoint.Value.Line})");
-                _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
-                return true;
-            }
-        }
-
-        // No next line (end of method) — fall back to step-out behavior.
-        if (frames.Length >= 2)
-        {
-            ulong returnAddress = frames[1].InstructionOffset;
-            if (SetManagedStepBreakpoint(model, returnAddress))
-            {
-                _log.LogInfo(_logStore, $"Managed step-over (end of method): temp BP at return addr 0x{returnAddress:X}");
+                _log.LogInfo(_logStore, $"Managed step-over (end of method): step-out to 0x{target.Value:X}");
                 _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
                 return true;
             }
