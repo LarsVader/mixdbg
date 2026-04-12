@@ -121,12 +121,13 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStoppedWithReason(3, "step");
         ThenStackTraceHasSourceOneOf(0, "ManagedCalculator.h", "Calculator.cpp");
 
-        // Step into native: ManagedCalculator.h:14 → Calculator.cpp:7.
+        // Step into native: ManagedCalculator.h:14 → Calculator.cpp:7 (first statement).
         await WhenSendingStepIn();
         await WhenWaitingForStoppedEvent(timeout: 15);
         await WhenRequestingStackTrace();
         ThenStoppedWithReason(4, "step");
         ThenStackTraceHasSource(1, "Calculator.cpp");
+        ThenStackTraceStoppedAtLine(1, _nativeAddLine); // line 7: return a + b;
 
         await WhenSendingContinue();
         await WhenWaitingForSeconds(2);
@@ -520,6 +521,13 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         Assert.True(hitIndex < _stackTraceLines.Count,
             $"Expected stack trace #{hitIndex} but only got {_stackTraceLines.Count}. Log: {_sessionLogPath}");
         Assert.NotEqual(unexpectedLine, _stackTraceLines[hitIndex]);
+    }
+
+    private void ThenStackTraceStoppedAtLine(int hitIndex, int expectedLine)
+    {
+        Assert.True(hitIndex < _stackTraceLines.Count,
+            $"Expected stack trace #{hitIndex} but only got {_stackTraceLines.Count}. Log: {_sessionLogPath}");
+        Assert.Equal(expectedLine, _stackTraceLines[hitIndex]);
     }
 
     private void ThenNoLogErrors()

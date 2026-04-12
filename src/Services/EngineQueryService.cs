@@ -439,15 +439,19 @@ internal sealed class EngineQueryService(
             return false;
         }
 
-        // Get source line for logging.
+        // Get source line — skip the opening brace by advancing to the next line.
         (uint line, string file)? lineInfo = _wrapper.GetLineByOffset(model.Wrapper, offset);
         if (lineInfo != null)
         {
-            // Use GetOffsetByLine for exact line-start address.
-            (ulong lineOffset, bool lineSuccess) = _wrapper.GetOffsetByLine(
-                model.Wrapper, lineInfo.Value.line, lineInfo.Value.file);
-            if (lineSuccess)
-                offset = lineOffset;
+            // The function entry resolves to the opening brace '{'. Advance to the
+            // next line to land on the first statement instead.
+            (ulong nextLineOffset, bool nextLineSuccess) = _wrapper.GetOffsetByLine(
+                model.Wrapper, lineInfo.Value.line + 1, lineInfo.Value.file);
+            if (nextLineSuccess)
+            {
+                offset = nextLineOffset;
+                lineInfo = _wrapper.GetLineByOffset(model.Wrapper, offset);
+            }
         }
 
         if (SetManagedStepBreakpoint(model, offset))
