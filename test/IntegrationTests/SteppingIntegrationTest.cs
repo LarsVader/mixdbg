@@ -282,6 +282,46 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NativeStepOver_WhenAtLastLine_StepsOutToCSharpLine68()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set managed BP at line 65 plus native BP at Calculator::Add line 7.
+        await WhenSettingBreakpoint(_bpFile, "MainWindow.xaml.cs", _addLine);
+        await WhenSettingBreakpoint(_nativeBpFile, "Calculator.cpp", _nativeAddLine);
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Hit managed BP first, continue past it.
+        await WhenWaitingForStoppedEvent(timeout: 60);
+        await WhenSendingContinue();
+
+        // Hit the native breakpoint at line 7 (return a + b; — the last statement).
+        await WhenWaitingForStoppedEvent(timeout: 60);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(1, "breakpoint");
+        ThenStackTraceHasSource(0, "Calculator.cpp");
+        ThenStackTraceStoppedAtLine(0, _nativeAddLine);
+
+        // Step over at the last line — no next line in Calculator::Add, so this
+        // should behave like step-out and land in C# MainWindow.xaml.cs line 68.
+        await WhenSendingNext();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(2, "step");
+        ThenStackTraceHasSource(1, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(1, 68);
+
+        await WhenSendingContinue();
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task StepOutFromNative_WhenInNativeAdd_ReturnsToCSharpLine68()
     {
         GivenMixDbgAndWpfAppExist();

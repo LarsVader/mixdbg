@@ -18,6 +18,7 @@ internal sealed class EngineLifecycleService(
     IManagedBreakpointResolver _bpResolver,
     IProfilerPipeService _profilerPipe,
     IBreakpointService _breakpointService,
+    IEngineQueryService _engineQuery,
     IDbgEngWrapper _wrapper) : IEngineLifecycleService
 {
     public NativeDebuggerModel CreateModel()
@@ -174,6 +175,30 @@ internal sealed class EngineLifecycleService(
         }
         if (DetermineStopReason(model) is string reason)
         {
+            // After a native step, if the IP has no useful source (e.g. closing brace,
+            // same line, sourceless JIT thunk), auto-continue instead of stopping.
+            if (reason == "step" && model.ActiveManagedStep == null
+                && model.StepOriginLocation != null)
+            {
+                StepAutoAction action = CheckStepLanding(model);
+                if (action == StepAutoAction.ReStep)
+                {
+                    _log.LogInfo(_logStore, "Step on same line — re-stepping");
+                    model.Stepping = true;
+                    model.Stopped.Reset();
+                    _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.StepOver);
+                    return true;
+                }
+                if (action == StepAutoAction.StepOut)
+                {
+                    _log.LogInfo(_logStore, "Step on sourceless/brace line — auto-stepping-out");
+                    model.CachedStackTraceResult = null;
+                    _engineQuery.ExecuteStepOutOnEngine(model);
+                    return true;
+                }
+            }
+
+            model.StepOriginLocation = null;
             SendStopDapResponseAndProcessCommands(model, dbgEngWrapperModel, reason);
             return true;
         }
@@ -280,7 +305,73 @@ internal sealed class EngineLifecycleService(
         _log.LogInfo(_logStore,
             $"Managed step complete: removed {model.ActiveManagedStep.TempBreakpointIds.Count} temp BPs");
         model.ActiveManagedStep = null;
+        model.StepOriginLocation = null;
     }
+
+    /// <summary>
+    /// Checks whether the current IP is on a source line that has no useful code —
+    /// e.g. a closing brace, a sourceless JIT thunk, or a frame with no source at all.
+    /// Used to auto-step-out after a native step lands on a trivial line.
+    /// </summary>
+    /// <summary>
+    /// After a native step completes, checks whether the current IP is on a useful
+    /// source line. Returns <see cref="StepAutoAction.None"/> if normal,
+    /// <see cref="StepAutoAction.ReStep"/> if on the same line (no progress),
+    /// or <see cref="StepAutoAction.StepOut"/> if on a closing brace or sourceless frame.
+    /// </summary>
+    private StepAutoAction CheckStepLanding(NativeDebuggerModel model)
+    {
+        NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 1);
+        if (frames.Length == 0)
+            return StepAutoAction.None;
+
+        ulong ip = frames[0].InstructionOffset;
+        (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(model.Wrapper, ip);
+
+        // No source at all — sourceless (JIT thunk, etc.).
+        if (lineInfo == null || lineInfo.Value.Line == 0)
+        {
+            _log.LogInfo(_logStore, $"CheckStepLanding: ip=0x{ip:X} no source → StepOut");
+            return StepAutoAction.StepOut;
+        }
+
+        string file = lineInfo.Value.File;
+        int line = (int)lineInfo.Value.Line;
+
+        // Same source line as before the step — no progress (e.g. multi-instruction
+        // statement like "return a + b;"). Re-step to continue advancing.
+        if (model.StepOriginLocation is var (origFile, origLine)
+            && origLine == line
+            && string.Equals(origFile, file, StringComparison.OrdinalIgnoreCase))
+        {
+            _log.LogInfo(_logStore, $"CheckStepLanding: same line {line} → ReStep");
+            return StepAutoAction.ReStep;
+        }
+
+        // Check if this is a closing brace — no meaningful code, step out.
+        try
+        {
+            if (File.Exists(file))
+            {
+                string[] lines = File.ReadAllLines(file);
+                int lineIndex = line - 1;
+                if (lineIndex >= 0 && lineIndex < lines.Length)
+                {
+                    string trimmed = lines[lineIndex].Trim();
+                    if (trimmed == "}" || trimmed == "};")
+                    {
+                        _log.LogInfo(_logStore, $"CheckStepLanding: closing brace at {file}:{line} → StepOut");
+                        return StepAutoAction.StepOut;
+                    }
+                }
+            }
+        }
+        catch { }
+
+        return StepAutoAction.None;
+    }
+
+    private enum StepAutoAction { None, ReStep, StepOut }
 
     private void AttachOrCreateProcess(NativeDebuggerModel model)
     {

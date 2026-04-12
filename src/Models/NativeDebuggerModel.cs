@@ -139,6 +139,10 @@ public sealed class NativeDebuggerModel : IDisposable
     // Checked by ProcessCommandsUntilResume to send the stopped event without exiting.
     internal volatile bool ManagedStepIntoCompleted;
 
+    // Tracks the source file and line before a step operation, so the event loop
+    // can detect "no progress" (same line) or "closing brace" stops and auto-step-out.
+    internal (string File, int Line)? StepOriginLocation;
+
     // Stack trace cache — DAP-level result, invalidated on continue/step.
     internal StackFrame[]? CachedStackTraceResult { get; set; }
 

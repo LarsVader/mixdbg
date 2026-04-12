@@ -1290,6 +1290,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     private readonly IDbgEngWrapper _wrapper = Substitute.For<IDbgEngWrapper>();
     private readonly IProfilerPipeService _profilerPipe = Substitute.For<IProfilerPipeService>();
     private readonly IBreakpointService _breakpointService = Substitute.For<IBreakpointService>();
+    private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
     private readonly DapServerModel _transport;
     private readonly LogStore _logStore;
     private readonly NativeDebuggerModel _model;
@@ -1307,7 +1308,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         _testee = new EngineLifecycleService(
             _server, _transport, _log, _logStore,
             _managedDebugger, _bpResolver, _profilerPipe,
-            _breakpointService, _wrapper);
+            _breakpointService, _engineQuery, _wrapper);
         _model = new NativeDebuggerModel
         {
             Wrapper = new DbgEngWrapperModel(),

@@ -254,7 +254,17 @@ internal sealed class EngineQueryService(
         }
 
         // Native step — rehook and use dbgeng directly.
+        // Record the current source location so the event loop can detect "no progress."
         _ = (model.ProfilerRehookEvent?.Set());
+        NativeStackFrame[] nativeFrames = _wrapper.GetStackTrace(model.Wrapper, 1);
+        if (nativeFrames.Length > 0)
+        {
+            (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(
+                model.Wrapper, nativeFrames[0].InstructionOffset);
+            model.StepOriginLocation = lineInfo != null
+                ? (lineInfo.Value.File, (int)lineInfo.Value.Line)
+                : null;
+        }
         _wrapper.SetExecutionStatus(model.Wrapper, stepKind);
     }
 
