@@ -81,7 +81,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTrace();
         ThenStoppedWithReason(3, "step");
         // Must NOT land on line 68 of MainWindow.xaml.cs (that's step-over, not step-into).
-        // Should land in ManagedCalculator.h or Calculator.cpp (the called method chain).
+        // Should land in ManagedCalculator.h (C++/CLI) or Calculator.cpp (native).
         ThenStackTraceHasSourceOneOf(0, "ManagedCalculator.h", "Calculator.cpp");
 
         await WhenSendingContinue();

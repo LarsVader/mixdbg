@@ -372,8 +372,8 @@ internal sealed class EngineQueryService(
             // 2b. Try dbgeng symbol resolution (for C++/CLI ahead-of-time compiled methods).
             if (!haveBp)
             {
-                _log.LogInfo(_logStore, "Managed step-into: JitMap miss, trying dbgeng symbols");
-                haveBp = TrySetStepIntoBpFromDbgEngSymbols(model, callTarget.Value);
+                _log.LogInfo(_logStore, "Managed step-into: JitMap miss, trying profiler WATCH");
+                haveBp = TrySetStepIntoBpViaProfiler(model, callTarget.Value);
             }
         }
 
@@ -404,57 +404,119 @@ internal sealed class EngineQueryService(
     }
 
     /// <summary>
-    /// Resolves the call target via dbgeng symbol lookup (for C++/CLI ahead-of-time compiled
-    /// methods that have Windows PDB symbols but don't appear in the JIT method map).
-    /// Tries several symbol name formats since C++/CLI naming varies.
+    /// For C++/CLI call targets not in JitMethodMap: sends a WATCH command to the
+    /// profiler and adds a temporary deferred BP so <c>HandleEnterBreakpoint</c>
+    /// sets a transient hardware BP when the ENTER hook fires.
     /// </summary>
-    private bool TrySetStepIntoBpFromDbgEngSymbols(NativeDebuggerModel model,
+    private bool TrySetStepIntoBpViaProfiler(NativeDebuggerModel model,
         (int TargetToken, string? TargetAssembly, string? TargetMethodName) callTarget)
     {
-        _log.LogInfo(_logStore,
-            $"Managed step-into dbgeng: name={callTarget.TargetMethodName} asm={callTarget.TargetAssembly}");
         if (callTarget.TargetMethodName == null || callTarget.TargetAssembly == null)
             return false;
 
-        // Convert .NET name "CliWrapper.ManagedCalculator.Add" to possible dbgeng symbol formats.
-        // C++/CLI method names in dbgeng: "CliWrapper!CliWrapper::ManagedCalculator::Add"
-        string dotnetName = callTarget.TargetMethodName; // e.g. "CliWrapper.ManagedCalculator.Add"
-        string moduleName = callTarget.TargetAssembly;   // e.g. "CliWrapper"
-
-        // Try: module!Type::Method (replace dots with :: after stripping module prefix).
-        string cppName = dotnetName;
-        // Strip the namespace prefix if it matches the module name.
-        if (cppName.StartsWith($"{moduleName}.", StringComparison.OrdinalIgnoreCase))
-            cppName = cppName[($"{moduleName}.").Length..];
-        cppName = cppName.Replace(".", "::");
-
-        string[] symbolCandidates =
-        [
-            $"{moduleName}!{cppName}",
-            $"{moduleName}!{moduleName}::{cppName}",
-            $"{moduleName}!{dotnetName.Replace(".", "::")}",
-        ];
-
-        // Use deferred breakpoint (bu) which handles C++/CLI thunks correctly.
-        // dbgeng resolves the symbol to the actual entry point when execution reaches it.
-        // Resolve symbol to native address, then set hardware BP.
-        foreach (string symbol in symbolCandidates)
+        // Find the target assembly DLL path.
+        string? targetAsmPath = _managedDebugger.FindAssemblyPath(model, callTarget.TargetAssembly);
+        if (targetAsmPath == null)
         {
-            (ulong offset, bool success) = _wrapper.GetOffsetByName(model.Wrapper, symbol);
             _log.LogInfo(_logStore,
-                $"Managed step-into: GetOffsetByName('{symbol}') -> 0x{offset:X} success={success}");
+                $"Managed step-into: no assembly path for {callTarget.TargetAssembly}");
+            return false;
+        }
+
+        // Extract type and method names: "CliWrapper.ManagedCalculator.Add" → type=ManagedCalculator, method=Add.
+        string fullName = callTarget.TargetMethodName;
+        int lastDot = fullName.LastIndexOf('.');
+        if (lastDot < 0)
+            return false;
+        string methodName = fullName[(lastDot + 1)..];
+        string remaining = fullName[..lastDot];
+        int secondLastDot = remaining.LastIndexOf('.');
+        string typeName = secondLastDot >= 0 ? remaining[(secondLastDot + 1)..] : remaining;
+
+        // Find the MethodDef token in the target assembly's PE.
+        int? targetToken = _pdbMapper.FindMethodToken(targetAsmPath, typeName, methodName);
+        if (targetToken == null)
+        {
+            _log.LogInfo(_logStore,
+                $"Managed step-into: FindMethodToken({typeName}.{methodName}) not found in {callTarget.TargetAssembly}");
+            return false;
+        }
+
+        _log.LogInfo(_logStore,
+            $"Managed step-into: resolved {typeName}.{methodName} -> token 0x{targetToken.Value:X8} in {callTarget.TargetAssembly}");
+
+        // Get source file and line for the deferred BP record.
+        // For C++/CLI: portable PDB won't have data; use dbgeng symbol resolution instead.
+        string filePath = targetAsmPath;
+        int line = 1;
+        int ilOffset = 0;
+
+        (int ILOffset, string File, int Line)[] seqPoints =
+            _pdbMapper.GetMethodSequencePoints(targetAsmPath, targetToken.Value);
+        if (seqPoints.Length > 0)
+        {
+            filePath = seqPoints[0].File;
+            line = seqPoints[0].Line;
+            ilOffset = seqPoints[0].ILOffset;
+        }
+        else
+        {
+            // C++/CLI fallback: resolve via dbgeng native PDB symbols.
+            string cppName = $"{callTarget.TargetAssembly}!{callTarget.TargetAssembly}::{typeName}::{methodName}";
+            (ulong offset, bool success) = _wrapper.GetOffsetByName(model.Wrapper, cppName);
             if (success && offset != 0)
             {
-                if (SetManagedStepBreakpoint(model, offset))
+                (uint dbgLine, string dbgFile)? lineInfo = _wrapper.GetLineByOffset(model.Wrapper, offset);
+                if (lineInfo != null)
                 {
+                    filePath = lineInfo.Value.dbgFile;
+                    line = (int)lineInfo.Value.dbgLine;
                     _log.LogInfo(_logStore,
-                        $"Managed step-into: target BP at 0x{offset:X} via {symbol}");
-                    return true;
+                        $"Managed step-into: dbgeng resolved source -> {filePath}:{line}");
                 }
+
+                // Store the native address → source mapping so the managed frame resolver
+                // can use it for C++/CLI stack frames (same as ManagedBreakpointSources).
+                model.ManagedBreakpointSources[offset] = (filePath, line);
             }
         }
 
-        return false;
+        // Add temporary deferred BP so HandleEnterBreakpoint matches the ENTER notification.
+        model.DeferredManagedBreakpoints.Add(new DeferredManagedBreakpoint(
+            filePath, line, targetToken.Value, ilOffset,
+            BpId: -1, // Step-into — no DAP breakpoint ID.
+            AssemblyName: callTarget.TargetAssembly,
+            IsCliMethod: true));
+
+        // Send WATCH command to the profiler so it enables ENTER hooks for this method.
+        string watchLine = $"WATCH:{callTarget.TargetAssembly}:{targetToken.Value:X8}";
+        StreamWriter? writer = model.ProfilerCmdPipeWriter;
+        if (writer != null)
+        {
+            try
+            {
+                writer.WriteLine(watchLine);
+                _log.LogInfo(_logStore, $"Managed step-into: sent {watchLine}");
+            }
+            catch (Exception ex)
+            {
+                _log.LogInfo(_logStore, $"Managed step-into: WATCH send failed: {ex.Message}");
+                return false;
+            }
+        }
+        else
+        {
+            _log.LogInfo(_logStore, $"Managed step-into: profiler pipe not connected");
+            return false;
+        }
+
+        // Signal rehook so the profiler re-enables ENTER hooks.
+        _ = (model.ProfilerRehookEvent?.Set());
+        model.ProfilerHooksActive = true;
+
+        _log.LogInfo(_logStore,
+            $"Managed step-into: WATCH sent, deferred BP added for {callTarget.TargetAssembly}:0x{targetToken.Value:X8}");
+        return true;
     }
 
     /// <summary>

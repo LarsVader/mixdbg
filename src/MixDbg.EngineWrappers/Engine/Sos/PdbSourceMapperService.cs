@@ -262,6 +262,34 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     }
 
     /// <summary>
+    /// Finds a MethodDef token by matching type and method name in PE metadata.
+    /// </summary>
+    public int? FindMethodToken(string assemblyPath, string typeName, string methodName)
+    {
+        (PEReader Pe, MetadataReader Reader)? peInfo = GetOrLoadPeReader(assemblyPath);
+        if (peInfo == null)
+            return null;
+
+        MetadataReader reader = peInfo.Value.Reader;
+        try
+        {
+            foreach (MethodDefinitionHandle handle in reader.MethodDefinitions)
+            {
+                MethodDefinition method = reader.GetMethodDefinition(handle);
+                if (!reader.GetString(method.Name).Equals(methodName, StringComparison.Ordinal))
+                    continue;
+
+                TypeDefinition type = reader.GetTypeDefinition(method.GetDeclaringType());
+                if (reader.GetString(type.Name).Equals(typeName, StringComparison.Ordinal))
+                    return MetadataTokens.GetToken(handle);
+            }
+        }
+        catch { }
+
+        return null;
+    }
+
+    /// <summary>
     /// Scans IL bytecodes starting from the given offset for the first call/callvirt
     /// instruction. Returns the target method token and resolved name info.
     /// </summary>
