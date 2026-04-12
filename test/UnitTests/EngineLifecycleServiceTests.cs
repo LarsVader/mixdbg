@@ -440,6 +440,50 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         ThenStoppedEventWasSentWithReason("step");
     }
 
+    // ── DetermineStopReason with ActiveManagedStep ────────
+
+    [Fact]
+    public void EngineLoopStep_WhenActiveManagedStepAndTempBpHit_ReportsStep()
+    {
+        GivenWrapperCreateModelReturns();
+        GivenConfigDone();
+        GivenWaitForEventSucceedsThenTerminates();
+        GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
+        GivenHandleEnterBreakpointReturns(false);
+        GivenActiveManagedStep(tempBpIds: [42]);
+        GivenHitUserBreakpointWithBpId(42);
+        GivenGetCurrentThreadIdReturns(1);
+        GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
+
+        WhenStartingEngineThread();
+        WhenWaitingForEngineReady();
+        WhenQueuingCommand(() => { });
+        WhenWaitingForEngineThreadToExit();
+
+        ThenStoppedEventWasSentWithReason("step");
+    }
+
+    [Fact]
+    public void EngineLoopStep_WhenActiveManagedStepAndRealBpHit_ReportsBreakpoint()
+    {
+        GivenWrapperCreateModelReturns();
+        GivenConfigDone();
+        GivenWaitForEventSucceedsThenTerminates();
+        GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
+        GivenHandleEnterBreakpointReturns(false);
+        GivenActiveManagedStep(tempBpIds: [42]);
+        GivenHitUserBreakpointWithBpId(99); // Not a temp BP.
+        GivenGetCurrentThreadIdReturns(1);
+        GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
+
+        WhenStartingEngineThread();
+        WhenWaitingForEngineReady();
+        WhenQueuingCommand(() => { });
+        WhenWaitingForEngineThreadToExit();
+
+        ThenStoppedEventWasSentWithReason("breakpoint");
+    }
+
     // ── AttachOrCreateProcess ──────────────────────────────
 
     [Fact]
@@ -1039,6 +1083,22 @@ public sealed class EngineLifecycleServiceTests : IDisposable
 
     private void GivenPauseRequested() => _model.PauseRequested = true;
 
+    private void GivenActiveManagedStep(uint[] tempBpIds)
+    {
+        _model.ActiveManagedStep = new ManagedStepState();
+        foreach (uint id in tempBpIds)
+        {
+            _model.ActiveManagedStep.TempBreakpointIds.Add(id);
+            _ = _model.UserBreakpointIds.Add(id);
+        }
+    }
+
+    private void GivenHitUserBreakpointWithBpId(uint bpId)
+    {
+        _model.HitUserBreakpoint = true;
+        _model.LastHitBpId = bpId;
+    }
+
     private void GivenNoStopReason()
     {
         _model.HitUserBreakpoint = false;
@@ -1230,6 +1290,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     private readonly IDbgEngWrapper _wrapper = Substitute.For<IDbgEngWrapper>();
     private readonly IProfilerPipeService _profilerPipe = Substitute.For<IProfilerPipeService>();
     private readonly IBreakpointService _breakpointService = Substitute.For<IBreakpointService>();
+    private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
     private readonly DapServerModel _transport;
     private readonly LogStore _logStore;
     private readonly NativeDebuggerModel _model;
@@ -1247,7 +1308,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         _testee = new EngineLifecycleService(
             _server, _transport, _log, _logStore,
             _managedDebugger, _bpResolver, _profilerPipe,
-            _breakpointService, _wrapper);
+            _breakpointService, _engineQuery, _wrapper);
         _model = new NativeDebuggerModel
         {
             Wrapper = new DbgEngWrapperModel(),

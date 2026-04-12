@@ -47,6 +47,9 @@ public interface IDbgEngWrapper
     /// <summary>Gets the function name and displacement for a native address.</summary>
     (string Name, ulong Displacement)? GetNameByOffset(DbgEngWrapperModel model, ulong offset);
 
+    /// <summary>Resolves a symbol name (e.g. "module!Namespace.Type::Method") to a native address.</summary>
+    (ulong Offset, bool Success) GetOffsetByName(DbgEngWrapperModel model, string symbol);
+
     /// <summary>Gets the source file and line number for a native address.</summary>
     (uint Line, string File)? GetLineByOffset(DbgEngWrapperModel model, ulong offset);
 

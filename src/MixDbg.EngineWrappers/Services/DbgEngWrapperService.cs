@@ -88,6 +88,12 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         return (offset, hr >= 0);
     }
 
+    public (ulong Offset, bool Success) GetOffsetByName(DbgEngWrapperModel model, string symbol)
+    {
+        int hr = model.Symbols.GetOffsetByName(symbol, out ulong offset);
+        return (offset, hr >= 0);
+    }
+
     public (string Name, ulong Displacement)? GetNameByOffset(DbgEngWrapperModel model, ulong offset)
     {
         IntPtr buf = Marshal.AllocHGlobal(512);

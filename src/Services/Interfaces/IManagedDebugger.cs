@@ -55,4 +55,10 @@ public interface IManagedDebugger
     /// Returns a managed variablesReference handle, or 0 on failure.
     /// </summary>
     int TryGetManagedLocals(NativeDebuggerModel model, ulong instructionPointer);
+
+    /// <summary>
+    /// Finds the assembly DLL path by matching the assembly name against loaded ICorDebug
+    /// modules. Used by managed stepping to locate PDBs for sequence point resolution.
+    /// </summary>
+    string? FindAssemblyPath(NativeDebuggerModel model, string assemblyName);
 }

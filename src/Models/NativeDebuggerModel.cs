@@ -132,6 +132,17 @@ public sealed class NativeDebuggerModel : IDisposable
     /// </summary>
     internal SortedList<ulong, JitMethodInfo> JitMethodMap { get; } = [];
 
+    // Managed step state — tracks active managed step operation with temp BPs.
+    internal ManagedStepState? ActiveManagedStep;
+
+    // Set by managed step-into when the tight loop completes inside ProcessCommandsUntilResume.
+    // Checked by ProcessCommandsUntilResume to send the stopped event without exiting.
+    internal volatile bool ManagedStepIntoCompleted;
+
+    // Tracks the source file and line before a step operation, so the event loop
+    // can detect "no progress" (same line) or "closing brace" stops and auto-step-out.
+    internal (string File, int Line)? StepOriginLocation;
+
     // Stack trace cache — DAP-level result, invalidated on continue/step.
     internal StackFrame[]? CachedStackTraceResult { get; set; }
 
@@ -247,3 +258,15 @@ internal sealed class JitMethodMapping
 /// instruction pointer to a managed method name and source location via PDB lookup.
 /// </summary>
 internal record JitMethodInfo(int MethodToken, ulong StartAddress, uint CodeSize, string AssemblyName);
+
+/// <summary>
+/// Tracks an active managed step operation. The temp breakpoints are removed
+/// when the step completes or is cancelled (by continue or a new step).
+/// </summary>
+internal sealed class ManagedStepState
+{
+    /// <summary>
+    /// dbgeng breakpoint IDs of temporary hardware BPs set for this step.
+    /// </summary>
+    public List<uint> TempBreakpointIds { get; } = [];
+}

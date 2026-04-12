@@ -51,7 +51,7 @@ src/
         UnmanagedCallbackHandler.cs # Internal: ICorDebug unmanaged callback wrapper
         RuntimeLibraryProvider.cs # Internal: finds mscordbi.dll next to coreclr.dll
       Sos/
-        PdbSourceMapperService.cs # Internal: reads portable PDBs, implements IPdbSourceMapper (singleton)
+        PdbSourceMapperService.cs # Internal: reads portable PDBs, implements IPdbSourceMapper (singleton) — GetMethodSequencePoints, GetCallTargetAtOffset, FindMethodToken
         SosOutputParser.cs       # Internal: parses SOS command output (unused)
     Models/
       DbgEngWrapperModel.cs      # Public: dbgeng COM wrapper state (COM refs internal), engine events
@@ -70,10 +70,10 @@ src/
       DbgEngWrapperService.cs    # Internal: implements IDbgEngWrapper
       CorDebugWrapperService.cs  # Internal: implements ICorDebugWrapper (thin COM wrapper)
       Interfaces/
-        IDbgEngWrapper.cs        # Public: stateless dbgeng COM wrapper interface
+        IDbgEngWrapper.cs        # Public: stateless dbgeng COM wrapper interface — includes GetOffsetByName
         ICorDebugWrapper.cs      # Public: stateless ICorDebug V4 wrapper interface
         ILoggingService.cs       # Public: logging interface
-        IPdbSourceMapper.cs      # Public: PDB source resolution interface
+        IPdbSourceMapper.cs      # Public: PDB source resolution interface — GetMethodSequencePoints, GetCallTargetAtOffset, FindMethodToken
     ServiceCollectionExtensions.cs # AddEngineWrappers() — registers all engine services
   Program.cs                     # Entry point — DI composition root
   ServiceCollectionExtensions.cs # AddMixDbgCore() — registers DAP + orchestration services
@@ -89,7 +89,7 @@ src/
       Events/                    # StoppedEventBody, OutputEventBody, BreakpointEventBody, Terminated/InitializedEventBody
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
-    NativeDebuggerModel.cs       # Engine state: DbgEngWrapperModel + CorDebugWrapperModel refs, threads, flags, breakpoint tracking
+    NativeDebuggerModel.cs       # Engine state: DbgEngWrapperModel + CorDebugWrapperModel refs, threads, flags, breakpoint tracking, ManagedStepState + ActiveManagedStep + ManagedStepIntoCompleted
   Services/
     Interfaces/
       IDapServer.cs              # Stateless DAP transport — all methods take DapServerModel
@@ -130,7 +130,8 @@ profiler/
   Makefile                           # Build shortcut (make all)
 test/
   UnitTests/                         # xUnit + NSubstitute unit tests
-  IntegrationTests/                  # End-to-end tests against TestApp
+  IntegrationTests/                  # End-to-end tests against TestApp (xunit.runner.json disables parallel execution)
+    SteppingIntegrationTest.cs       # M6: cross-boundary stepping integration tests
   TestApp/                           # Mixed-mode WPF integration test target
   TestApp.sln                        # Solution: NativeLib + CliWrapper + WpfApp
   Makefile                           # Build via MSBuild (make all)
@@ -260,7 +261,7 @@ C# uses exact token watches (`MIXDBG_WATCH_TOKENS`); C++/CLI uses assembly-level
 
 **Launch args:** DAP `launch` request `args` field is threaded through to `CreateProcess` command line.
 
-### M5: Managed Variable Inspection via SOS/dbgeng — IN PROGRESS
+### M5: Managed Variable Inspection via SOS/dbgeng — DONE
 
 When stopped at a C# stack frame, selecting it shows locals/args with names, types, and values. Variable names come from portable PDB local scope tables (`IPdbSourceMapper.GetLocalVariableNames`) and PE parameter metadata (`GetParameterNames`).
 
@@ -272,7 +273,31 @@ When stopped at a C# stack frame, selecting it shows locals/args with names, typ
 
 **Clear on continue/step**: `ClearManagedVariables` called alongside `ClearVariables` in all execution paths.
 
-### M6: Stepping Across Boundaries — TODO
+### M6: Stepping Across Boundaries — DONE
+
+Stepping DAP handlers (`next`, `stepIn`, `stepOut`) work across native/managed/cross-boundary frames. Native frames use dbgeng's built-in stepping; managed frames convert step operations into "set temporary hardware BP at target native address, then Go" using the existing JitMethodMap + IL-to-native mapping + `ba e1` infrastructure. Smart step-out logic skips sourceless frames (C++/CLI thunks, JIT helpers) and advances past call sites to the next source line.
+
+**Step-over:** `GetMethodSequencePoints` returns non-hidden sequence points for the method. Next sequence point after current IL offset → temp HW BP at its native address. If no next point (end of method) or no sequence points (C++/CLI), uses `FindStepOutTarget` to skip to the caller's next source line. For native step-over, the event loop auto-re-steps if still on the same line, and auto-steps-out on closing braces or sourceless lines (`CheckStepLanding`).
+
+**Step-out:** `FindStepOutTarget` walks the stack from frame[1] upward, skipping frames without resolvable source (C++/CLI thunks checked via `GetLineByOffset`, managed frames with no portable PDB sequence points). Targets the first ancestor with source and advances past the call site line. Stepping out from `Calculator.cpp:7` skips the C++/CLI wrapper and lands on `MainWindow.xaml.cs:68`.
+
+**Step-into:** Parses IL bytecode at the current offset to identify the call target:
+- **C# to C# calls**: `GetCallTargetAtOffset` scans IL for `call`/`callvirt` opcodes, resolves target via `FindMethodToken` + `JitMethodMap`, sets temp BP at first source line.
+- **C# to C++/CLI calls**: Profiler `WATCH` command + `ENTER` hook + transient BP (reuses M4 infrastructure).
+- **C++/CLI to native calls**: `GetOffsetByName` resolves symbol names to native addresses. BP lands on first statement (skips opening brace via `GetOffsetByLine(line+1)`).
+- **Fallback**: Temp BP at next source line (step-over behavior).
+
+**Key implementation details:**
+- `ManagedStepState` on `NativeDebuggerModel.ActiveManagedStep` tracks temp BP IDs during managed steps.
+- `StepOriginLocation` on `NativeDebuggerModel` records source file:line before native steps for same-line detection.
+- `FindStepOutTarget` walks stack, skips sourceless frames, advances past call sites via PDB sequence points.
+- `CheckStepLanding` in `EngineLifecycleService` detects same-line (re-step), closing brace (step-out), or sourceless (step-out) after native steps.
+- `DetermineStopReason` handles `ActiveManagedStep` temp BPs (returns `"step"`) and step-into deferred BPs (BpId=-1 marker).
+- `ProcessCommandsUntilResume` detects step-into completion via `ManagedStepIntoCompleted` volatile flag.
+- `IsInfrastructureSource` filters profiler, coreclr, Windows Kits, VC CRT, and non-existent paths.
+- `xunit.runner.json` disables parallel execution for integration tests.
+- 10 integration tests cover step-over/into/out across C#, C++/CLI, and native boundaries.
+
 ### M7: Polish + Integration — TODO
 
 See README.md for full milestone descriptions.

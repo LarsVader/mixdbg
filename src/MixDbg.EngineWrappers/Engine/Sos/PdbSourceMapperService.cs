@@ -221,6 +221,217 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     }
 
     /// <summary>
+    /// Returns all non-hidden sequence points for a method, sorted by IL offset.
+    /// </summary>
+    public (int ILOffset, string File, int Line)[] GetMethodSequencePoints(string assemblyPath, int methodToken)
+    {
+        MetadataReader? reader = GetOrLoadReader(assemblyPath);
+        if (reader == null)
+            return [];
+
+        MethodDefinitionHandle handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+        if (handle.IsNil)
+            return [];
+
+        MethodDebugInformation debugInfo;
+        try
+        {
+            debugInfo = reader.GetMethodDebugInformation(handle.ToDebugInformationHandle());
+        }
+        catch
+        {
+            return [];
+        }
+
+        if (debugInfo.SequencePointsBlob.IsNil)
+            return [];
+
+        List<(int ILOffset, string File, int Line)> result = [];
+        foreach (SequencePoint sp in debugInfo.GetSequencePoints())
+        {
+            if (sp.IsHidden)
+                continue;
+
+            string file = reader.GetString(reader.GetDocument(sp.Document).Name);
+            result.Add((sp.Offset, file, sp.StartLine));
+        }
+
+        // Sort by IL offset (usually already sorted, but be safe).
+        result.Sort((a, b) => a.ILOffset.CompareTo(b.ILOffset));
+        return [.. result];
+    }
+
+    /// <summary>
+    /// Finds a MethodDef token by matching type and method name in PE metadata.
+    /// </summary>
+    public int? FindMethodToken(string assemblyPath, string typeName, string methodName)
+    {
+        (PEReader Pe, MetadataReader Reader)? peInfo = GetOrLoadPeReader(assemblyPath);
+        if (peInfo == null)
+            return null;
+
+        MetadataReader reader = peInfo.Value.Reader;
+        try
+        {
+            foreach (MethodDefinitionHandle handle in reader.MethodDefinitions)
+            {
+                MethodDefinition method = reader.GetMethodDefinition(handle);
+                if (!reader.GetString(method.Name).Equals(methodName, StringComparison.Ordinal))
+                    continue;
+
+                TypeDefinition type = reader.GetTypeDefinition(method.GetDeclaringType());
+                if (reader.GetString(type.Name).Equals(typeName, StringComparison.Ordinal))
+                    return MetadataTokens.GetToken(handle);
+            }
+        }
+        catch { }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Scans IL bytecodes starting from the given offset for the first call/callvirt
+    /// instruction. Returns the target method token and resolved name info.
+    /// </summary>
+    public (int TargetToken, string? TargetAssembly, string? TargetMethodName)? GetCallTargetAtOffset(
+        string assemblyPath, int methodToken, int ilOffset)
+    {
+        (PEReader Pe, MetadataReader Reader)? peInfo = GetOrLoadPeReader(assemblyPath);
+        if (peInfo == null)
+            return null;
+
+        PEReader pe = peInfo.Value.Pe;
+        MetadataReader reader = peInfo.Value.Reader;
+
+        try
+        {
+            MethodDefinitionHandle handle = MetadataTokens.MethodDefinitionHandle(methodToken);
+            MethodDefinition method = reader.GetMethodDefinition(handle);
+            if (method.RelativeVirtualAddress == 0)
+                return null;
+
+            MethodBodyBlock body = pe.GetMethodBody(method.RelativeVirtualAddress);
+            byte[] il = body.GetILBytes() ?? [];
+            if (il.Length == 0)
+                return null;
+
+            // Scan from ilOffset for call (0x28) or callvirt (0x6F) opcodes.
+            // Limit scan to ~100 bytes (one statement's worth of IL).
+            int limit = Math.Min(il.Length, ilOffset + 100);
+            int pos = ilOffset;
+            while (pos < limit)
+            {
+                byte op = il[pos];
+
+                // Two-byte opcode prefix (0xFE).
+                if (op == 0xFE)
+                {
+                    pos += 2; // Skip prefix + opcode.
+                    // Most 0xFE opcodes have 0 or variable operands; skip conservatively.
+                    continue;
+                }
+
+                // call (0x28) or callvirt (0x6F) — 4-byte token operand.
+                if ((op == 0x28 || op == 0x6F) && pos + 4 < il.Length)
+                {
+                    int targetToken = il[pos + 1]
+                        | (il[pos + 2] << 8)
+                        | (il[pos + 3] << 16)
+                        | (il[pos + 4] << 24);
+
+                    return ResolveCallTarget(reader, targetToken);
+                }
+
+                // Skip instruction based on opcode operand size.
+                pos += GetILInstructionSize(op);
+            }
+        }
+        catch
+        {
+            // IL parsing failed — return null.
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves a call target token (MethodDef or MemberRef) to a token, assembly name,
+    /// and method name.
+    /// </summary>
+    private static (int TargetToken, string? TargetAssembly, string? TargetMethodName)? ResolveCallTarget(
+        MetadataReader reader, int targetToken)
+    {
+        EntityHandle handle = MetadataTokens.EntityHandle(targetToken);
+
+        if (handle.Kind == HandleKind.MethodDefinition)
+        {
+            // Same-assembly call — return the token directly.
+            MethodDefinition targetMethod = reader.GetMethodDefinition((MethodDefinitionHandle)handle);
+            string methodName = reader.GetString(targetMethod.Name);
+            TypeDefinition type = reader.GetTypeDefinition(targetMethod.GetDeclaringType());
+            string typeName = reader.GetString(type.Name);
+            string ns = reader.GetString(type.Namespace);
+            string fullName = string.IsNullOrEmpty(ns) ? $"{typeName}.{methodName}" : $"{ns}.{typeName}.{methodName}";
+            return (targetToken, null, fullName);
+        }
+
+        if (handle.Kind == HandleKind.MemberReference)
+        {
+            // Cross-assembly call — resolve to type name + method name.
+            MemberReference memberRef = reader.GetMemberReference((MemberReferenceHandle)handle);
+            string methodName = reader.GetString(memberRef.Name);
+            EntityHandle parent = memberRef.Parent;
+
+            string? typeName = null;
+            string? assemblyName = null;
+            if (parent.Kind == HandleKind.TypeReference)
+            {
+                TypeReference typeRef = reader.GetTypeReference((TypeReferenceHandle)parent);
+                typeName = reader.GetString(typeRef.Name);
+                string ns = reader.GetString(typeRef.Namespace);
+                if (!string.IsNullOrEmpty(ns))
+                    typeName = $"{ns}.{typeName}";
+
+                // Resolve the assembly name from the scope.
+                EntityHandle scope = typeRef.ResolutionScope;
+                if (scope.Kind == HandleKind.AssemblyReference)
+                {
+                    AssemblyReference asmRef = reader.GetAssemblyReference((AssemblyReferenceHandle)scope);
+                    assemblyName = reader.GetString(asmRef.Name);
+                }
+            }
+
+            string fullName = typeName != null ? $"{typeName}.{methodName}" : methodName;
+            return (targetToken, assemblyName, fullName);
+        }
+
+        return (targetToken, null, null);
+    }
+
+    /// <summary>
+    /// Returns the total size (opcode + operand) of a single-byte IL opcode.
+    /// </summary>
+    private static int GetILInstructionSize(byte opcode) => opcode switch
+    {
+        // 4-byte operand: br, br.s variants use different opcodes.
+        0x28 or 0x6F or 0x73 or 0x27 or 0x20 or 0x38 or 0x39 or 0x3A or 0x3B
+            or 0x3C or 0x3D or 0x3E or 0x3F or 0x40 or 0x41 or 0x44 or 0x70
+            or 0x71 or 0x72 or 0x74 or 0x75 or 0x79 or 0x7B or 0x7C or 0x7D
+            or 0x7E or 0x7F or 0x80 or 0x81 or 0x8C or 0x8D or 0xA3 or 0xA4
+            or 0xA5 or 0xD0 or 0xDD => 5,
+        // 1-byte operand (short branch, ldarg.s, etc.).
+        0x0E or 0x0F or 0x10 or 0x11 or 0x12 or 0x13 or 0x1F or 0x2B
+            or 0x2C or 0x2D or 0x2E or 0x2F or 0x30 or 0x31 or 0x32 or 0x33
+            or 0x34 or 0x35 or 0x36 or 0x37 or 0xDE => 2,
+        // 8-byte operand (ldc.r8, ldc.i8).
+        0x23 or 0x21 => 9,
+        // switch: 4-byte count + 4*count targets — handled conservatively.
+        0x45 => 5, // Minimum: switch with 0 targets (unlikely but safe).
+        // All other single-byte opcodes have no operand.
+        _ => 1,
+    };
+
+    /// <summary>
     /// Reads the portable PDB's local scope table and returns (name, slot index) pairs
     /// for local variables in scope at the given IL offset.
     /// </summary>

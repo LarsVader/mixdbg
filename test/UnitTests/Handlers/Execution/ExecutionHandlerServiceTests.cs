@@ -98,6 +98,27 @@ public sealed class StepOutRequestHandlerServiceTests
         Assert.Equal(SessionState.Running, _session.State);
     }
 
+    [Fact]
+    public void Execute_WhenEngineExists_SetsSteppingTrue()
+    {
+        _session.Engine = _engineModel;
+
+        _testee.ExecuteInternal(new StepArguments());
+
+        Assert.True(_engineModel.Stepping);
+    }
+
+    [Fact]
+    public void Execute_WhenEngineExists_ClearsCachedStackTrace()
+    {
+        _session.Engine = _engineModel;
+        _engineModel.CachedStackTraceResult = [new MixDbg.Models.DapMessages.Inspection.StackFrame { Id = 1 }];
+
+        _testee.ExecuteInternal(new StepArguments());
+
+        Assert.Null(_engineModel.CachedStackTraceResult);
+    }
+
     private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
     private readonly DebugSessionModel _session = new();
     private readonly NativeDebuggerModel _engineModel = new();

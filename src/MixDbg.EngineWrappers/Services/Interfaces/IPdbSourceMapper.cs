@@ -52,4 +52,28 @@ public interface IPdbSourceMapper
     /// Decodes the local variable signature to return type names in slot order.
     /// </summary>
     string[] GetLocalVariableTypes(string assemblyPath, int methodToken);
+
+    /// <summary>
+    /// Returns all non-hidden sequence points for a method, sorted by IL offset.
+    /// Each entry contains the IL offset, source file path, and line number.
+    /// Used for managed stepping to find the next source line.
+    /// </summary>
+    (int ILOffset, string File, int Line)[] GetMethodSequencePoints(string assemblyPath, int methodToken);
+
+    /// <summary>
+    /// Finds a MethodDef token by matching a short method name (e.g. "Add") against
+    /// a type name (e.g. "ManagedCalculator") in the given assembly's PE metadata.
+    /// Returns the MethodDef token, or <c>null</c> if not found.
+    /// </summary>
+    int? FindMethodToken(string assemblyPath, string typeName, string methodName);
+
+    /// <summary>
+    /// Scans the IL body of a method starting from the given IL offset for the first
+    /// <c>call</c> or <c>callvirt</c> instruction. Returns the target method token
+    /// (MethodDef or MemberRef) and the assembly-qualified type name, or <c>null</c>
+    /// if no call is found within the next sequence point's range.
+    /// Used by managed step-into to determine the call target.
+    /// </summary>
+    (int TargetToken, string? TargetAssembly, string? TargetMethodName)? GetCallTargetAtOffset(
+        string assemblyPath, int methodToken, int ilOffset);
 }
