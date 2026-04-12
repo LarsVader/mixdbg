@@ -259,6 +259,7 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 - PDB-based source mapping for C# via `System.Reflection.Metadata`
 - Command-line argument passthrough in DAP launch requests
 - **Unlimited managed breakpoints at exact source lines** via CLR Profiler DLL (`MixDbgProfiler.dll`) — FunctionEnter hooks detect each call to breakpointed methods, profiler temporarily disables hooks and blocks while MixDbg sets a transient hardware BP at the exact line address (via IL-to-native mapping), method runs and hits BP. No debug register limit — BPs are set/removed per call.
+- **Mid-session C# breakpoints** — breakpoints added after the debugger is running work on already-JIT'd methods via JitMethodMap lookup + IL-to-native mapping, with permanent hardware BPs that persist across continue cycles. Dynamic WATCH commands sent to profiler via command pipe for not-yet-JIT'd methods.
 - **Managed stack traces** via profiler JIT method map + IL-to-native mapping — binary search maps native IPs to method tokens, reverse IL mapping resolves exact source file:line
 
 **Not yet implemented:**

@@ -17,7 +17,7 @@ profiler/
   CoreClrTypes.h            # Shared types: LPCBYTE, FunctionID, ClassID, mdToken, GUIDs, ILNativeMap, COR_PRF flags
   ProfilerInfo.h            # ProfilerInfo class — ICorProfilerInfo vtable wrapper (calls by slot index)
   MixDbgProfiler.h          # MixDbgProfiler class declaration — ICorProfilerCallback2 (75 virtuals in vtable order)
-  MixDbgProfiler.cpp         # MixDbgProfiler implementation — Initialize, Shutdown, JITCompilationFinished, OnFunctionEnter
+  MixDbgProfiler.cpp         # MixDbgProfiler implementation — Initialize, Shutdown, JITCompilationFinished, OnFunctionEnter, CmdReaderLoop
   FunctionCallbacks.cpp      # extern "C" callbacks — FunctionIDMapper, FunctionEnterImpl, FunctionLeaveImpl, FunctionTailcallImpl
   ClassFactory.h             # ClassFactory class declaration
   ClassFactory.cpp           # ClassFactory implementation — COM class factory creating MixDbgProfiler instances
@@ -56,18 +56,26 @@ Non-virtual public methods (`IsWatchedMethod`, `OnFunctionEnter`, `RegisterWatch
 
 Text lines, one per notification. Two formats depending on `m_hooksActive`:
 
-**With hooks** (`MIXDBG_WATCH_TOKENS` or `MIXDBG_WATCH_ASSEMBLIES` set):
+**Notification pipe** (`MIXDBG_PIPE_NAME`, profiler → MixDbg):
+
+With hooks (`MIXDBG_WATCH_TOKENS` or `MIXDBG_WATCH_ASSEMBLIES` set):
 - `JIT:<token_hex>:<addr_hex>:<size_hex>:<assembly>[:<IL0=N0,IL1=N1,...>]\n`
 - `ENTER:<token_hex>:<body_addr_hex>:<thread_id_hex>:<assembly>\n`
 
-**Without hooks** (JIT notifications only):
+Without hooks (JIT notifications only):
 - `<token_hex>:<addr_hex>:<size_hex>:<assembly>\n`
+
+IL-to-native mapping is included for ALL JIT'd methods (not just watched) so mid-session BPs on already-JIT'd methods can resolve exact line addresses.
+
+**Command pipe** (`MIXDBG_CMD_PIPE`, MixDbg → profiler):
+- `WATCH:<assembly>:<token_hex>\n` — dynamically adds a method to the watch list for mid-session breakpoints. `CmdReaderLoop` thread reads these, adds to `m_watchEntries`, and enables enter/leave hooks if not already active.
 
 ### Synchronization
 
 - `MIXDBG_ACK_EVENT` — MixDbg signals after setting hardware BP. Profiler's `OnFunctionEnter` blocks on this (500ms timeout).
 - `MIXDBG_REHOOK_EVENT` — MixDbg signals on Continue. Rehook watcher thread re-enables `COR_PRF_MONITOR_ENTERLEAVE`.
 - `m_pipeLock` (CRITICAL_SECTION) — protects `WriteToPipe` from concurrent access (main thread JIT + enter hook thread).
+- `m_watchLock` (CRITICAL_SECTION) — protects `m_watchEntries`/`m_watchCount` (written by cmd reader thread, read by `IsWatchedMethod`).
 - `m_funcLock` (CRITICAL_SECTION) — protects `m_funcSlots` (written by `FunctionIDMapper`, read by `OnFunctionEnter`).
 
 ### Thread Model
@@ -75,6 +83,7 @@ Text lines, one per notification. Two formats depending on `m_hooksActive`:
 - **CLR JIT thread**: calls `JITCompilationFinished`. Writes to pipe, optionally blocks on ACK (non-hook mode only for watched methods).
 - **Application threads**: call `FunctionEnterNaked` → `FunctionEnterImpl` → `OnFunctionEnter`. Disables hooks, writes ENTER to pipe, blocks on ACK.
 - **Rehook watcher thread**: created in `Initialize`. Loops on `WaitForSingleObject(m_hRehookEvent)`, re-enables enter/leave hooks via `SetEventMask`.
+- **Command reader thread**: created in `Initialize`. Reads `WATCH:` commands from command pipe (`MIXDBG_CMD_PIPE`), adds to `m_watchEntries` under `m_watchLock`, enables hooks if not already active.
 
 ### Environment Variables (set by MixDbg before CreateProcess)
 
@@ -86,6 +95,7 @@ Text lines, one per notification. Two formats depending on `m_hooksActive`:
 | `MIXDBG_PIPE_NAME` | `\\.\pipe\MixDbg_<pid>` | Named pipe for notifications |
 | `MIXDBG_ACK_EVENT` | Event name | ACK synchronization event |
 | `MIXDBG_REHOOK_EVENT` | Event name | Rehook synchronization event |
+| `MIXDBG_CMD_PIPE` | `\\.\pipe\MixDbgCmd_<name>` | Command pipe for dynamic WATCH commands |
 | `MIXDBG_WATCH_TOKENS` | `Asm1:Token1,Asm2:Token2,...` | Exact methods to hook (C#) |
 | `MIXDBG_WATCH_ASSEMBLIES` | `Asm1,Asm2,...` | Assemblies to hook entirely (C++/CLI) |
 
