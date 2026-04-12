@@ -273,9 +273,53 @@ internal sealed class EngineQueryService(
         if (frames.Length >= 2)
         {
             ulong returnAddress = frames[1].InstructionOffset;
-            if (SetManagedStepBreakpoint(model, returnAddress))
+
+            // If the caller is in managed code, the return address lands on the same source
+            // line as the call instruction. Advance to the next source line instead.
+            ulong stepOutTarget = returnAddress;
+            JitMethodInfo? callerMethod = ManagedDebuggerService.FindContainingMethod(
+                model.JitMethodMap, returnAddress);
+            if (callerMethod != null)
             {
-                _log.LogInfo(_logStore, $"Step-out: temp BP at return addr 0x{returnAddress:X}");
+                string? callerAsmPath = _managedDebugger.FindAssemblyPath(
+                    model, callerMethod.AssemblyName);
+                if (callerAsmPath != null)
+                {
+                    int returnIL = ManagedDebuggerService.ComputeILOffset(
+                        model, callerMethod, returnAddress);
+                    (int ILOffset, string File, int Line)[] seqPoints =
+                        _pdbMapper.GetMethodSequencePoints(callerAsmPath, callerMethod.MethodToken);
+
+                    // Find the current line at the return address, then the first sequence
+                    // point on a different (later) line.
+                    int returnLine = 0;
+                    foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+                    {
+                        if (sp.ILOffset <= returnIL)
+                            returnLine = sp.Line;
+                    }
+
+                    string bpKey = $"{callerMethod.AssemblyName}:{callerMethod.MethodToken:X8}";
+                    if (returnLine > 0
+                        && model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+                    {
+                        foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+                        {
+                            if (sp.Line > returnLine)
+                            {
+                                stepOutTarget = mapping.GetNativeAddress(sp.ILOffset);
+                                _log.LogInfo(_logStore,
+                                    $"Step-out: advancing past call site line {returnLine} → line {sp.Line}");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (SetManagedStepBreakpoint(model, stepOutTarget))
+            {
+                _log.LogInfo(_logStore, $"Step-out: temp BP at 0x{stepOutTarget:X}");
                 _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
                 return;
             }

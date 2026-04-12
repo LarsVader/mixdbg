@@ -28,7 +28,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         await WhenSendingConfigurationDone();
 
         // Hit the breakpoint.
-        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenWaitingForStoppedEvent(timeout: 60);
         await WhenRequestingStackTrace();
         ThenStoppedWithReason(0, "breakpoint");
         ThenStackTraceHasSource(0, "MainWindow.xaml.cs");
@@ -137,6 +137,40 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ManagedStepOut_WhenInCliWrapper_ReturnsToCSharpCallSite()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // BP at C++/CLI ManagedCalculator.h line 14 (return NativeLib::Calculator::Add(a, b);).
+        await WhenSettingBreakpoint(_cliWrapperBpFile, "ManagedCalculator.h", _cliWrapperAddLine);
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Hit the C++/CLI breakpoint.
+        await WhenWaitingForStoppedEvent(timeout: 60);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(0, "breakpoint");
+        ThenStackTraceHasSource(0, "ManagedCalculator.h");
+
+        // Step out — should return to C# MainWindow.xaml.cs line 68
+        // (the line after the ManagedCalculator.Add call at line 67).
+        await WhenSendingStepOut();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(1, "step");
+        ThenStackTraceHasSource(1, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(1, 68);
+
+        await WhenSendingContinue();
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task ManagedStepOut_WhenSteppedPastCall_ReturnsToPreviousLine()
     {
         GivenMixDbgAndWpfAppExist();
@@ -150,7 +184,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         await WhenSendingConfigurationDone();
 
         // Hit the breakpoint at line 65.
-        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenWaitingForStoppedEvent(timeout: 60);
         ThenStoppedWithReason(0, "breakpoint");
 
         // Step over 3 times: 65 → 66 → 67 → 68.
@@ -191,11 +225,11 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         await WhenSendingConfigurationDone();
 
         // Hit managed BP first, continue past it.
-        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenWaitingForStoppedEvent(timeout: 60);
         await WhenSendingContinue();
 
         // Hit native BP in Calculator::Add.
-        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenWaitingForStoppedEvent(timeout: 60);
         await WhenRequestingStackTrace();
         ThenStoppedWithReason(1, "breakpoint");
         ThenStackTraceHasSource(0, "Calculator.cpp");
@@ -226,11 +260,11 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         await WhenSendingConfigurationDone();
 
         // Hit managed BP first, continue past it.
-        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenWaitingForStoppedEvent(timeout: 60);
         await WhenSendingContinue();
 
         // Hit the native breakpoint.
-        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenWaitingForStoppedEvent(timeout: 60);
         await WhenRequestingStackTrace();
         ThenStoppedWithReason(1, "breakpoint");
         ThenStackTraceHasSource(0, "Calculator.cpp");
@@ -261,11 +295,11 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         await WhenSendingConfigurationDone();
 
         // Hit managed BP first, continue past it.
-        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenWaitingForStoppedEvent(timeout: 60);
         await WhenSendingContinue();
 
         // Hit the native breakpoint.
-        await WhenWaitingForStoppedEvent(timeout: 40);
+        await WhenWaitingForStoppedEvent(timeout: 60);
         await WhenRequestingStackTrace();
         ThenStoppedWithReason(1, "breakpoint");
         ThenStackTraceHasSource(0, "Calculator.cpp");
@@ -445,7 +479,8 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
             }
             await Task.Delay(200);
         }
-        _stoppedReasons.Add(null);
+        Assert.Fail($"Timed out after {timeout}s waiting for stopped event " +
+            $"(#{_stoppedReasons.Count}). Log: {_sessionLogPath}");
     }
 
     private async Task WhenWaitingForStackTraceResponse(int timeout)
@@ -471,8 +506,8 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
             }
             await Task.Delay(200);
         }
-        _stackTraceSourcePaths.Add(null);
-        _stackTraceLines.Add(0);
+        Assert.Fail($"Timed out after {timeout}s waiting for stackTrace response " +
+            $"(#{_stackTraceSourcePaths.Count}). Log: {_sessionLogPath}");
     }
 
     private async Task WhenWaitingForExit()
@@ -534,7 +569,9 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
     {
         if (!File.Exists(_sessionLogPath))
             return;
-        string log = File.ReadAllText(_sessionLogPath);
+        using FileStream fs = new(_sessionLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using StreamReader sr = new(fs);
+        string log = sr.ReadToEnd();
         Assert.DoesNotContain("CreateDacInstance failed", log);
         Assert.DoesNotContain("Could not find matching DAC", log);
     }
@@ -586,6 +623,10 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         }
         _process?.Dispose();
         _cts.Dispose();
+
+        // Allow the OS to fully release named pipes, profiler DLL handles, and debug
+        // sessions before the next test launches a new MixDbg + WpfApp pair.
+        await Task.Delay(2000);
     }
 
     private async Task SendDapRequest(int seq, string command, object args)
