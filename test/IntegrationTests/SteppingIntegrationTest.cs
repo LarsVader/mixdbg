@@ -74,15 +74,15 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         await WhenWaitingForStoppedEvent(timeout: 15);
         ThenStoppedWithReason(2, "step");
 
-        // Step into — dbgeng steps into the call. For managed→native calls, lands in
-        // native code with source. For managed→managed, the fallback temp BP advances
-        // to the next managed line (step-over behavior is expected limitation).
+        // Step into — should enter ManagedCalculator.Add in C++/CLI, not advance
+        // to line 68 (which would be step-over behavior).
         await WhenSendingStepIn();
         await WhenWaitingForStoppedEvent(timeout: 15);
         await WhenRequestingStackTrace();
         ThenStoppedWithReason(3, "step");
-        // Should land in a source file (either the called method or the next line).
-        Assert.NotNull(_stackTraceSourcePaths[0]);
+        // Must NOT land on line 68 of MainWindow.xaml.cs (that's step-over, not step-into).
+        // Should land in ManagedCalculator.h or Calculator.cpp (the called method chain).
+        ThenStackTraceHasSourceOneOf(0, "ManagedCalculator.h", "Calculator.cpp");
 
         await WhenSendingContinue();
         await WhenWaitingForSeconds(2);

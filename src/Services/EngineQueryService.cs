@@ -342,54 +342,182 @@ internal sealed class EngineQueryService(
     }
 
     /// <summary>
-    /// Managed step-into: finds the next sequence point in the current method (the call
-    /// instruction target) and sets a temp BP there, plus at the next line in the caller
-    /// (in case the call target can't be resolved). Returns true if handled.
-    /// Falls back to native StepInto if no managed targets can be resolved.
+    /// Managed step-into: parses IL at the current offset to find the call target,
+    /// then sets a temp BP at the target method's first source line. Also sets a
+    /// fallback BP at the next line in the caller (step-over behavior if target
+    /// can't be resolved). Returns true if handled.
     /// </summary>
     private bool TryManagedStepInto(NativeDebuggerModel model, JitMethodInfo method, ulong ip)
     {
-        // Strategy: set temp BPs at the first source line of every method called from
-        // the current IL offset. Since we can't easily determine the call target, set
-        // temp BPs at the next source line in the CURRENT method (step-over fallback)
-        // AND use native StepInto. When native StepInto crosses into a method with
-        // dbgeng source symbols (C++/CLI, native), it stops there. If it enters JIT'd
-        // code without source, the DetermineStopReason + post-step check handles it.
-
-        // Set a step-over temp BP as fallback (if the call returns without stopping).
         string? assemblyPath = _managedDebugger.FindAssemblyPath(model, method.AssemblyName);
-        if (assemblyPath != null)
-        {
-            int currentIL = ManagedDebuggerService.ComputeILOffset(model, method, ip);
-            (int ILOffset, string File, int Line)[] seqPoints = _pdbMapper.GetMethodSequencePoints(assemblyPath, method.MethodToken);
-            string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
+        if (assemblyPath == null)
+            return false;
 
-            // Find next sequence point as fallback.
-            if (model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+        int currentIL = ManagedDebuggerService.ComputeILOffset(model, method, ip);
+        string callerBpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
+        bool haveBp = false;
+
+        // 1. Parse IL to find the call target at this offset.
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName)? callTarget =
+            _pdbMapper.GetCallTargetAtOffset(assemblyPath, method.MethodToken, currentIL);
+
+        if (callTarget != null)
+        {
+            _log.LogInfo(_logStore,
+                $"Managed step-into: IL call target token=0x{callTarget.Value.TargetToken:X} asm={callTarget.Value.TargetAssembly} name={callTarget.Value.TargetMethodName}");
+
+            // 2a. Try JitMethodMap (for JIT'd managed methods).
+            haveBp = TrySetStepIntoBpFromJitMap(model, callTarget.Value);
+
+            // 2b. Try dbgeng symbol resolution (for C++/CLI ahead-of-time compiled methods).
+            if (!haveBp)
             {
-                foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+                _log.LogInfo(_logStore, "Managed step-into: JitMap miss, trying dbgeng symbols");
+                haveBp = TrySetStepIntoBpFromDbgEngSymbols(model, callTarget.Value);
+            }
+        }
+
+        // 3. Set fallback BP at next source line (step-over) in case call target not resolved.
+        (int ILOffset, string File, int Line)[] seqPoints = _pdbMapper.GetMethodSequencePoints(assemblyPath, method.MethodToken);
+        if (model.JitMethodMappings.TryGetValue(callerBpKey, out JitMethodMapping? callerMapping))
+        {
+            foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+            {
+                if (sp.ILOffset > currentIL)
                 {
-                    if (sp.ILOffset > currentIL)
-                    {
-                        ulong fallbackAddr = mapping.GetNativeAddress(sp.ILOffset);
-                        _ = SetManagedStepBreakpoint(model, fallbackAddr);
-                        _log.LogInfo(_logStore,
-                            $"Managed step-into: fallback BP at 0x{fallbackAddr:X} ({sp.File}:{sp.Line})");
-                        break;
-                    }
+                    ulong fallbackAddr = callerMapping.GetNativeAddress(sp.ILOffset);
+                    _ = SetManagedStepBreakpoint(model, fallbackAddr);
+                    _log.LogInfo(_logStore,
+                        $"Managed step-into: fallback BP at 0x{fallbackAddr:X} ({sp.File}:{sp.Line})");
+                    haveBp = true;
+                    break;
                 }
             }
         }
 
-        // Use native StepInto — dbgeng will step into the called function.
-        // For C++/CLI and native calls, dbgeng has PDB symbols and stops at the right line.
-        // The fallback temp BP catches the case where the call returns without stopping
-        // (e.g., if the called method has no source).
-        _log.LogInfo(_logStore,
-            $"Managed step-into: native StepInto from {method.AssemblyName}:0x{method.MethodToken:X8} ip=0x{ip:X}");
-        model.Stepping = true;
-        _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.StepInto);
+        if (!haveBp)
+            return false;
+
+        // Go — whichever temp BP fires first wins.
+        _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
         return true;
+    }
+
+    /// <summary>
+    /// Resolves the call target via dbgeng symbol lookup (for C++/CLI ahead-of-time compiled
+    /// methods that have Windows PDB symbols but don't appear in the JIT method map).
+    /// Tries several symbol name formats since C++/CLI naming varies.
+    /// </summary>
+    private bool TrySetStepIntoBpFromDbgEngSymbols(NativeDebuggerModel model,
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName) callTarget)
+    {
+        _log.LogInfo(_logStore,
+            $"Managed step-into dbgeng: name={callTarget.TargetMethodName} asm={callTarget.TargetAssembly}");
+        if (callTarget.TargetMethodName == null || callTarget.TargetAssembly == null)
+            return false;
+
+        // Convert .NET name "CliWrapper.ManagedCalculator.Add" to possible dbgeng symbol formats.
+        // C++/CLI method names in dbgeng: "CliWrapper!CliWrapper::ManagedCalculator::Add"
+        string dotnetName = callTarget.TargetMethodName; // e.g. "CliWrapper.ManagedCalculator.Add"
+        string moduleName = callTarget.TargetAssembly;   // e.g. "CliWrapper"
+
+        // Try: module!Type::Method (replace dots with :: after stripping module prefix).
+        string cppName = dotnetName;
+        // Strip the namespace prefix if it matches the module name.
+        if (cppName.StartsWith($"{moduleName}.", StringComparison.OrdinalIgnoreCase))
+            cppName = cppName[($"{moduleName}.").Length..];
+        cppName = cppName.Replace(".", "::");
+
+        string[] symbolCandidates =
+        [
+            $"{moduleName}!{cppName}",
+            $"{moduleName}!{moduleName}::{cppName}",
+            $"{moduleName}!{dotnetName.Replace(".", "::")}",
+        ];
+
+        // Use deferred breakpoint (bu) which handles C++/CLI thunks correctly.
+        // dbgeng resolves the symbol to the actual entry point when execution reaches it.
+        // Resolve symbol to native address, then set hardware BP.
+        foreach (string symbol in symbolCandidates)
+        {
+            (ulong offset, bool success) = _wrapper.GetOffsetByName(model.Wrapper, symbol);
+            _log.LogInfo(_logStore,
+                $"Managed step-into: GetOffsetByName('{symbol}') -> 0x{offset:X} success={success}");
+            if (success && offset != 0)
+            {
+                if (SetManagedStepBreakpoint(model, offset))
+                {
+                    _log.LogInfo(_logStore,
+                        $"Managed step-into: target BP at 0x{offset:X} via {symbol}");
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Finds the call target method in JitMethodMap and sets a temp BP at its first source line.
+    /// Searches by matching the method name suffix across all JIT'd methods in the target assembly.
+    /// </summary>
+    private bool TrySetStepIntoBpFromJitMap(NativeDebuggerModel model,
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName) callTarget)
+    {
+        if (callTarget.TargetMethodName == null)
+            return false;
+
+        // Extract the short method name (e.g., "Add" from "CliWrapper.ManagedCalculator.Add").
+        string targetName = callTarget.TargetMethodName;
+        int lastDot = targetName.LastIndexOf('.');
+        string shortName = lastDot >= 0 ? targetName[(lastDot + 1)..] : targetName;
+
+        // Search JitMethodMap for a matching method.
+        lock (model.JitMethodMap)
+        {
+            foreach (JitMethodInfo jitMethod in model.JitMethodMap.Values)
+            {
+                // Match by assembly name (if known) and method name.
+                if (callTarget.TargetAssembly != null &&
+                    !jitMethod.AssemblyName.Equals(callTarget.TargetAssembly, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // Get the method's assembly path to check its name.
+                string? targetAsmPath = _managedDebugger.FindAssemblyPath(model, jitMethod.AssemblyName);
+                if (targetAsmPath == null)
+                {
+                    _log.LogInfo(_logStore,
+                        $"Managed step-into: no assembly path for {jitMethod.AssemblyName}");
+                    continue;
+                }
+
+                string? jitMethodName = _pdbMapper.GetMethodName(targetAsmPath, jitMethod.MethodToken);
+                if (jitMethodName == null || !jitMethodName.EndsWith($".{shortName}", StringComparison.Ordinal))
+                    continue;
+
+                // Found the target method. Get its first sequence point.
+                (int ILOffset, string File, int Line)[] targetSeqPoints =
+                    _pdbMapper.GetMethodSequencePoints(targetAsmPath, jitMethod.MethodToken);
+                if (targetSeqPoints.Length == 0)
+                    continue;
+
+                string targetBpKey = $"{jitMethod.AssemblyName}:{jitMethod.MethodToken:X8}";
+                if (!model.JitMethodMappings.TryGetValue(targetBpKey, out JitMethodMapping? targetMapping))
+                    continue;
+
+                ulong targetAddr = targetMapping.GetNativeAddress(targetSeqPoints[0].ILOffset);
+                if (SetManagedStepBreakpoint(model, targetAddr))
+                {
+                    _log.LogInfo(_logStore,
+                        $"Managed step-into: target BP at 0x{targetAddr:X} ({targetSeqPoints[0].File}:{targetSeqPoints[0].Line}) in {jitMethod.AssemblyName}");
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

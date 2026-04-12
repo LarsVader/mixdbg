@@ -24,8 +24,11 @@ internal interface IDebugSymbols
         out uint NameSize,
         out ulong Displacement);
 
-    // Slot 5: GetOffsetByName
-    void _VtblGap2_1();
+    // Slot 5
+    [PreserveSig]
+    int GetOffsetByName(
+        [MarshalAs(UnmanagedType.LPStr)] string Symbol,
+        out ulong Offset);
 
     // Slot 6: GetNearNameByOffset
     void _VtblGap3_1();

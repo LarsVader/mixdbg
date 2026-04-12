@@ -224,4 +224,37 @@ public sealed class PdbSourceMapperTests
 
         Assert.Empty(seqPoints);
     }
+
+    // ── GetCallTargetAtOffset ───────────────────────────
+
+    [Fact]
+    public void GetCallTargetAtOffset_WhenAtCallSite_ReturnsTargetMethodInfo()
+    {
+        if (!File.Exists(_wpfAppDll)) return;
+
+        using PdbSourceMapperService mapper = new();
+        // Find OnAddClick which calls ManagedCalculator.Add at line 67.
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? method =
+            mapper.FindMethodAtLine(_wpfAppDll, _sourceFile, 67);
+        if (method == null) return;
+
+        // The IL at line 67's offset should contain a call to ManagedCalculator.Add.
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName)? callTarget =
+            mapper.GetCallTargetAtOffset(_wpfAppDll, method.Value.MethodToken, method.Value.ILOffset);
+
+        _ = Assert.NotNull(callTarget);
+        Assert.NotNull(callTarget.Value.TargetMethodName);
+        Assert.Contains("Add", callTarget.Value.TargetMethodName!);
+    }
+
+    [Fact]
+    public void GetCallTargetAtOffset_WhenAssemblyDoesNotExist_ReturnsNull()
+    {
+        using PdbSourceMapperService mapper = new();
+
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName)? result =
+            mapper.GetCallTargetAtOffset(@"C:\nonexistent.dll", 0x06000001, 0);
+
+        Assert.Null(result);
+    }
 }

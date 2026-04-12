@@ -59,4 +59,14 @@ public interface IPdbSourceMapper
     /// Used for managed stepping to find the next source line.
     /// </summary>
     (int ILOffset, string File, int Line)[] GetMethodSequencePoints(string assemblyPath, int methodToken);
+
+    /// <summary>
+    /// Scans the IL body of a method starting from the given IL offset for the first
+    /// <c>call</c> or <c>callvirt</c> instruction. Returns the target method token
+    /// (MethodDef or MemberRef) and the assembly-qualified type name, or <c>null</c>
+    /// if no call is found within the next sequence point's range.
+    /// Used by managed step-into to determine the call target.
+    /// </summary>
+    (int TargetToken, string? TargetAssembly, string? TargetMethodName)? GetCallTargetAtOffset(
+        string assemblyPath, int methodToken, int ilOffset);
 }
