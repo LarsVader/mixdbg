@@ -269,57 +269,13 @@ internal sealed class EngineQueryService(
 
         // Use temp BP at caller's return address for reliable cross-boundary step-out.
         // The dbgeng "gu" command doesn't stop reliably when returning from native to managed.
-        NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 2);
+        NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 5);
         if (frames.Length >= 2)
         {
-            ulong returnAddress = frames[1].InstructionOffset;
-
-            // If the caller is in managed code, the return address lands on the same source
-            // line as the call instruction. Advance to the next source line instead.
-            ulong stepOutTarget = returnAddress;
-            JitMethodInfo? callerMethod = ManagedDebuggerService.FindContainingMethod(
-                model.JitMethodMap, returnAddress);
-            if (callerMethod != null)
+            ulong? stepOutTarget = FindStepOutTarget(model, frames);
+            if (stepOutTarget != null && SetManagedStepBreakpoint(model, stepOutTarget.Value))
             {
-                string? callerAsmPath = _managedDebugger.FindAssemblyPath(
-                    model, callerMethod.AssemblyName);
-                if (callerAsmPath != null)
-                {
-                    int returnIL = ManagedDebuggerService.ComputeILOffset(
-                        model, callerMethod, returnAddress);
-                    (int ILOffset, string File, int Line)[] seqPoints =
-                        _pdbMapper.GetMethodSequencePoints(callerAsmPath, callerMethod.MethodToken);
-
-                    // Find the current line at the return address, then the first sequence
-                    // point on a different (later) line.
-                    int returnLine = 0;
-                    foreach ((int ILOffset, string File, int Line) sp in seqPoints)
-                    {
-                        if (sp.ILOffset <= returnIL)
-                            returnLine = sp.Line;
-                    }
-
-                    string bpKey = $"{callerMethod.AssemblyName}:{callerMethod.MethodToken:X8}";
-                    if (returnLine > 0
-                        && model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
-                    {
-                        foreach ((int ILOffset, string File, int Line) sp in seqPoints)
-                        {
-                            if (sp.Line > returnLine)
-                            {
-                                stepOutTarget = mapping.GetNativeAddress(sp.ILOffset);
-                                _log.LogInfo(_logStore,
-                                    $"Step-out: advancing past call site line {returnLine} → line {sp.Line}");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (SetManagedStepBreakpoint(model, stepOutTarget))
-            {
-                _log.LogInfo(_logStore, $"Step-out: temp BP at 0x{stepOutTarget:X}");
+                _log.LogInfo(_logStore, $"Step-out: temp BP at 0x{stepOutTarget.Value:X}");
                 _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
                 return;
             }
@@ -327,6 +283,82 @@ internal sealed class EngineQueryService(
 
         // Fallback: native step-out via dbgeng "gu".
         _ = _wrapper.ExecuteCommand(model.Wrapper, "gu");
+    }
+
+    /// <summary>
+    /// Walks the stack from frame[1] upward to find the best step-out target address.
+    /// For managed callers with PDB sequence points, advances past the call site to the
+    /// next source line. Skips frames without source info (e.g. C++/CLI wrappers that
+    /// have no portable PDB) and targets the first ancestor with resolvable source.
+    /// </summary>
+    private ulong? FindStepOutTarget(NativeDebuggerModel model, NativeStackFrame[] frames)
+    {
+        for (int i = 1; i < frames.Length; i++)
+        {
+            ulong address = frames[i].InstructionOffset;
+            JitMethodInfo? method = ManagedDebuggerService.FindContainingMethod(
+                model.JitMethodMap, address);
+
+            if (method == null)
+            {
+                // Not in JitMethodMap — could be native code or a C++/CLI thunk.
+                // Only use if dbgeng can resolve source; otherwise skip (e.g. JIT helpers).
+                (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(model.Wrapper, address);
+                if (lineInfo != null && lineInfo.Value.Line > 0)
+                {
+                    _log.LogInfo(_logStore, $"Step-out: targeting native frame[{i}] at 0x{address:X}");
+                    return address;
+                }
+                _log.LogInfo(_logStore,
+                    $"Step-out: frame[{i}] at 0x{address:X} has no source, skipping");
+                continue;
+            }
+
+            string? asmPath = _managedDebugger.FindAssemblyPath(model, method.AssemblyName);
+            if (asmPath == null)
+                continue;
+
+            (int ILOffset, string File, int Line)[] seqPoints =
+                _pdbMapper.GetMethodSequencePoints(asmPath, method.MethodToken);
+            if (seqPoints.Length == 0)
+            {
+                // No portable PDB sequence points (e.g. C++/CLI) — skip to next frame.
+                _log.LogInfo(_logStore,
+                    $"Step-out: frame[{i}] ({method.AssemblyName}) has no sequence points, skipping");
+                continue;
+            }
+
+            // Managed frame with source info — advance past the call site line.
+            int returnIL = ManagedDebuggerService.ComputeILOffset(model, method, address);
+            int returnLine = 0;
+            foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+            {
+                if (sp.ILOffset <= returnIL)
+                    returnLine = sp.Line;
+            }
+
+            string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
+            if (returnLine > 0
+                && model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+            {
+                foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+                {
+                    if (sp.Line > returnLine)
+                    {
+                        ulong target = mapping.GetNativeAddress(sp.ILOffset);
+                        _log.LogInfo(_logStore,
+                            $"Step-out: frame[{i}] advancing past call site line {returnLine} → line {sp.Line}");
+                        return target;
+                    }
+                }
+            }
+
+            // Has source but no next line (end of method) — use the return address as-is.
+            _log.LogInfo(_logStore, $"Step-out: frame[{i}] at end of method, using return addr 0x{address:X}");
+            return address;
+        }
+
+        return frames[1].InstructionOffset;
     }
 
     /// <summary>

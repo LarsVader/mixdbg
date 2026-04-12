@@ -282,7 +282,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
-    public async Task StepOutFromNative_WhenInNativeAdd_ReturnsToCaller()
+    public async Task StepOutFromNative_WhenInNativeAdd_ReturnsToCSharpLine68()
     {
         GivenMixDbgAndWpfAppExist();
         await WhenStartingMixDbg();
@@ -304,10 +304,14 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStoppedWithReason(1, "breakpoint");
         ThenStackTraceHasSource(0, "Calculator.cpp");
 
-        // Step out — should return to caller and stop.
+        // Step out from native line 7 — C++/CLI line 14 is just a return statement,
+        // so we should skip it entirely and land in C# MainWindow.xaml.cs line 68.
         await WhenSendingStepOut();
         await WhenWaitingForStoppedEvent(timeout: 15);
+        await WhenRequestingStackTrace();
         ThenStoppedWithReason(2, "step");
+        ThenStackTraceHasSource(1, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(1, 68);
 
         await WhenSendingContinue();
         await WhenWaitingForSeconds(2);
