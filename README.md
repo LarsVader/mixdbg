@@ -89,7 +89,7 @@ nvim-dap <──stdio────                            [target.exe]
 
 All services are stateless singletons; mutable state lives in model objects (`DapServerModel`, `DebugSessionModel`, `NativeDebuggerModel`, `DbgEngWrapperModel`). DAP requests are routed by `IDapDispatcher` to `IDapHandlerService` implementations (auto-discovered via assembly scanning). Each handler contains its own session logic and delegates to `IEngineLifecycleService` for engine lifecycle, `IBreakpointService` for breakpoints, and `IEngineQueryService` for stack traces, variables, and execution control. All dbgeng COM interop is encapsulated behind `IDbgEngWrapper` / `DbgEngWrapperService` — no COM types leak outside the wrapper boundary.
 
-**Two threads, one queue:**
+**Three threads, one queue:**
 
 1. **Main thread** reads DAP JSON requests from stdin, dispatches them to handlers. Handlers own the dispatching: fire-and-forget via `model.Commands.Add(...)`, or synchronous queries via `model.QueueEngineQuery(...)`.
 
@@ -246,25 +246,22 @@ All debug sessions write to `~/mixdbg.log` via `ILoggingService` (with state in 
 
 ## Current Status
 
-**Working (M1+M2+M3+M4):**
+**Working (M1–M6):**
 - DAP transport (JSON-RPC over stdin/stdout)
 - Process launch and attach via dbgeng
 - Native C++ breakpoints (including deferred)
 - Stack traces with source locations (native via dbgeng, managed via CLR Profiler + PDB)
-- Stepping (over, into, out)
 - Thread enumeration
 - Breakpoint classification (native vs managed vs CLI)
 - Native variable inspection (locals, types, values, struct/pointer expansion)
-- **Managed variable inspection** — when stopped at a C# frame, locals and arguments are shown with names (from portable PDB local scope tables), types, and values via `ICorDebugILFrame`. Objects expand to show fields (walks superclass chain), arrays show first 100 elements. Variable refs use a separate range (100,000+) to avoid collision with native refs.
+- **Managed variable inspection** — when stopped at a C# frame, locals and arguments are shown with names (from portable PDB local scope tables), types, and values via SOS/dbgeng. Variable refs use a separate range (100,000+) to avoid collision with native refs.
 - Managed module/function resolution via ICorDebug V4 piggybacked on dbgeng (`OpenVirtualProcessImpl` + `DbgEngDataTarget` bridge)
 - PDB-based source mapping for C# via `System.Reflection.Metadata`
 - Command-line argument passthrough in DAP launch requests
 - **Unlimited managed breakpoints at exact source lines** via CLR Profiler DLL (`MixDbgProfiler.dll`) — FunctionEnter hooks detect each call to breakpointed methods, profiler temporarily disables hooks and blocks while MixDbg sets a transient hardware BP at the exact line address (via IL-to-native mapping), method runs and hits BP. No debug register limit — BPs are set/removed per call.
 - **Mid-session C# breakpoints** — breakpoints added after the debugger is running work on already-JIT'd methods via JitMethodMap lookup + IL-to-native mapping, with permanent hardware BPs that persist across continue cycles. Dynamic WATCH commands sent to profiler via command pipe for not-yet-JIT'd methods.
 - **Managed stack traces** via profiler JIT method map + IL-to-native mapping — binary search maps native IPs to method tokens, reverse IL mapping resolves exact source file:line
-
-**Not yet implemented:**
-- Cross-boundary stepping (M6)
+- **Cross-boundary stepping** — step over, step into, and step out work across C#, C++/CLI, and native C++ boundaries. Managed frames use temp hardware BPs at target addresses (via PDB sequence points + IL-to-native mapping). Step-into parses IL bytecode to identify call targets. Smart step-out skips sourceless frames (C++/CLI thunks, JIT helpers) and advances past call sites to the next source line. Native step-over auto-steps-out on closing braces and sourceless lines.
 
 ## Build and Run
 
