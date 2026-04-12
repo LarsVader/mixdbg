@@ -42,4 +42,14 @@ public interface IPdbSourceMapper
     /// Reads the PE metadata to return parameter names for the given method, in order.
     /// </summary>
     string[] GetParameterNames(string assemblyPath, int methodToken);
+
+    /// <summary>
+    /// Decodes the method signature to return parameter type names in order.
+    /// </summary>
+    string[] GetParameterTypes(string assemblyPath, int methodToken);
+
+    /// <summary>
+    /// Decodes the local variable signature to return type names in slot order.
+    /// </summary>
+    string[] GetLocalVariableTypes(string assemblyPath, int methodToken);
 }

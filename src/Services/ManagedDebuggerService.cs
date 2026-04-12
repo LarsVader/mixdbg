@@ -333,12 +333,14 @@ internal sealed class ManagedDebuggerService(
             // Parse PARAMETERS and LOCALS from the top frame.
             VariableInfo[] vars = ParseClrStackLocals(output);
 
-            // Enrich with PDB names where possible.
+            // Enrich with PDB names and PE types where possible.
             if (assemblyPath != null)
             {
                 (string Name, int Index)[] pdbLocals = _pdbMapper.GetLocalVariableNames(assemblyPath, methodToken, ilOffset);
                 string[] paramNames = _pdbMapper.GetParameterNames(assemblyPath, methodToken);
-                vars = EnrichWithPdbNames(vars, pdbLocals, paramNames);
+                string[] paramTypes = _pdbMapper.GetParameterTypes(assemblyPath, methodToken);
+                string[] localTypes = _pdbMapper.GetLocalVariableTypes(assemblyPath, methodToken);
+                vars = EnrichWithPdbNames(vars, pdbLocals, paramNames, paramTypes, localTypes);
             }
 
             if (vars.Length == 0)
@@ -463,7 +465,7 @@ internal sealed class ManagedDebuggerService(
                 {
                     string varName = name ?? (inParams ? $"arg{vars.Count}" : $"local{localIdx}");
                     string section = inParams ? "param" : "local";
-                    vars.Add(new VariableInfo(varName, value, section, 0));
+                    vars.Add(new VariableInfo(varName, FormatSosValue(value), section, 0));
                     if (inLocals) localIdx++;
                 }
             }
@@ -498,6 +500,29 @@ internal sealed class ManagedDebuggerService(
         return (name, value);
     }
 
+    /// <summary>
+    /// Formats a raw SOS hex value for display. Small values (upper 32 bits zero)
+    /// are shown as decimal (likely primitives). Large values are kept as hex
+    /// (likely heap addresses / object references).
+    /// </summary>
+    private static string FormatSosValue(string hexValue)
+    {
+        if (!hexValue.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return hexValue;
+
+        if (!ulong.TryParse(hexValue.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out ulong val))
+            return hexValue;
+
+        // Zero is always "0".
+        if (val == 0)
+            return "0";
+
+        // If upper 32 bits are zero, this is likely a primitive value — show decimal.
+        return val <= uint.MaxValue
+            ? val.ToString()
+            : hexValue;
+    }
+
     /// <summary>Checks if a string starts with hex digits (frame line detection).</summary>
     private static bool IsHexPrefix(string s)
     {
@@ -515,7 +540,8 @@ internal sealed class ManagedDebuggerService(
     /// locals get PDB names by slot index.
     /// </summary>
     private static VariableInfo[] EnrichWithPdbNames(VariableInfo[] vars,
-        (string Name, int Index)[] pdbLocals, string[] paramNames)
+        (string Name, int Index)[] pdbLocals, string[] paramNames,
+        string[] paramTypes, string[] localTypes)
     {
         int paramIdx = 0;
         int localIdx = 0;
@@ -529,20 +555,28 @@ internal sealed class ManagedDebuggerService(
             VariableInfo v = vars[i];
             if (v.Type == "param")
             {
-                // Use PDB parameter name if available, skip "this" (it already has a name).
                 string name = v.Name;
-                if (name != "this" && paramIdx < paramNames.Length)
-                    name = paramNames[paramIdx];
+                string? type = null;
                 if (name != "this")
+                {
+                    if (paramIdx < paramNames.Length)
+                        name = paramNames[paramIdx];
+                    if (paramIdx < paramTypes.Length)
+                        type = paramTypes[paramIdx];
                     paramIdx++;
-                result[i] = new VariableInfo(name, v.Value, "param", 0);
+                }
+                else
+                {
+                    type = "object";
+                }
+                result[i] = new VariableInfo(name, v.Value, type, 0);
             }
             else
             {
-                // Use PDB local name if available.
                 string name = localNameMap.TryGetValue(localIdx, out string? pdbName)
                     ? pdbName : v.Name;
-                result[i] = new VariableInfo(name, v.Value, "local", 0);
+                string? type = localIdx < localTypes.Length ? localTypes[localIdx] : null;
+                result[i] = new VariableInfo(name, v.Value, type, 0);
                 localIdx++;
             }
         }
