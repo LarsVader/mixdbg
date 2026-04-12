@@ -28,7 +28,7 @@ jobs:
         run: dotnet publish src/MixDbg.csproj -c Release -r win-x64 --self-contained -o publish
 
       - name: Build Profiler DLL
-        run: msbuild profiler/MixDbgProfiler.vcxproj -p:Configuration=Release -p:Platform=x64
+        run: msbuild profiler/MixDbgProfiler.vcxproj -p:Configuration=Release -p:Platform=x64 -p:PlatformToolset=v143
 
       - name: Copy Profiler DLL to publish
         run: copy profiler\x64\Release\MixDbgProfiler.dll publish\
