@@ -366,10 +366,19 @@ internal sealed class EngineQueryService(
             _log.LogInfo(_logStore,
                 $"Managed step-into: IL call target token=0x{callTarget.Value.TargetToken:X} asm={callTarget.Value.TargetAssembly} name={callTarget.Value.TargetMethodName}");
 
-            // 2a. Try JitMethodMap (for JIT'd managed methods).
-            haveBp = TrySetStepIntoBpFromJitMap(model, callTarget.Value);
+            // If call target has no assembly (native call from C++/CLI), resolve via dbgeng
+            // symbols and set a hardware BP at the native function entry.
+            if (string.IsNullOrEmpty(callTarget.Value.TargetAssembly)
+                && callTarget.Value.TargetMethodName != null)
+            {
+                haveBp = TrySetNativeStepIntoBp(model, callTarget.Value.TargetMethodName);
+            }
 
-            // 2b. Try dbgeng symbol resolution (for C++/CLI ahead-of-time compiled methods).
+            // 2a. Try JitMethodMap (for JIT'd managed methods).
+            if (!haveBp)
+                haveBp = TrySetStepIntoBpFromJitMap(model, callTarget.Value);
+
+            // 2b. Try profiler WATCH (for C++/CLI ahead-of-time compiled methods).
             if (!haveBp)
             {
                 _log.LogInfo(_logStore, "Managed step-into: JitMap miss, trying profiler WATCH");
@@ -401,6 +410,54 @@ internal sealed class EngineQueryService(
         // Go — whichever temp BP fires first wins.
         _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
         return true;
+    }
+
+    /// <summary>
+    /// For native call targets (C++/CLI calling native C++): resolves the function
+    /// via dbgeng symbols and sets a hardware BP at the first source line.
+    /// </summary>
+    private bool TrySetNativeStepIntoBp(NativeDebuggerModel model, string targetMethodName)
+    {
+        // Convert .NET name "<Module>.NativeLib.Calculator.Add" to dbgeng symbol.
+        // Strip "<Module>." prefix if present.
+        string name = targetMethodName;
+        if (name.StartsWith("<Module>.", StringComparison.Ordinal))
+            name = name["<Module>.".Length..];
+
+        // "NativeLib.Calculator.Add" → module="NativeLib", symbol="NativeLib!NativeLib::Calculator::Add"
+        int firstDot = name.IndexOf('.');
+        if (firstDot < 0)
+            return false;
+        string moduleName = name[..firstDot];
+        string cppName = name[..].Replace(".", "::");
+        string symbol = $"{moduleName}!{cppName}";
+
+        (ulong offset, bool success) = _wrapper.GetOffsetByName(model.Wrapper, symbol);
+        if (!success || offset == 0)
+        {
+            _log.LogInfo(_logStore, $"Managed step-into: GetOffsetByName('{symbol}') failed");
+            return false;
+        }
+
+        // Get source line for logging.
+        (uint line, string file)? lineInfo = _wrapper.GetLineByOffset(model.Wrapper, offset);
+        if (lineInfo != null)
+        {
+            // Use GetOffsetByLine for exact line-start address.
+            (ulong lineOffset, bool lineSuccess) = _wrapper.GetOffsetByLine(
+                model.Wrapper, lineInfo.Value.line, lineInfo.Value.file);
+            if (lineSuccess)
+                offset = lineOffset;
+        }
+
+        if (SetManagedStepBreakpoint(model, offset))
+        {
+            _log.LogInfo(_logStore,
+                $"Managed step-into: native target BP at 0x{offset:X} ({lineInfo?.file}:{lineInfo?.line}) via {symbol}");
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>

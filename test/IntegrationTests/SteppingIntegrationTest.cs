@@ -92,6 +92,50 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ManagedStepInto_WhenAtCliWrapperCallSite_EntersNativeCode()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // BP at line 65, step over ×2 to line 67, step into C++/CLI,
+        // then step into again to enter native Calculator::Add.
+        await WhenSettingBreakpoint(_bpFile, "MainWindow.xaml.cs", _addLine);
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // Hit breakpoint at line 65.
+        await WhenWaitingForStoppedEvent(timeout: 60);
+        ThenStoppedWithReason(0, "breakpoint");
+
+        // Step over twice: 65 → 66 → 67.
+        await WhenSendingNext();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+        await WhenSendingNext();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+
+        // Step into C++/CLI: 67 → ManagedCalculator.h:14.
+        await WhenSendingStepIn();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(3, "step");
+        ThenStackTraceHasSourceOneOf(0, "ManagedCalculator.h", "Calculator.cpp");
+
+        // Step into native: ManagedCalculator.h:14 → Calculator.cpp:7.
+        await WhenSendingStepIn();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(4, "step");
+        ThenStackTraceHasSource(1, "Calculator.cpp");
+
+        await WhenSendingContinue();
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+        ThenNoLogErrors();
+    }
+
+    [Fact]
     public async Task ManagedStepOut_WhenSteppedPastCall_ReturnsToPreviousLine()
     {
         GivenMixDbgAndWpfAppExist();
