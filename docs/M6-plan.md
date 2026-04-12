@@ -1,6 +1,6 @@
 # M6: Stepping (Native + Managed + Cross-Boundary)
 
-## Status: IN PROGRESS (Phases 1-6 implemented, manual verification remaining)
+## Status: DONE
 
 ## Context
 
@@ -227,27 +227,55 @@ Step-over across boundaries works automatically:
 
 ---
 
-## Remaining Work
+## Additional fixes (post initial implementation)
 
-- **Step-out source resolution**: Step-out from managed code currently stops but source
-  resolution may not work for all frames (especially when returning to managed code from
-  native). Needs manual verification across all boundary types.
+### Step-out advances past call site (Phase 3 enhancement)
+When stepping out to a managed caller, the return address maps to the call site line (e.g. line 67).
+`FindStepOutTarget` now resolves PDB sequence points in the caller and advances to the next source
+line (e.g. line 68) instead of stopping at the call site.
+
+### Step-out skips sourceless frames (Phase 3 enhancement)
+`FindStepOutTarget` walks the stack upward from frame[1], skipping frames without resolvable source:
+- Frames not in `JitMethodMap` checked via `GetLineByOffset` — skip if no source
+- Managed frames with no portable PDB sequence points (C++/CLI) — skip
+- Targets the first ancestor frame with actual source info
+Stepping out from `Calculator.cpp:7` now skips the C++/CLI wrapper and lands on `MainWindow.xaml.cs:68`.
+
+### Auto-step-out on closing brace / same line (Phase 6 enhancement)
+`CheckStepLanding` in the event loop detects when a native step lands on:
+- **Same source line** as the origin (no progress, e.g. multi-instruction `return a+b`) → re-step
+- **Closing brace** (`}` or `};`) → auto-step-out
+- **Sourceless frame** (no dbgeng source) → auto-step-out
+`StepOriginLocation` on `NativeDebuggerModel` tracks the source file:line before native steps.
+Cleared on managed step completion to prevent infinite loops.
+
+### Step-over at end of C++/CLI method (Phase 2 enhancement)
+`TryManagedStepOver` now uses `FindStepOutTarget` when no next sequence point exists (end of
+method) or when no portable PDB sequence points exist at all (C++/CLI). Stepping over at
+`ManagedCalculator.h:14` lands on `MainWindow.xaml.cs:68`.
 
 ---
 
 ## Verification
 
-1. **Build**: `dotnet build src/MixDbg.csproj -c Debug` — no warnings
-2. **Unit tests**: `dotnet test test/UnitTests/UnitTests.csproj` — all pass
-3. **Integration tests**: `dotnet test test/IntegrationTests/MixDbg.IntegrationTests.csproj`
-4. **Manual integration test with TestApp**:
-   - Set BP in C# code (`WpfApp/MainWindow.xaml.cs`), hit it
-   - Step over (`F10`) — should advance to next C# line, not jump to random JIT'd code
-   - Step into (`F11`) a method call — should enter the called method's first line
-   - Step out (`Shift-F11`) — should return to caller
-   - Step into from C# into C++/CLI wrapper — should stop at C++/CLI source line
-   - Step into from C++/CLI into native C++ — should stop at native source line
-   - Step over a cross-boundary call — should stay in the same frame
+1. **Build**: `dotnet build src/MixDbg.csproj -c Debug` — 0 warnings, 0 errors
+2. **Unit tests**: `dotnet test test/UnitTests/MixDbg.UnitTests.csproj` — 502 pass
+3. **Integration tests**: `dotnet test test/IntegrationTests/MixDbg.IntegrationTests.csproj --filter "FullyQualifiedName~Stepping"` — 10 pass
+
+### Integration test coverage
+
+| Test | Scenario |
+|------|----------|
+| `ManagedStepOver_WhenAtCSharpLine_AdvancesToNextLine` | C# step-over |
+| `ManagedStepInto_WhenAtCallSite_EntersCalledMethod` | C# → C++/CLI step-into |
+| `ManagedStepInto_WhenAtCliWrapperCallSite_EntersNativeCode` | C++/CLI → native step-into |
+| `ManagedStepOver_WhenAtLastCliLine_StepsOutToCSharpLine68` | C++/CLI step-over at last line → C# |
+| `ManagedStepOut_WhenInCliWrapper_ReturnsToCSharpCallSite` | C++/CLI step-out → C# line 68 |
+| `ManagedStepOut_WhenSteppedPastCall_ReturnsToPreviousLine` | C# step-out from method body |
+| `CrossBoundaryStepInto_WhenNativeBpThenStepOut_ReturnsToCaller` | Native step-out → caller |
+| `NativeStepOver_WhenAtNativeLine_AdvancesToNextLine` | Native step-over |
+| `NativeStepOver_WhenAtLastLine_StepsOutToCSharpLine68` | Native step-over at last line → C# |
+| `StepOutFromNative_WhenInNativeAdd_ReturnsToCSharpLine68` | Native step-out → C# line 68 |
 
 ## Files Summary
 
@@ -258,11 +286,11 @@ Step-over across boundaries works automatically:
 | `src/MixDbg.EngineWrappers/Engine/Sos/PdbSourceMapperService.cs` | 2,4 | Implement sequence points, IL parsing, PE metadata lookup |
 | `src/MixDbg.EngineWrappers/Services/Interfaces/IDbgEngWrapper.cs` | 4 | Add `GetOffsetByName` |
 | `src/MixDbg.EngineWrappers/Services/DbgEngWrapperService.cs` | 4 | Implement `GetOffsetByName` via IDebugSymbols |
-| `src/Models/NativeDebuggerModel.cs` | 2 | Add `ManagedStepState`, `ActiveManagedStep`, `ManagedStepIntoCompleted` |
-| `src/Services/EngineQueryService.cs` | 2-4 | Managed step-over/out/into logic |
-| `src/Services/EngineLifecycleService.cs` | 2,4,6 | `DetermineStopReason` + `ProcessCommandsUntilResume` managed step handling |
+| `src/Models/NativeDebuggerModel.cs` | 2,6 | Add `ManagedStepState`, `ActiveManagedStep`, `ManagedStepIntoCompleted`, `StepOriginLocation` |
+| `src/Services/EngineQueryService.cs` | 2-6 | Managed step-over/out/into, `FindStepOutTarget` |
+| `src/Services/EngineLifecycleService.cs` | 2,4,6 | `DetermineStopReason`, `CheckStepLanding`, `CompleteManagedStep` |
 | `src/Services/ManagedDebuggerService.cs` | 4 | Step-into helper methods |
 | `src/Services/Interfaces/IManagedDebugger.cs` | 4 | Step-into interface additions |
 | `test/UnitTests/` | 1-4 | Tests per phase |
-| `test/IntegrationTests/SteppingIntegrationTest.cs` | all | Cross-boundary stepping integration tests |
+| `test/IntegrationTests/SteppingIntegrationTest.cs` | all | 10 cross-boundary stepping integration tests |
 | `test/IntegrationTests/xunit.runner.json` | all | Disable parallel execution for integration tests |

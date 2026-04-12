@@ -273,43 +273,30 @@ When stopped at a C# stack frame, selecting it shows locals/args with names, typ
 
 **Clear on continue/step**: `ClearManagedVariables` called alongside `ClearVariables` in all execution paths.
 
-### M6: Stepping Across Boundaries — IN PROGRESS
+### M6: Stepping Across Boundaries — DONE
 
-Stepping DAP handlers (`next`, `stepIn`, `stepOut`) now work across native/managed/cross-boundary frames. Native frames still use dbgeng's built-in stepping; managed frames convert step operations into "set temporary hardware BP at target native address, then Go" using the existing JitMethodMap + IL-to-native mapping + `ba e1` infrastructure.
+Stepping DAP handlers (`next`, `stepIn`, `stepOut`) work across native/managed/cross-boundary frames. Native frames use dbgeng's built-in stepping; managed frames convert step operations into "set temporary hardware BP at target native address, then Go" using the existing JitMethodMap + IL-to-native mapping + `ba e1` infrastructure. Smart step-out logic skips sourceless frames (C++/CLI thunks, JIT helpers) and advances past call sites to the next source line.
 
-**Phase 1 — Step-out bug fix (done):** `StepOutRequestHandlerService` was missing `model.Stepping = true`, causing `gu` completions to be treated as system stops and auto-continued silently.
+**Step-over:** `GetMethodSequencePoints` returns non-hidden sequence points for the method. Next sequence point after current IL offset → temp HW BP at its native address. If no next point (end of method) or no sequence points (C++/CLI), uses `FindStepOutTarget` to skip to the caller's next source line. For native step-over, the event loop auto-re-steps if still on the same line, and auto-steps-out on closing braces or sourceless lines (`CheckStepLanding`).
 
-**Phase 2 — Managed step-over (done):** When stepping over in a managed frame, `GetMethodSequencePoints` returns all non-hidden sequence points for the method (sorted by IL offset). The next sequence point after the current IL offset is the target. Its native address is resolved via `JitMethodMappings` IL-to-native mapping, and a temporary hardware BP is set there. `SetExecutionStatus(Go)` resumes execution. If no next sequence point exists (end of method), falls back to step-out behavior (temp BP at caller's return address).
+**Step-out:** `FindStepOutTarget` walks the stack from frame[1] upward, skipping frames without resolvable source (C++/CLI thunks checked via `GetLineByOffset`, managed frames with no portable PDB sequence points). Targets the first ancestor with source and advances past the call site line. Stepping out from `Calculator.cpp:7` skips the C++/CLI wrapper and lands on `MainWindow.xaml.cs:68`.
 
-**Phase 3 — Managed step-out (done):** Uses temp hardware BP at the caller's return address (frame[1].InstructionOffset) instead of dbgeng's `gu` command, which fails across native-to-managed boundaries. Same event loop handling as step-over.
-
-**Phase 4 — Managed step-into (done):** Parses IL bytecode at the current offset to identify the call target:
-- **C# to C# calls**: `GetCallTargetAtOffset` scans IL for `call`/`callvirt` opcodes, resolves the target method token via `FindMethodToken` (PE metadata lookup by type+method name). Looks up the target in `JitMethodMap`, sets temp BP at the first source line's native address.
-- **C# to C++/CLI calls**: Sends profiler `WATCH` command + waits for `ENTER` hook + transient BP (reuses M4 breakpoint infrastructure).
-- **C++/CLI to native calls**: `GetOffsetByName` on `IDbgEngWrapper` resolves symbol names to native addresses (IDebugSymbols slot 5). Hardware BP skips the opening brace and lands on the first statement.
-- **Fallback**: When the call target cannot be resolved, sets temp BP at the next source line (step-over behavior).
-
-**Phase 5 — Cross-boundary step-over (done):** Works automatically. Managed temp BP at the next source line handles native call-and-return transparently — the native call executes fully, returns to managed code, and the temp BP fires at the correct next managed line.
-
-**Phase 6 — Edge cases (done):**
-- Cleanup on continue/new step: `ExecuteContinueOnEngine` and new step operations cancel any `ActiveManagedStep` (remove temp BPs, clear state).
-- `ProcessCommandsUntilResume` detects step completion for blocking commands (`gu`, managed step-into) via `ManagedStepIntoCompleted` volatile flag.
-- `DetermineStopReason` handles `ActiveManagedStep` temp BPs (returns `"step"`) and step-into deferred BPs (BpId=-1 marker, cleaned up on hit).
-- `IsInfrastructureSource` filters profiler, coreclr, Windows Kits, VC CRT, and non-existent paths from step targets.
+**Step-into:** Parses IL bytecode at the current offset to identify the call target:
+- **C# to C# calls**: `GetCallTargetAtOffset` scans IL for `call`/`callvirt` opcodes, resolves target via `FindMethodToken` + `JitMethodMap`, sets temp BP at first source line.
+- **C# to C++/CLI calls**: Profiler `WATCH` command + `ENTER` hook + transient BP (reuses M4 infrastructure).
+- **C++/CLI to native calls**: `GetOffsetByName` resolves symbol names to native addresses. BP lands on first statement (skips opening brace via `GetOffsetByLine(line+1)`).
+- **Fallback**: Temp BP at next source line (step-over behavior).
 
 **Key implementation details:**
-- `ManagedStepState` class on `NativeDebuggerModel.ActiveManagedStep` tracks temp BP IDs during managed steps.
-- `ManagedStepIntoCompleted` volatile flag on `NativeDebuggerModel` signals step-into completion inside `ProcessCommandsUntilResume`.
-- `GetMethodSequencePoints` on `IPdbSourceMapper` returns sorted non-hidden sequence points for a method.
-- `GetCallTargetAtOffset` on `IPdbSourceMapper` scans IL bytecode for `call`/`callvirt` opcodes at a given offset.
-- `FindMethodToken` on `IPdbSourceMapper` finds a MethodDef token by type+method name in PE metadata.
-- `GetOffsetByName` on `IDbgEngWrapper` resolves symbol names to native addresses (IDebugSymbols vtable slot 5).
-- Step-into deferred BPs use BpId=-1 marker, cleaned up in `DetermineStopReason`.
+- `ManagedStepState` on `NativeDebuggerModel.ActiveManagedStep` tracks temp BP IDs during managed steps.
+- `StepOriginLocation` on `NativeDebuggerModel` records source file:line before native steps for same-line detection.
+- `FindStepOutTarget` walks stack, skips sourceless frames, advances past call sites via PDB sequence points.
+- `CheckStepLanding` in `EngineLifecycleService` detects same-line (re-step), closing brace (step-out), or sourceless (step-out) after native steps.
+- `DetermineStopReason` handles `ActiveManagedStep` temp BPs (returns `"step"`) and step-into deferred BPs (BpId=-1 marker).
+- `ProcessCommandsUntilResume` detects step-into completion via `ManagedStepIntoCompleted` volatile flag.
+- `IsInfrastructureSource` filters profiler, coreclr, Windows Kits, VC CRT, and non-existent paths.
 - `xunit.runner.json` disables parallel execution for integration tests.
-
-**Remaining:**
-- Step-out from managed code currently stops but source resolution may not work for all frames (especially when returning to managed code from native).
-- Need to verify step-out behavior across all boundary types in manual testing.
+- 10 integration tests cover step-over/into/out across C#, C++/CLI, and native boundaries.
 
 ### M7: Polish + Integration — TODO
 
