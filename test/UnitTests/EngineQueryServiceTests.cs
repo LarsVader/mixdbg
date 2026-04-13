@@ -561,7 +561,12 @@ public sealed class EngineQueryServiceTests : IDisposable
 
     private void GivenLineByOffsetReturnsNull(ulong ip) => _ = _wrapper.GetLineByOffset(_model.Wrapper, ip).Returns(((uint, string)?)null);
 
-    private void GivenJitMethodMapHasEntries() => _model.JitMethodMap.Add(0x1000, new JitMethodInfo(0x06000001, 0x1000, 100, "TestAssembly"));
+    private void GivenJitMethodMapHasEntries()
+    {
+        JitMethodInfo info = new(0x06000001, 0x1000, 100, "TestAssembly");
+        _model.JitMethodMap.Add(0x1000, info);
+        _model.JitMethodMapByToken[(0x06000001, "TestAssembly")] = info;
+    }
 
     private void GivenProfilerResolvesFrame(ulong ip, (string Name, Source? Source, int Line) result) => _ = _managedDebugger.ResolveFrameFromProfilerData(_model, ip).Returns(result);
 
@@ -597,9 +602,11 @@ public sealed class EngineQueryServiceTests : IDisposable
     private void GivenManagedMethodInJitMap(ulong startAddr, string tokenHex, string assemblyName)
     {
         int token = int.Parse(tokenHex, System.Globalization.NumberStyles.HexNumber);
+        JitMethodInfo info = new(token, startAddr, 0x100, assemblyName);
         lock (_model.JitMethodMap)
         {
-            _model.JitMethodMap[startAddr] = new JitMethodInfo(token, startAddr, 0x100, assemblyName);
+            _model.JitMethodMap[startAddr] = info;
+            _model.JitMethodMapByToken[(token, assemblyName)] = info;
         }
     }
 

@@ -966,7 +966,10 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
     private void GivenJitMethodMapEntry(ulong address, JitMethodInfo info)
     {
         lock (_model.JitMethodMap)
+        {
             _model.JitMethodMap[address] = info;
+            _model.JitMethodMapByToken[(info.MethodToken, info.AssemblyName)] = info;
+        }
     }
 
     private void GivenCorWrapperInitialized()

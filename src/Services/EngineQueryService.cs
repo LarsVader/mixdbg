@@ -673,32 +673,45 @@ internal sealed class EngineQueryService(
 
     /// <summary>
     /// Finds the call target method in JitMethodMap and sets a temp BP at its first source line.
-    /// Searches by matching the method name suffix across all JIT'd methods in the target assembly.
+    /// Uses O(1) token lookup when target token and assembly are known; falls back to
+    /// name-based scan across JIT'd methods otherwise.
     /// </summary>
     private bool TrySetStepIntoBpFromJitMap(NativeDebuggerModel model,
         (int TargetToken, string? TargetAssembly, string? TargetMethodName) callTarget)
     {
+        // Fast path: direct lookup by token + assembly (O(1) via secondary index).
+        if (callTarget.TargetToken != 0 && callTarget.TargetAssembly != null)
+        {
+            JitMethodInfo? directMatch;
+            lock (model.JitMethodMap)
+            {
+                _ = model.JitMethodMapByToken.TryGetValue(
+                    (callTarget.TargetToken, callTarget.TargetAssembly), out directMatch);
+            }
+
+            if (directMatch != null && TrySetBpOnJitMethod(model, directMatch))
+                return true;
+        }
+
+        // Slow path: scan by method name suffix when token lookup fails.
         if (callTarget.TargetMethodName == null)
             return false;
 
-        // Extract the short method name (e.g., "Add" from "CliWrapper.ManagedCalculator.Add").
         string targetName = callTarget.TargetMethodName;
         int lastDot = targetName.LastIndexOf('.');
         string shortName = lastDot >= 0 ? targetName[(lastDot + 1)..] : targetName;
+        string dotShortName = string.Concat(".", shortName);
 
-        // Search JitMethodMap for a matching method.
         lock (model.JitMethodMap)
         {
             foreach (JitMethodInfo jitMethod in model.JitMethodMap.Values)
             {
-                // Match by assembly name (if known) and method name.
                 if (callTarget.TargetAssembly != null &&
                     !jitMethod.AssemblyName.Equals(callTarget.TargetAssembly, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
-                // Get the method's assembly path to check its name.
                 string? targetAsmPath = _managedDebugger.FindAssemblyPath(model, jitMethod.AssemblyName);
                 if (targetAsmPath == null)
                 {
@@ -708,28 +721,41 @@ internal sealed class EngineQueryService(
                 }
 
                 string? jitMethodName = _pdbMapper.GetMethodName(targetAsmPath, jitMethod.MethodToken);
-                if (jitMethodName == null || !jitMethodName.EndsWith($".{shortName}", StringComparison.Ordinal))
+                if (jitMethodName == null || !jitMethodName.EndsWith(dotShortName, StringComparison.Ordinal))
                     continue;
 
-                // Found the target method. Get its first sequence point.
-                (int ILOffset, string File, int Line)[] targetSeqPoints =
-                    _pdbMapper.GetMethodSequencePoints(targetAsmPath, jitMethod.MethodToken);
-                if (targetSeqPoints.Length == 0)
-                    continue;
-
-                if (!model.JitMethodMappings.TryGetValue((jitMethod.MethodToken, jitMethod.AssemblyName), out JitMethodMapping? targetMapping))
-                    continue;
-
-                ulong targetAddr = targetMapping.GetNativeAddress(targetSeqPoints[0].ILOffset);
-                if (SetManagedStepBreakpoint(model, targetAddr))
-                {
-                    _log.LogInfo(_logStore,
-                        $"Managed step-into: target BP at 0x{targetAddr:X} ({targetSeqPoints[0].File}:{targetSeqPoints[0].Line}) in {jitMethod.AssemblyName}");
+                if (TrySetBpOnJitMethod(model, jitMethod))
                     return true;
-                }
             }
         }
 
+        return false;
+    }
+
+    /// <summary>
+    /// Sets a temp BP at the first source line of a JIT'd method.
+    /// </summary>
+    private bool TrySetBpOnJitMethod(NativeDebuggerModel model, JitMethodInfo jitMethod)
+    {
+        string? targetAsmPath = _managedDebugger.FindAssemblyPath(model, jitMethod.AssemblyName);
+        if (targetAsmPath == null)
+            return false;
+
+        (int ILOffset, string File, int Line)[] targetSeqPoints =
+            _pdbMapper.GetMethodSequencePoints(targetAsmPath, jitMethod.MethodToken);
+        if (targetSeqPoints.Length == 0)
+            return false;
+
+        if (!model.JitMethodMappings.TryGetValue((jitMethod.MethodToken, jitMethod.AssemblyName), out JitMethodMapping? targetMapping))
+            return false;
+
+        ulong targetAddr = targetMapping.GetNativeAddress(targetSeqPoints[0].ILOffset);
+        if (SetManagedStepBreakpoint(model, targetAddr))
+        {
+            _log.LogInfo(_logStore,
+                $"Managed step-into: target BP at 0x{targetAddr:X} ({targetSeqPoints[0].File}:{targetSeqPoints[0].Line}) in {jitMethod.AssemblyName}");
+            return true;
+        }
         return false;
     }
 

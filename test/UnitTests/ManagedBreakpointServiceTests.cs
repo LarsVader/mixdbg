@@ -130,8 +130,12 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
 
         // Method is already JIT'd — profiler reported the correct native address.
         ulong correctJitStart = 0x7FF7B6C82EC0;
+        JitMethodInfo jitInfo = new(0x06000010, correctJitStart, 0x200, "WpfApp");
         lock (_model.JitMethodMap)
-            _model.JitMethodMap[correctJitStart] = new JitMethodInfo(0x06000010, correctJitStart, 0x200, "WpfApp");
+        {
+            _model.JitMethodMap[correctJitStart] = jitInfo;
+            _model.JitMethodMapByToken[(0x06000010, "WpfApp")] = jitInfo;
+        }
         _model.JitMethodMappings[(0x06000010, "WpfApp")] = new JitMethodMapping(
             correctJitStart, [(0x00, 0x00), (0x10, 0x30), (0x20, 0x70), (0x30, 0xA0)]);
 
@@ -714,8 +718,12 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
 
     private void GivenMethodInJitMethodMap(string assembly, int token, ulong startAddress)
     {
+        JitMethodInfo info = new(token, startAddress, 0x200, assembly);
         lock (_model.JitMethodMap)
-            _model.JitMethodMap[startAddress] = new JitMethodInfo(token, startAddress, 0x200, assembly);
+        {
+            _model.JitMethodMap[startAddress] = info;
+            _model.JitMethodMapByToken[(token, assembly)] = info;
+        }
     }
 
     private void GivenAddHardwareBreakpointSucceedsForAnyAddress(uint bpId)

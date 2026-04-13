@@ -478,21 +478,16 @@ internal sealed class ManagedBreakpointService(
     /// <summary>
     /// Searches the profiler's JitMethodMap for a method with the given token and assembly name.
     /// Returns the JIT info if found (method was already JIT'd before this BP was set).
+    /// Uses the secondary index for O(1) lookup instead of scanning all values.
     /// </summary>
     private static JitMethodInfo? FindInJitMethodMap(NativeDebuggerModel model, int methodToken, string assemblyName)
     {
         lock (model.JitMethodMap)
         {
-            foreach (JitMethodInfo info in model.JitMethodMap.Values)
-            {
-                if (info.MethodToken == methodToken &&
-                    info.AssemblyName.Equals(assemblyName, StringComparison.OrdinalIgnoreCase))
-                {
-                    return info;
-                }
-            }
+            return model.JitMethodMapByToken.TryGetValue((methodToken, assemblyName), out JitMethodInfo? info)
+                ? info
+                : null;
         }
-        return null;
     }
 
     /// <summary>

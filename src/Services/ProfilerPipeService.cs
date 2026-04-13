@@ -272,7 +272,9 @@ internal sealed class ProfilerPipeService(
 
         lock (model.JitMethodMap)
         {
-            model.JitMethodMap[jAddr] = new JitMethodInfo(jToken, jAddr, jSize, jAsm);
+            JitMethodInfo jitInfo = new(jToken, jAddr, jSize, jAsm);
+            model.JitMethodMap[jAddr] = jitInfo;
+            model.JitMethodMapByToken[(jToken, jAsm)] = jitInfo;
             model.JitMethodMapSnapshot = null;
         }
 
@@ -357,7 +359,9 @@ internal sealed class ProfilerPipeService(
         // Store in map for stack trace resolution.
         lock (model.JitMethodMap)
         {
-            model.JitMethodMap[address] = new JitMethodInfo(token, address, codeSize, assembly);
+            JitMethodInfo jitInfo = new(token, address, codeSize, assembly);
+            model.JitMethodMap[address] = jitInfo;
+            model.JitMethodMapByToken[(token, assembly)] = jitInfo;
             model.JitMethodMapSnapshot = null;
         }
 

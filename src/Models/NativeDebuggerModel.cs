@@ -157,6 +157,14 @@ public sealed class NativeDebuggerModel : IDisposable
     internal Dictionary<ulong, JitMethodInfo> JitMethodMap { get; } = [];
 
     /// <summary>
+    /// Secondary index into <see cref="JitMethodMap"/> keyed by (MethodToken, AssemblyName).
+    /// Provides O(1) lookup by token+assembly, replacing O(n) scans of JitMethodMap.Values.
+    /// Populated alongside JitMethodMap under the same lock.
+    /// </summary>
+    internal Dictionary<(int Token, string Assembly), JitMethodInfo> JitMethodMapByToken { get; } =
+        new(DeferredBreakpointKeyComparer.Instance);
+
+    /// <summary>
     /// Sorted snapshot of <see cref="JitMethodMap"/> for binary search. Invalidated
     /// (set to null) whenever a new entry is added to JitMethodMap. Rebuilt lazily by
     /// <see cref="ManagedDebuggerService.FindContainingMethod"/>.
