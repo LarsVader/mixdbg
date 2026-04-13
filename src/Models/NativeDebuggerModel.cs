@@ -143,7 +143,8 @@ public sealed class NativeDebuggerModel : IDisposable
     /// from the profiler's JIT notification. Used by ENTER hooks to compute the exact
     /// native address for a breakpointed line.
     /// </summary>
-    internal Dictionary<string, JitMethodMapping> JitMethodMappings { get; } = [];
+    internal Dictionary<(int Token, string Assembly), JitMethodMapping> JitMethodMappings { get; } =
+        new(DeferredBreakpointKeyComparer.Instance);
     internal EventWaitHandle? ProfilerAckEvent { get; set; }
     internal EventWaitHandle? ProfilerRehookEvent { get; set; }
 
@@ -265,27 +266,65 @@ internal record JitNotification(int MethodToken, ulong NativeAddress, uint CodeS
 
 /// <summary>
 /// IL-to-native offset mapping for a JIT'd method. Used to compute exact native
-/// addresses for breakpoints at specific source lines.
+/// addresses for breakpoints at specific source lines. Entries are sorted at
+/// construction time for O(log n) binary search lookups.
 /// </summary>
-internal sealed class JitMethodMapping
+internal sealed class JitMethodMapping(ulong codeStart, List<(int ILOffset, int NativeOffset)> entries)
 {
-    public required ulong CodeStart { get; init; }
-    public required List<(int ILOffset, int NativeOffset)> ILToNativeMap { get; init; }
+    public ulong CodeStart { get; } = codeStart;
+
+    /// <summary>Entries sorted by IL offset for IL→native lookups.</summary>
+    public (int ILOffset, int NativeOffset)[] ILToNativeMap { get; } = [.. entries.OrderBy(e => e.ILOffset)];
+
+    /// <summary>Entries sorted by native offset for native→IL lookups.</summary>
+    private readonly (int ILOffset, int NativeOffset)[] _byNative = [.. entries.OrderBy(e => e.NativeOffset)];
 
     /// <summary>
-    /// Finds the native address for a given IL offset by searching the mapping.
+    /// Finds the native address for a given IL offset using binary search.
     /// Returns the code start + native offset, or the code start if no match.
     /// </summary>
     public ulong GetNativeAddress(int ilOffset)
     {
-        // Find the mapping entry with the largest IL offset ≤ the requested one.
         int bestNativeOffset = 0;
-        foreach ((int il, int native) in ILToNativeMap)
+        int lo = 0, hi = ILToNativeMap.Length - 1;
+        while (lo <= hi)
         {
-            if (il <= ilOffset)
-                bestNativeOffset = native;
+            int mid = lo + (hi - lo) / 2;
+            if (ILToNativeMap[mid].ILOffset <= ilOffset)
+            {
+                bestNativeOffset = ILToNativeMap[mid].NativeOffset;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid - 1;
+            }
         }
         return CodeStart + (ulong)bestNativeOffset;
+    }
+
+    /// <summary>
+    /// Finds the IL offset for a native offset using binary search.
+    /// Returns 0 if no mapping entry has a native offset ≤ the target.
+    /// </summary>
+    public int GetILOffset(uint nativeOffset)
+    {
+        int ilOffset = 0;
+        int lo = 0, hi = _byNative.Length - 1;
+        while (lo <= hi)
+        {
+            int mid = lo + (hi - lo) / 2;
+            if ((uint)_byNative[mid].NativeOffset <= nativeOffset)
+            {
+                ilOffset = _byNative[mid].ILOffset;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid - 1;
+            }
+        }
+        return ilOffset;
     }
 }
 

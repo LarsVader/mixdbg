@@ -601,15 +601,9 @@ public sealed class ManagedBreakpointResolverServiceTests : IDisposable
     private void GivenJitNotification(int token, ulong address, string assembly) =>
         _model.JitNotifications.Enqueue(new JitNotification(token, address, 100, assembly));
 
-    private void GivenJitMethodMapping(string assembly, int token, ulong codeStart, (int ILOffset, int NativeOffset)[] ilMap)
-    {
-        string key = $"{assembly}:{token:X8}";
-        _model.JitMethodMappings[key] = new JitMethodMapping
-        {
-            CodeStart = codeStart,
-            ILToNativeMap = [.. ilMap.Select(m => (m.ILOffset, m.NativeOffset))],
-        };
-    }
+    private void GivenJitMethodMapping(string assembly, int token, ulong codeStart, (int ILOffset, int NativeOffset)[] ilMap) =>
+        _model.JitMethodMappings[(token, assembly)] = new JitMethodMapping(
+            codeStart, [.. ilMap.Select(m => (m.ILOffset, m.NativeOffset))]);
 
     private void GivenEnterBreakpointState(int token, ulong address, string assembly)
     {

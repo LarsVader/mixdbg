@@ -205,9 +205,9 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("JIT:06000001:1000:40:TestAsm:0=0,A=10,14=20");
         WhenWaitingForProcessing();
 
-        ThenJitMethodMappingExists("TestAsm:06000001");
-        ThenJitMethodMappingHasEntryCount("TestAsm:06000001", 3);
-        ThenJitMethodMappingCodeStart("TestAsm:06000001", 0x1000UL);
+        ThenJitMethodMappingExists(0x06000001, "TestAsm");
+        ThenJitMethodMappingHasEntryCount(0x06000001, "TestAsm", 3);
+        ThenJitMethodMappingCodeStart(0x06000001, "TestAsm", 0x1000UL);
     }
 
     [Fact]
@@ -219,7 +219,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("JIT:06000001:1000:40:TestAsm:");
         WhenWaitingForProcessing();
 
-        ThenJitMethodMappingDoesNotExist("TestAsm:06000001");
+        ThenJitMethodMappingDoesNotExist(0x06000001, "TestAsm");
     }
 
     // ── ProfilerReaderLoop: JIT matches deferred breakpoint ─────
@@ -437,8 +437,8 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("JIT:06000001:1000:40:TestAsm:0=0,XY=bad,A=10");
         WhenWaitingForProcessing();
 
-        ThenJitMethodMappingExists("TestAsm:06000001");
-        ThenJitMethodMappingHasEntryCount("TestAsm:06000001", 2);
+        ThenJitMethodMappingExists(0x06000001, "TestAsm");
+        ThenJitMethodMappingHasEntryCount(0x06000001, "TestAsm", 2);
     }
 
     // ── ProfilerReaderLoop: ENTER invalid token ─────────────────
@@ -713,15 +713,19 @@ public sealed class ProfilerPipeServiceTests : IDisposable
 
     private void ThenProfilerHooksActiveIsTrue() => Assert.True(_model.ProfilerHooksActive);
 
-    private void ThenJitMethodMappingExists(string key) => Assert.True(_model.JitMethodMappings.ContainsKey(key),
-            $"JitMethodMappings should contain key '{key}'");
+    private void ThenJitMethodMappingExists(int token, string assembly) => Assert.True(
+        _model.JitMethodMappings.ContainsKey((token, assembly)),
+        $"JitMethodMappings should contain key ({token:X8}, {assembly})");
 
-    private void ThenJitMethodMappingDoesNotExist(string key) => Assert.False(_model.JitMethodMappings.ContainsKey(key),
-            $"JitMethodMappings should not contain key '{key}'");
+    private void ThenJitMethodMappingDoesNotExist(int token, string assembly) => Assert.False(
+        _model.JitMethodMappings.ContainsKey((token, assembly)),
+        $"JitMethodMappings should not contain key ({token:X8}, {assembly})");
 
-    private void ThenJitMethodMappingHasEntryCount(string key, int expected) => Assert.Equal(expected, _model.JitMethodMappings[key].ILToNativeMap.Count);
+    private void ThenJitMethodMappingHasEntryCount(int token, string assembly, int expected) =>
+        Assert.Equal(expected, _model.JitMethodMappings[(token, assembly)].ILToNativeMap.Length);
 
-    private void ThenJitMethodMappingCodeStart(string key, ulong expected) => Assert.Equal(expected, _model.JitMethodMappings[key].CodeStart);
+    private void ThenJitMethodMappingCodeStart(int token, string assembly, ulong expected) =>
+        Assert.Equal(expected, _model.JitMethodMappings[(token, assembly)].CodeStart);
 
     private void ThenJitNotificationQueueHasCount(int expected) => Assert.Equal(expected, _model.JitNotifications.Count);
 

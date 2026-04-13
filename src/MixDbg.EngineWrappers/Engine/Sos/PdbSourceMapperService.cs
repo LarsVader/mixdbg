@@ -18,6 +18,7 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     private readonly Dictionary<string, MetadataReader> _readers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (PEReader Pe, MetadataReader Reader)> _peReaders = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<FileStream> _peStreams = [];
+    private readonly Dictionary<(string AssemblyPath, int MethodToken), (int ILOffset, string File, int Line)[]> _sequencePointCache = [];
 
     /// <summary>Last error from PDB/PE loading, for diagnostics.</summary>
     internal string? LastError { get; private set; }
@@ -225,6 +226,10 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     /// </summary>
     public (int ILOffset, string File, int Line)[] GetMethodSequencePoints(string assemblyPath, int methodToken)
     {
+        (string, int) cacheKey = (assemblyPath, methodToken);
+        if (_sequencePointCache.TryGetValue(cacheKey, out (int ILOffset, string File, int Line)[]? cached))
+            return cached;
+
         MetadataReader? reader = GetOrLoadReader(assemblyPath);
         if (reader == null)
             return [];
@@ -258,7 +263,9 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
 
         // Sort by IL offset (usually already sorted, but be safe).
         result.Sort((a, b) => a.ILOffset.CompareTo(b.ILOffset));
-        return [.. result];
+        (int ILOffset, string File, int Line)[] points = [.. result];
+        _sequencePointCache[cacheKey] = points;
+        return points;
     }
 
     /// <summary>

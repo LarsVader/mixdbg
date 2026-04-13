@@ -248,16 +248,28 @@ internal sealed class ProfilerPipeService(
     private void ParseJitNotification(NativeDebuggerModel model, string data)
     {
         // Format: TOKEN:ADDRESS:SIZE:ASSEMBLY[:IL0=N0,IL1=N1,...]
-        string[] jitParts = data.Split(':');
-        if (jitParts.Length < 4 ||
-            !int.TryParse(jitParts[0], System.Globalization.NumberStyles.HexNumber, null, out int jToken) ||
-            !ulong.TryParse(jitParts[1], System.Globalization.NumberStyles.HexNumber, null, out ulong jAddr) ||
-            !uint.TryParse(jitParts[2], System.Globalization.NumberStyles.HexNumber, null, out uint jSize))
-        {
-            return;
-        }
+        // Span-based field parsing to avoid string[] allocation on this hot path.
+        ReadOnlySpan<char> span = data.AsSpan();
 
-        string jAsm = jitParts[3];
+        int sep1 = span.IndexOf(':');
+        if (sep1 < 0 || !int.TryParse(span[..sep1], System.Globalization.NumberStyles.HexNumber, null, out int jToken))
+            return;
+        span = span[(sep1 + 1)..];
+
+        int sep2 = span.IndexOf(':');
+        if (sep2 < 0 || !ulong.TryParse(span[..sep2], System.Globalization.NumberStyles.HexNumber, null, out ulong jAddr))
+            return;
+        span = span[(sep2 + 1)..];
+
+        int sep3 = span.IndexOf(':');
+        if (sep3 < 0 || !uint.TryParse(span[..sep3], System.Globalization.NumberStyles.HexNumber, null, out uint jSize))
+            return;
+        span = span[(sep3 + 1)..];
+
+        // Assembly name (must be materialized as string for storage).
+        int sep4 = span.IndexOf(':');
+        string jAsm = sep4 >= 0 ? span[..sep4].ToString() : span.ToString();
+
         lock (model.JitMethodMap)
         {
             model.JitMethodMap[jAddr] = new JitMethodInfo(jToken, jAddr, jSize, jAsm);
@@ -267,33 +279,31 @@ internal sealed class ProfilerPipeService(
         // Parse IL-to-native mapping if present (5th field).
         // Format: IL0=N0,IL1=N1,... (hex values). Parsed with spans to avoid
         // per-entry string[] allocations on this hot path.
-        if (jitParts.Length >= 5 && jitParts[4].Length > 0)
+        if (sep4 >= 0)
         {
-            List<(int ILOffset, int NativeOffset)> mapEntries = [];
-            ReadOnlySpan<char> mapSpan = jitParts[4].AsSpan();
-            while (mapSpan.Length > 0)
+            ReadOnlySpan<char> mapSpan = span[(sep4 + 1)..];
+            if (mapSpan.Length > 0)
             {
-                int comma = mapSpan.IndexOf(',');
-                ReadOnlySpan<char> entry = comma >= 0 ? mapSpan[..comma] : mapSpan;
-                mapSpan = comma >= 0 ? mapSpan[(comma + 1)..] : default;
+                List<(int ILOffset, int NativeOffset)> mapEntries = [];
+                while (mapSpan.Length > 0)
+                {
+                    int comma = mapSpan.IndexOf(',');
+                    ReadOnlySpan<char> entry = comma >= 0 ? mapSpan[..comma] : mapSpan;
+                    mapSpan = comma >= 0 ? mapSpan[(comma + 1)..] : default;
 
-                int eq = entry.IndexOf('=');
-                if (eq > 0 &&
-                    int.TryParse(entry[..eq], System.Globalization.NumberStyles.HexNumber, null, out int il) &&
-                    int.TryParse(entry[(eq + 1)..], System.Globalization.NumberStyles.HexNumber, null, out int nat))
-                {
-                    mapEntries.Add((il, nat));
+                    int eq = entry.IndexOf('=');
+                    if (eq > 0 &&
+                        int.TryParse(entry[..eq], System.Globalization.NumberStyles.HexNumber, null, out int il) &&
+                        int.TryParse(entry[(eq + 1)..], System.Globalization.NumberStyles.HexNumber, null, out int nat))
+                    {
+                        mapEntries.Add((il, nat));
+                    }
                 }
-            }
-            if (mapEntries.Count > 0)
-            {
-                string key = $"{jAsm}:{jToken:X8}";
-                model.JitMethodMappings[key] = new JitMethodMapping
+                if (mapEntries.Count > 0)
                 {
-                    CodeStart = jAddr,
-                    ILToNativeMap = mapEntries,
-                };
-                _log.LogVerbose(_logStore, $"ProfilerReader: stored IL map for {key} ({mapEntries.Count} entries)");
+                    model.JitMethodMappings[(jToken, jAsm)] = new JitMethodMapping(jAddr, mapEntries);
+                    _log.LogVerbose(_logStore, $"ProfilerReader: stored IL map for {jAsm}:0x{jToken:X8} ({mapEntries.Count} entries)");
+                }
             }
         }
 

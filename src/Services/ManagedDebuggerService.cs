@@ -232,19 +232,11 @@ internal sealed class ManagedDebuggerService(
     /// </summary>
     internal static int ComputeILOffset(NativeDebuggerModel model, JitMethodInfo method, ulong instructionPointer)
     {
-        string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
-        if (!model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? methodMapping))
+        if (!model.JitMethodMappings.TryGetValue((method.MethodToken, method.AssemblyName), out JitMethodMapping? methodMapping))
             return 0;
 
         uint nativeOffset = (uint)(instructionPointer - methodMapping.CodeStart);
-        int ilOffset = 0;
-        // Find the largest IL offset whose native start ≤ our offset.
-        foreach ((int il, int nat) in methodMapping.ILToNativeMap)
-        {
-            if ((uint)nat <= nativeOffset)
-                ilOffset = il;
-        }
-        return ilOffset;
+        return methodMapping.GetILOffset(nativeOffset);
     }
 
     /// <summary>

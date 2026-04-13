@@ -350,9 +350,8 @@ internal sealed class EngineQueryService(
                     returnLine = sp.Line;
             }
 
-            string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
             if (returnLine > 0
-                && model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+                && model.JitMethodMappings.TryGetValue((method.MethodToken, method.AssemblyName), out JitMethodMapping? mapping))
             {
                 foreach ((int ILOffset, string File, int Line) sp in seqPoints)
                 {
@@ -401,8 +400,7 @@ internal sealed class EngineQueryService(
                 }
             }
 
-            string bpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
-            if (nextPoint != null && model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+            if (nextPoint != null && model.JitMethodMappings.TryGetValue((method.MethodToken, method.AssemblyName), out JitMethodMapping? mapping))
             {
                 // Next line exists — set BP at its native address.
                 ulong targetAddr = mapping.GetNativeAddress(nextPoint.Value.ILOffset);
@@ -446,7 +444,7 @@ internal sealed class EngineQueryService(
             return false;
 
         int currentIL = ManagedDebuggerService.ComputeILOffset(model, method, ip);
-        string callerBpKey = $"{method.AssemblyName}:{method.MethodToken:X8}";
+        (int Token, string Assembly) callerBpKey = (method.MethodToken, method.AssemblyName);
         bool haveBp = false;
 
         // 1. Parse IL to find the call target at this offset.
@@ -719,8 +717,7 @@ internal sealed class EngineQueryService(
                 if (targetSeqPoints.Length == 0)
                     continue;
 
-                string targetBpKey = $"{jitMethod.AssemblyName}:{jitMethod.MethodToken:X8}";
-                if (!model.JitMethodMappings.TryGetValue(targetBpKey, out JitMethodMapping? targetMapping))
+                if (!model.JitMethodMappings.TryGetValue((jitMethod.MethodToken, jitMethod.AssemblyName), out JitMethodMapping? targetMapping))
                     continue;
 
                 ulong targetAddr = targetMapping.GetNativeAddress(targetSeqPoints[0].ILOffset);

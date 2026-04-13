@@ -132,11 +132,8 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         ulong correctJitStart = 0x7FF7B6C82EC0;
         lock (_model.JitMethodMap)
             _model.JitMethodMap[correctJitStart] = new JitMethodInfo(0x06000010, correctJitStart, 0x200, "WpfApp");
-        _model.JitMethodMappings["WpfApp:06000010"] = new JitMethodMapping
-        {
-            CodeStart = correctJitStart,
-            ILToNativeMap = [(0x00, 0x00), (0x10, 0x30), (0x20, 0x70), (0x30, 0xA0)],
-        };
+        _model.JitMethodMappings[(0x06000010, "WpfApp")] = new JitMethodMapping(
+            correctJitStart, [(0x00, 0x00), (0x10, 0x30), (0x20, 0x70), (0x30, 0xA0)]);
 
         // Accept any address for the HW BP.
         GivenAddHardwareBreakpointSucceedsForAnyAddress(bpId: 42);

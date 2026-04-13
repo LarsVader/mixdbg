@@ -439,7 +439,7 @@ public sealed class EngineQueryServiceTests : IDisposable
         GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
         GivenStackFramesForStep([new NativeStackFrame(0x5010), new NativeStackFrame(0x3000)]);
         GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
-        GivenILToNativeMapping("App:06000001", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
+        GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
         GivenSequencePoints(@"C:\src\App.dll", 0x06000001, [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
         GivenAddHardwareBreakpointSucceeds(0x5020, bpId: 99);
 
@@ -456,7 +456,7 @@ public sealed class EngineQueryServiceTests : IDisposable
         GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
         GivenStackFramesForStep([new NativeStackFrame(0x5010), new NativeStackFrame(0x3000)]);
         GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
-        GivenILToNativeMapping("App:06000001", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
+        GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
         GivenSequencePoints(@"C:\src\App.dll", 0x06000001, [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
         GivenAddHardwareBreakpointSucceeds(0x5020, bpId: 99);
 
@@ -481,7 +481,7 @@ public sealed class EngineQueryServiceTests : IDisposable
         GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
         GivenStackFramesForStep([new NativeStackFrame(0x5020), new NativeStackFrame(0x3000)]);
         GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
-        GivenILToNativeMapping("App:06000001", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
+        GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
         GivenSequencePoints(@"C:\src\App.dll", 0x06000001, [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
         GivenAddHardwareBreakpointSucceeds(0x3000, bpId: 50);
 
@@ -609,12 +609,9 @@ public sealed class EngineQueryServiceTests : IDisposable
     private void GivenAssemblyPathForMethod(string assemblyName, string path) =>
         _ = _managedDebugger.FindAssemblyPath(_model, assemblyName).Returns(path);
 
-    private void GivenILToNativeMapping(string key, ulong codeStart, (int IL, int Native)[] map) =>
-        _model.JitMethodMappings[key] = new JitMethodMapping
-        {
-            CodeStart = codeStart,
-            ILToNativeMap = [.. map.Select(m => (m.IL, m.Native))],
-        };
+    private void GivenILToNativeMapping(int token, string assembly, ulong codeStart, (int IL, int Native)[] map) =>
+        _model.JitMethodMappings[(token, assembly)] = new JitMethodMapping(
+            codeStart, [.. map.Select(m => (m.IL, m.Native))]);
 
     private void GivenSequencePoints(string assemblyPath, int methodToken,
         (int ILOffset, string File, int Line)[] points) =>

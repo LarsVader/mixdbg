@@ -33,7 +33,7 @@ internal sealed class ManagedBreakpointResolverService(
         catch { }
 
         List<Breakpoint> resolved = [];
-        List<DeferredManagedBreakpoint> bound = [];
+        HashSet<DeferredManagedBreakpoint> bound = [];
 
         foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
         {
@@ -49,7 +49,7 @@ internal sealed class ManagedBreakpointResolverService(
                 uint? hwBpId = _bpService.SetManagedCodeBreakpoint(model, nativeAddress, deferred.FilePath, deferred.Line);
                 if (hwBpId != null)
                 {
-                    bound.Add(deferred);
+                    _ = bound.Add(deferred);
                     resolved.Add(new Breakpoint
                     {
                         Id = deferred.BpId,
@@ -65,7 +65,7 @@ internal sealed class ManagedBreakpointResolverService(
                 }
                 else
                 {
-                    bound.Add(deferred);
+                    _ = bound.Add(deferred);
                     resolved.Add(new Breakpoint
                     {
                         Id = deferred.BpId,
@@ -86,10 +86,11 @@ internal sealed class ManagedBreakpointResolverService(
             }
         }
 
-        foreach (DeferredManagedBreakpoint r in bound)
-            _ = model.DeferredManagedBreakpoints.Remove(r);
         if (bound.Count > 0)
+        {
+            _ = model.DeferredManagedBreakpoints.RemoveAll(bound.Contains);
             model.RebuildDeferredBreakpointIndex();
+        }
 
         return [.. resolved];
     }
@@ -100,16 +101,17 @@ internal sealed class ManagedBreakpointResolverService(
             return [];
 
         List<Breakpoint> resolved = [];
-        List<DeferredManagedBreakpoint> bound = [];
+        HashSet<DeferredManagedBreakpoint> bound = [];
 
         // Drain all pending JIT notifications from the profiler pipe.
         while (model.JitNotifications.TryDequeue(out JitNotification? jit))
             TryMatchJitToDeferred(model, jit, resolved, bound);
 
-        foreach (DeferredManagedBreakpoint r in bound)
-            _ = model.DeferredManagedBreakpoints.Remove(r);
         if (bound.Count > 0)
+        {
+            _ = model.DeferredManagedBreakpoints.RemoveAll(bound.Contains);
             model.RebuildDeferredBreakpointIndex();
+        }
 
         // Signal the ACK event to unblock the profiler's JITCompilationFinished callback.
         // The hardware BP is now set, so when the profiler unblocks and the CLR dispatches
@@ -126,7 +128,7 @@ internal sealed class ManagedBreakpointResolverService(
     /// </summary>
     private void TryMatchJitToDeferred(
         NativeDebuggerModel model, JitNotification jit,
-        List<Breakpoint> resolved, List<DeferredManagedBreakpoint> bound)
+        List<Breakpoint> resolved, HashSet<DeferredManagedBreakpoint> bound)
     {
         foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
         {
@@ -145,9 +147,8 @@ internal sealed class ManagedBreakpointResolverService(
             // Check if this method has ENTER hooks active. When hooks are active
             // and we have IL-to-native mapping, the ENTER path sets a transient BP
             // at the exact breakpointed line (more precise than method entry).
-            string bpKey = $"{jit.AssemblyName}:{jit.MethodToken:X8}";
             bool hasEnterHooks = model.ProfilerHooksActive &&
-                model.JitMethodMappings.ContainsKey(bpKey);
+                model.JitMethodMappings.ContainsKey((jit.MethodToken, jit.AssemblyName));
             if (hasEnterHooks)
             {
                 _log.LogInfo(_logStore, $"  Hooks active: stored address, ENTER will set BP");
@@ -157,7 +158,7 @@ internal sealed class ManagedBreakpointResolverService(
             // Without hooks: set hardware BP now.
             uint? hwBpId = _bpService.SetManagedCodeBreakpoint(model, jit.NativeAddress, deferred.FilePath, deferred.Line);
 
-            bound.Add(deferred);
+            _ = bound.Add(deferred);
             resolved.Add(new Breakpoint
             {
                 Id = deferred.BpId,
@@ -256,7 +257,6 @@ internal sealed class ManagedBreakpointResolverService(
         // Find all matching deferred BPs and compute exact native addresses
         // from the IL-to-native mapping (resolves breakpoint line → native offset).
         // Multiple BPs may target the same method (e.g. lines before and after a native call).
-        string bpKey = $"{model.EnterBreakpointAssembly}:{model.EnterBreakpointToken:X8}";
         bool matched = false;
         foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
         {
@@ -266,7 +266,7 @@ internal sealed class ManagedBreakpointResolverService(
             {
                 // Use IL-to-native mapping to get the exact address for the BP line.
                 ulong addr = model.EnterBreakpointAddress; // fallback: body entry
-                if (model.JitMethodMappings.TryGetValue(bpKey, out JitMethodMapping? mapping))
+                if (model.JitMethodMappings.TryGetValue((model.EnterBreakpointToken, model.EnterBreakpointAssembly!), out JitMethodMapping? mapping))
                 {
                     addr = mapping.GetNativeAddress(deferred.ILOffset);
                     _log.LogInfo(_logStore,

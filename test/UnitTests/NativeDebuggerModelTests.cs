@@ -45,11 +45,7 @@ public sealed class NativeDebuggerModelTests : IDisposable
     [Fact]
     public void JitMethodMapping_GetNativeAddress_WhenExactMatch_ReturnsCorrectAddress()
     {
-        JitMethodMapping mapping = new()
-        {
-            CodeStart = 0x1000,
-            ILToNativeMap = [(0, 0), (10, 20), (25, 50)],
-        };
+        JitMethodMapping mapping = new(0x1000, [(0, 0), (10, 20), (25, 50)]);
 
         ulong addr = mapping.GetNativeAddress(10);
 
@@ -59,11 +55,7 @@ public sealed class NativeDebuggerModelTests : IDisposable
     [Fact]
     public void JitMethodMapping_GetNativeAddress_WhenNoMatch_ReturnsCodeStart()
     {
-        JitMethodMapping mapping = new()
-        {
-            CodeStart = 0x2000,
-            ILToNativeMap = [(10, 20), (25, 50)],
-        };
+        JitMethodMapping mapping = new(0x2000, [(10, 20), (25, 50)]);
 
         // IL offset 5 is before any entry, so bestNativeOffset stays 0.
         ulong addr = mapping.GetNativeAddress(5);
@@ -74,11 +66,7 @@ public sealed class NativeDebuggerModelTests : IDisposable
     [Fact]
     public void JitMethodMapping_GetNativeAddress_WhenBetweenEntries_ReturnsLargestLessOrEqual()
     {
-        JitMethodMapping mapping = new()
-        {
-            CodeStart = 0x3000,
-            ILToNativeMap = [(0, 0), (10, 20), (25, 50)],
-        };
+        JitMethodMapping mapping = new(0x3000, [(0, 0), (10, 20), (25, 50)]);
 
         // IL offset 15 is between 10 and 25, so the best match is (10, 20).
         ulong addr = mapping.GetNativeAddress(15);

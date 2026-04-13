@@ -982,15 +982,8 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
         => _model.ManagedBreakpointSources[address] = source;
 
     private void GivenJitMethodMapping(string assemblyName, int token, ulong codeStart,
-        List<(int ILOffset, int NativeOffset)> map)
-    {
-        string key = $"{assemblyName}:{token:X8}";
-        _model.JitMethodMappings[key] = new JitMethodMapping
-        {
-            CodeStart = codeStart,
-            ILToNativeMap = map,
-        };
-    }
+        List<(int ILOffset, int NativeOffset)> map) =>
+        _model.JitMethodMappings[(token, assemblyName)] = new JitMethodMapping(codeStart, map);
 
     #endregion
 

@@ -245,20 +245,16 @@ internal sealed class EngineLifecycleService(
                     && model.DeferredManagedBreakpoints.Exists(d => d.BpId == -1);
                 model.HitUserBreakpoint = false;
 
-                if (isTempBp || isStepIntoEnterBp)
-                {
-                    // Step BP fired — step complete.
-                    // Remove step-into deferred BPs (BpId=-1) so they don't fire again.
-                    _ = model.DeferredManagedBreakpoints.RemoveAll(d => d.BpId == -1);
+                // Remove step-into deferred BPs (BpId=-1) in both cases.
+                int removed = model.DeferredManagedBreakpoints.RemoveAll(d => d.BpId == -1);
+                if (removed > 0)
                     model.RebuildDeferredBreakpointIndex();
-                    CompleteManagedStep(model);
+                CompleteManagedStep(model);
+
+                if (isTempBp || isStepIntoEnterBp)
                     return "step";
-                }
 
                 // Real user BP hit during managed step — cancel step, report breakpoint.
-                _ = model.DeferredManagedBreakpoints.RemoveAll(d => d.BpId == -1);
-                model.RebuildDeferredBreakpointIndex();
-                CompleteManagedStep(model);
                 return "breakpoint";
             }
 

@@ -149,8 +149,7 @@ internal sealed class ManagedBreakpointService(
             {
                 // Use IL-to-native mapping for exact-line address if available.
                 ulong targetAddress = jitInfo.StartAddress;
-                string mappingKey = $"{resolved.AssemblyName}:{resolved.MethodToken:X8}";
-                if (model.JitMethodMappings.TryGetValue(mappingKey, out JitMethodMapping? mapping))
+                if (model.JitMethodMappings.TryGetValue((resolved.MethodToken, resolved.AssemblyName), out JitMethodMapping? mapping))
                 {
                     targetAddress = mapping.GetNativeAddress(resolved.ILOffset);
                     _log.LogInfo(_logStore, $"  JitMethodMap: IL 0x{resolved.ILOffset:X} -> native 0x{targetAddress:X}");
