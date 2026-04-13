@@ -8,7 +8,7 @@ namespace MixDbg;
 public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddMixDbgCore(this IServiceCollection services,
-        Stream input, Stream output, string? logPath = null)
+        Stream input, Stream output, string? logPath = null, bool verbose = false)
     {
         // Stateless services
         _ = services.AddSingleton<ILoggingService, LoggingService>();
@@ -26,8 +26,14 @@ public static class ServiceCollectionExtensions
 
         // State models (singletons created by services)
         _ = services.AddSingleton(sp =>
-            logPath != null ? new Models.LogStore(logPath)
-                            : sp.GetRequiredService<ILoggingService>().CreateStore());
+        {
+            Models.LogStore store = logPath != null
+                ? new Models.LogStore(logPath)
+                : sp.GetRequiredService<ILoggingService>().CreateStore();
+            if (verbose)
+                store.MinLevel = Models.LogLevel.Verbose;
+            return store;
+        });
         _ = services.AddSingleton(sp =>
             sp.GetRequiredService<IDapServer>().CreateModel(input, output));
         _ = services.AddSingleton(new Models.DebugSessionModel());

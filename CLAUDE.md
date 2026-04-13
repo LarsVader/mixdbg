@@ -22,6 +22,17 @@ Output: `profiler/x64/Debug/MixDbgProfiler.dll`
 
 MixDbg looks for the DLL next to its exe, or in `profiler/x64/Debug/` during development.
 
+## Testing
+
+**Integration tests are the most important tests** — always run them after any code change. They catch real regressions that unit tests miss.
+
+```bash
+dotnet test test/IntegrationTests/MixDbg.IntegrationTests.csproj
+dotnet test test/UnitTests/MixDbg.UnitTests.csproj
+```
+
+Never report a task as done without running both.
+
 ## Test Target
 
 The `test/TestApp/` directory contains a mixed-mode WPF app (C# frontend → C++/CLI wrapper → native C++ library) used as the integration test target. Build with `make all` from `test/TestApp/`.

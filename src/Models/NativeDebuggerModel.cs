@@ -146,6 +146,12 @@ public sealed class NativeDebuggerModel : IDisposable
     // Stack trace cache — DAP-level result, invalidated on continue/step.
     internal StackFrame[]? CachedStackTraceResult { get; set; }
 
+    /// <summary>
+    /// Caches source file lines for <c>CheckStepLanding</c> to avoid
+    /// re-reading entire files from disk on every step.
+    /// </summary>
+    internal Dictionary<string, string[]> SourceFileCache { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     // Signaled when the target is stopped and ready for commands.
     internal ManualResetEventSlim Stopped { get; } = new(false);
 

@@ -485,9 +485,9 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         _ = services.AddSingleton(Substitute.For<IManagedDebugger>());
         _ = services.AddSingleton(_sourceFiles);
 
-        // Models
-        _ = services.AddSingleton(sp =>
-            sp.GetRequiredService<ILoggingService>().CreateStore());
+        // Models — use a per-test temp log file to avoid file locking conflicts
+        _ = services.AddSingleton(new LogStore(
+            Path.Combine(Path.GetTempPath(), $"mixdbg_test_{Guid.NewGuid()}.log")));
         _ = services.AddSingleton(sp =>
             sp.GetRequiredService<IDapServer>().CreateModel(_inputStream!, _outputStream));
         _ = services.AddSingleton(new DebugSessionModel());
@@ -503,6 +503,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
 
         IDapDispatcher dispatcher = provider.GetRequiredService<IDapDispatcher>();
         DebugSessionModel sessionModel = provider.GetRequiredService<DebugSessionModel>();
+        LogStore logStore = provider.GetRequiredService<LogStore>();
 
         dispatcher.Run();
 
@@ -515,6 +516,8 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         }
 
         sessionModel.Dispose();
+        logStore.Dispose();
+        try { File.Delete(logStore.FilePath); } catch { }
 
         ParseOutput();
     }

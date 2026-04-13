@@ -14,6 +14,12 @@ internal sealed class LoggingService : ILoggingService
     public LogStore CreateStore()
         => new(DefaultLogPath);
 
+    public void LogVerbose(
+        LogStore store,
+        string message,
+        [CallerFilePath] string sender = "")
+        => AddEntry(store, LogLevel.Verbose, message, sender);
+
     public void LogInfo(
         LogStore store,
         string message,
@@ -54,6 +60,9 @@ internal sealed class LoggingService : ILoggingService
         string message,
         string callerFilePath)
     {
+        if (level < store.MinLevel)
+            return;
+
         string senderName = ExtractSender(callerFilePath);
 
         LogEntry entry = new(DateTime.Now, level, senderName, message);
@@ -61,9 +70,29 @@ internal sealed class LoggingService : ILoggingService
         lock (store.Lock)
         {
             store.Entries.Add(entry);
-            string line = $"[{entry.Timestamp:HH:mm:ss.fff}] [{entry.Level}] [{entry.Sender}] {entry.Message}";
-            File.AppendAllText(store.FilePath, line + Environment.NewLine);
+            EnsureWriter(store);
+            store.Writer!.WriteLine(
+                $"[{entry.Timestamp:HH:mm:ss.fff}] [{entry.Level}] [{entry.Sender}] {entry.Message}");
         }
+    }
+
+    /// <summary>
+    /// Opens the log file writer lazily on first use. The writer stays open
+    /// for the lifetime of the <see cref="LogStore"/>, avoiding the overhead
+    /// of opening and closing the file on every log call.
+    /// </summary>
+    private static void EnsureWriter(LogStore store)
+    {
+        if (store.Writer != null)
+            return;
+
+        // Open with FileShare.ReadWrite so concurrent readers (tests, tail -f)
+        // and parallel test processes don't conflict.
+        FileStream fs = new(store.FilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+        store.Writer = new StreamWriter(fs)
+        {
+            AutoFlush = true,
+        };
     }
 
     internal static string ExtractSender(string filePath)

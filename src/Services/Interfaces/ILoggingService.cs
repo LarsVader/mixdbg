@@ -15,6 +15,9 @@ public interface ILoggingService
     /// <summary>Creates a new <see cref="LogStore"/> with the default log file path (~\mixdbg.log).</summary>
     LogStore CreateStore();
 
+    /// <summary>Logs a verbose diagnostic message (suppressed unless min level is Verbose).</summary>
+    void LogVerbose(LogStore store, string message, [CallerFilePath] string sender = "");
+
     /// <summary>Logs an informational message.</summary>
     void LogInfo(LogStore store, string message, [CallerFilePath] string sender = "");
 

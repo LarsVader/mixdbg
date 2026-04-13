@@ -137,14 +137,14 @@ internal sealed class EngineLifecycleService(
             dbgEngWrapperModel.InterruptRequested = false;
             _wrapper.SetInterrupt(dbgEngWrapperModel);
         }
-        _log.LogInfo(_logStore, "WaitForEvent...");
+        _log.LogVerbose(_logStore, "WaitForEvent...");
         model.InWaitForEvent = true;
         WaitForEventResult waitResult = _wrapper.WaitForEvent(dbgEngWrapperModel);
         model.InWaitForEvent = false;
-        _log.LogInfo(_logStore, $"WaitForEvent returned {waitResult}");
+        _log.LogVerbose(_logStore, $"WaitForEvent returned {waitResult}");
         if (waitResult == WaitForEventResult.Failed)
         {
-            _log.LogInfo(_logStore, $"WaitForEvent failed, terminated={model.Terminated} exited={model.TargetExited}");
+            _log.LogVerbose(_logStore, $"WaitForEvent failed, terminated={model.Terminated} exited={model.TargetExited}");
             return false;
         }
         model.Stopped.Set(); // Target is now stopped.
@@ -204,7 +204,7 @@ internal sealed class EngineLifecycleService(
         }
 
         DrainPendingCommands(model);
-        _log.LogInfo(_logStore, "System stop — auto-continuing");
+        _log.LogVerbose(_logStore, "System stop — auto-continuing");
         model.Stopped.Reset();
         _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
         return true;
@@ -214,8 +214,8 @@ internal sealed class EngineLifecycleService(
     {
         // Get last event info for logging
         EngineEventInfo evt = _wrapper.GetLastEventInfo(dbgEngWrapperModel);
-        _log.LogInfo(_logStore, $"Event: type=0x{evt.Type:X} pid={evt.ProcessId} tid={evt.ThreadId} desc=\"{evt.Description}\"");
-        _log.LogInfo(_logStore, $"State: configDone={model.ConfigDone} hitUserBp={model.HitUserBreakpoint} stepping={model.Stepping} pause={model.PauseRequested}");
+        _log.LogVerbose(_logStore, $"Event: type=0x{evt.Type:X} pid={evt.ProcessId} tid={evt.ThreadId} desc=\"{evt.Description}\"");
+        _log.LogVerbose(_logStore, $"State: configDone={model.ConfigDone} hitUserBp={model.HitUserBreakpoint} stepping={model.Stepping} pause={model.PauseRequested}");
     }
 
     private void SendStopDapResponseAndProcessCommands(NativeDebuggerModel model, DbgEngWrapperModel dbgEngWrapperModel, string reason)
@@ -331,7 +331,7 @@ internal sealed class EngineLifecycleService(
         // No source at all — sourceless (JIT thunk, etc.).
         if (lineInfo == null || lineInfo.Value.Line == 0)
         {
-            _log.LogInfo(_logStore, $"CheckStepLanding: ip=0x{ip:X} no source → StepOut");
+            _log.LogVerbose(_logStore, $"CheckStepLanding: ip=0x{ip:X} no source → StepOut");
             return StepAutoAction.StepOut;
         }
 
@@ -344,23 +344,31 @@ internal sealed class EngineLifecycleService(
             && origLine == line
             && string.Equals(origFile, file, StringComparison.OrdinalIgnoreCase))
         {
-            _log.LogInfo(_logStore, $"CheckStepLanding: same line {line} → ReStep");
+            _log.LogVerbose(_logStore, $"CheckStepLanding: same line {line} → ReStep");
             return StepAutoAction.ReStep;
         }
 
         // Check if this is a closing brace — no meaningful code, step out.
         try
         {
-            if (File.Exists(file))
+            if (!model.SourceFileCache.TryGetValue(file, out string[]? lines))
             {
-                string[] lines = File.ReadAllLines(file);
+                if (File.Exists(file))
+                {
+                    lines = File.ReadAllLines(file);
+                    model.SourceFileCache[file] = lines;
+                }
+            }
+
+            if (lines != null)
+            {
                 int lineIndex = line - 1;
                 if (lineIndex >= 0 && lineIndex < lines.Length)
                 {
                     string trimmed = lines[lineIndex].Trim();
                     if (trimmed == "}" || trimmed == "};")
                     {
-                        _log.LogInfo(_logStore, $"CheckStepLanding: closing brace at {file}:{line} → StepOut");
+                        _log.LogVerbose(_logStore, $"CheckStepLanding: closing brace at {file}:{line} → StepOut");
                         return StepAutoAction.StepOut;
                     }
                 }
@@ -416,13 +424,13 @@ internal sealed class EngineLifecycleService(
     {
         while (model.Commands.TryTake(out Action? cmd))
         {
-            _log.LogInfo(_logStore, "DrainPendingCommands: executing queued command");
+            _log.LogVerbose(_logStore, "DrainPendingCommands: executing queued command");
             cmd();
             EngineExecutionStatus status = _wrapper.GetExecutionStatus(model.Wrapper);
             if (status != EngineExecutionStatus.Break
                 && status != EngineExecutionStatus.NoDebuggee)
             {
-                _log.LogInfo(_logStore, "DrainPendingCommands: command caused resume — stopping drain");
+                _log.LogVerbose(_logStore, "DrainPendingCommands: command caused resume — stopping drain");
                 return;
             }
         }
@@ -430,7 +438,7 @@ internal sealed class EngineLifecycleService(
 
     private void ProcessCommandsUntilResume(NativeDebuggerModel model)
     {
-        _log.LogInfo(_logStore, "ProcessCommandsUntilResume: waiting for commands");
+        _log.LogVerbose(_logStore, "ProcessCommandsUntilResume: waiting for commands");
         while (!model.Terminated)
         {
             Action cmd;
@@ -440,11 +448,11 @@ internal sealed class EngineLifecycleService(
             }
             catch (InvalidOperationException)
             {
-                _log.LogInfo(_logStore, "ProcessCommandsUntilResume: collection completed");
+                _log.LogVerbose(_logStore, "ProcessCommandsUntilResume: collection completed");
                 break;
             }
 
-            _log.LogInfo(_logStore, "ProcessCommandsUntilResume: executing command");
+            _log.LogVerbose(_logStore, "ProcessCommandsUntilResume: executing command");
             cmd();
 
             // Step completed inside the command (managed step-into loop, or native "gu").
@@ -492,11 +500,11 @@ internal sealed class EngineLifecycleService(
                 });
                 continue;
             }
-            _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: execStatus={status}");
+            _log.LogVerbose(_logStore, $"ProcessCommandsUntilResume: execStatus={status}");
             if (status != EngineExecutionStatus.Break
                 && status != EngineExecutionStatus.NoDebuggee)
             {
-                _log.LogInfo(_logStore, "ProcessCommandsUntilResume: resuming");
+                _log.LogVerbose(_logStore, "ProcessCommandsUntilResume: resuming");
                 model.Stopped.Reset();
                 break;
             }

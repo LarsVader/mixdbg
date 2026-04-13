@@ -83,17 +83,24 @@ public sealed class ServiceCollectionExtensionsTests : IDisposable
     #region Misc
 
     private readonly ServiceProvider _provider;
+    private readonly string _logPath;
 
     public ServiceCollectionExtensionsTests()
     {
         using MemoryStream input = new();
         using MemoryStream output = new();
+        _logPath = Path.Combine(Path.GetTempPath(), $"mixdbg_test_{Guid.NewGuid()}.log");
         _provider = new ServiceCollection()
-            .AddMixDbgCore(input, output)
+            .AddMixDbgCore(input, output, _logPath)
             .BuildServiceProvider();
     }
 
-    public void Dispose() => _provider.Dispose();
+    public void Dispose()
+    {
+        _provider.GetRequiredService<LogStore>().Dispose();
+        _provider.Dispose();
+        try { File.Delete(_logPath); } catch { }
+    }
 
     #endregion
 }

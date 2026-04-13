@@ -5,6 +5,8 @@ namespace MixDbg.Models;
 /// </summary>
 public enum LogLevel
 {
+    /// <summary>High-frequency diagnostic messages (event loop ticks, per-variable dumps).</summary>
+    Verbose,
     Info,
     Warning,
     Error,

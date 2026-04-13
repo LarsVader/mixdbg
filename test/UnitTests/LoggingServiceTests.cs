@@ -136,6 +136,35 @@ public sealed class LoggingServiceTests : IDisposable
     }
 
     [Fact]
+    public void LogVerbose_WhenMinLevelIsInfo_DoesNotAddEntry()
+    {
+        GivenMinLevel(LogLevel.Info);
+        WhenLoggingVerbose("verbose message");
+
+        ThenEntryCountIs(0);
+    }
+
+    [Fact]
+    public void LogVerbose_WhenMinLevelIsVerbose_AddsEntry()
+    {
+        GivenMinLevel(LogLevel.Verbose);
+        WhenLoggingVerbose("verbose message");
+
+        ThenEntryCountIs(1);
+        ThenLastEntryLevelIs(LogLevel.Verbose);
+        ThenLastEntryMessageIs("verbose message");
+    }
+
+    [Fact]
+    public void LogInfo_WhenMinLevelIsWarning_DoesNotAddEntry()
+    {
+        GivenMinLevel(LogLevel.Warning);
+        WhenLoggingInfo("info message");
+
+        ThenEntryCountIs(0);
+    }
+
+    [Fact]
     public void CreateStore_WhenCalled_ReturnsStoreWithDefaultPath()
     {
         WhenCreatingDefaultStore();
@@ -147,9 +176,13 @@ public sealed class LoggingServiceTests : IDisposable
 
     private void GivenCallerPath(string path) => _callerPath = path;
 
+    private void GivenMinLevel(LogLevel level) => _logStore.MinLevel = level;
+
     #endregion
 
     #region When
+
+    private void WhenLoggingVerbose(string message) => _testee.LogVerbose(_logStore, message);
 
     private void WhenLoggingInfo(string message) => _testee.LogInfo(_logStore, message);
 
@@ -197,7 +230,10 @@ public sealed class LoggingServiceTests : IDisposable
 
     private void ThenLogFileContains(string expected)
     {
-        string content = File.ReadAllText(_logFilePath);
+        // Use FileShare.ReadWrite since the LogStore keeps its writer open.
+        using FileStream fs = new(_logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using StreamReader reader = new(fs);
+        string content = reader.ReadToEnd();
         Assert.Contains(expected, content);
     }
 
@@ -219,6 +255,7 @@ public sealed class LoggingServiceTests : IDisposable
 
     public void Dispose()
     {
+        _logStore.Dispose();
         try { File.Delete(_logFilePath); } catch { }
     }
 

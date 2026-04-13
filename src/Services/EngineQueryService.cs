@@ -57,7 +57,7 @@ internal sealed class EngineQueryService(
         if (resolvedName != null)
             name = resolvedName;
 
-        _log.LogInfo(_logStore, $"  Frame {index}: ip=0x{ip:X} name={name} line={line}");
+        _log.LogVerbose(_logStore, $"  Frame {index}: ip=0x{ip:X} name={name} line={line}");
 
         return new StackFrame
         {
@@ -127,7 +127,7 @@ internal sealed class EngineQueryService(
     public Scope[] GetScopesOnEngine(NativeDebuggerModel model, int frameId)
     {
         int localsRef = _wrapper.SetScopeAndGetLocals(model.Wrapper, frameId);
-        _log.LogInfo(_logStore, $"SetScopeAndGetLocals(frameId={frameId}) -> ref={localsRef}");
+        _log.LogVerbose(_logStore, $"SetScopeAndGetLocals(frameId={frameId}) -> ref={localsRef}");
 
         // Fallback to managed locals if native returned 0 (managed frame).
         if (localsRef == 0 && model.ManagedInitialized)
@@ -137,7 +137,7 @@ internal sealed class EngineQueryService(
             {
                 ulong ip = model.Wrapper.CachedStackFrames[index].InstructionOffset;
                 localsRef = _managedDebugger.TryGetManagedLocals(model, ip);
-                _log.LogInfo(_logStore, $"TryGetManagedLocals(ip=0x{ip:X}) -> ref={localsRef}");
+                _log.LogVerbose(_logStore, $"TryGetManagedLocals(ip=0x{ip:X}) -> ref={localsRef}");
             }
         }
 
@@ -155,7 +155,7 @@ internal sealed class EngineQueryService(
 
     public Variable[] GetVariablesOnEngine(NativeDebuggerModel model, int variablesReference)
     {
-        _log.LogInfo(_logStore, $"GetVariables: ref={variablesReference}");
+        _log.LogVerbose(_logStore, $"GetVariables: ref={variablesReference}");
 
         // Route by reference range: managed refs start at BaseOffset.
         VariableInfo[] vars = ManagedVariableStore.IsManaged(variablesReference) && model.CorWrapper != null
@@ -166,7 +166,7 @@ internal sealed class EngineQueryService(
         for (int i = 0; i < vars.Length; i++)
         {
             VariableInfo v = vars[i];
-            _log.LogInfo(_logStore, $"  Var: name=\"{v.Name}\" type=\"{v.Type}\" value=\"{v.Value}\" childRef={v.VariablesReference}");
+            _log.LogVerbose(_logStore, $"  Var: name=\"{v.Name}\" type=\"{v.Type}\" value=\"{v.Value}\" childRef={v.VariablesReference}");
             result[i] = new Variable
             {
                 Name = v.Name,

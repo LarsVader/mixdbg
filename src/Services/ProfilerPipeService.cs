@@ -157,7 +157,7 @@ internal sealed class ProfilerPipeService(
                     while (model.PendingWatchCommands.TryDequeue(out string? line))
                     {
                         writer.WriteLine(line);
-                        _log.LogInfo(_logStore, $"ProfilerCmd: flushed queued {line}");
+                        _log.LogVerbose(_logStore, $"ProfilerCmd: flushed queued {line}");
                     }
 
                     // Publish the writer AFTER draining so queued commands aren't missed
@@ -283,7 +283,7 @@ internal sealed class ProfilerPipeService(
                     CodeStart = jAddr,
                     ILToNativeMap = mapEntries,
                 };
-                _log.LogInfo(_logStore, $"ProfilerReader: stored IL map for {key} ({mapEntries.Count} entries)");
+                _log.LogVerbose(_logStore, $"ProfilerReader: stored IL map for {key} ({mapEntries.Count} entries)");
             }
         }
 
