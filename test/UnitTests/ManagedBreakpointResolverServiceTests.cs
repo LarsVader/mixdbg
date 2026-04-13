@@ -576,9 +576,12 @@ public sealed class ManagedBreakpointResolverServiceTests : IDisposable
 
     #region Given
 
-    private void GivenDeferredBreakpoint(string filePath, int line, int token, int ilOffset, int bpId, string assembly) =>
+    private void GivenDeferredBreakpoint(string filePath, int line, int token, int ilOffset, int bpId, string assembly)
+    {
         _model.DeferredManagedBreakpoints.Add(
             new DeferredManagedBreakpoint(filePath, line, token, ilOffset, bpId, assembly));
+        _model.RebuildDeferredBreakpointIndex();
+    }
 
     private void GivenPendingILBreakpoint(string filePath, int line, int bpId) =>
         _model.PendingILBreakpoints.Add(new PendingManagedBreakpoint(filePath, line, bpId));

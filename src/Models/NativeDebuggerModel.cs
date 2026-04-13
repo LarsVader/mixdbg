@@ -80,6 +80,29 @@ public sealed class NativeDebuggerModel : IDisposable
     internal List<DeferredManagedBreakpoint> DeferredManagedBreakpoints { get; } = [];
 
     /// <summary>
+    /// Fast lookup index for <see cref="DeferredManagedBreakpoints"/>. Contains
+    /// (MethodToken, AssemblyName) pairs for O(1) matching on profiler JIT notifications.
+    /// Must be rebuilt via <see cref="RebuildDeferredBreakpointIndex"/> after any mutation
+    /// of the deferred list.
+    /// </summary>
+    internal HashSet<(int Token, string Assembly)> DeferredBreakpointIndex { get; } =
+        new(DeferredBreakpointKeyComparer.Instance);
+
+    /// <summary>
+    /// Rebuilds <see cref="DeferredBreakpointIndex"/> from <see cref="DeferredManagedBreakpoints"/>.
+    /// Call after any Add/Remove/RemoveAll on the deferred list.
+    /// </summary>
+    internal void RebuildDeferredBreakpointIndex()
+    {
+        DeferredBreakpointIndex.Clear();
+        foreach (DeferredManagedBreakpoint d in DeferredManagedBreakpoints)
+        {
+            if (d.AssemblyName != null)
+                _ = DeferredBreakpointIndex.Add((d.MethodToken, d.AssemblyName));
+        }
+    }
+
+    /// <summary>
     /// Native addresses of active managed breakpoints (from ICorDebug IL breakpoints).
     /// Used to identify managed breakpoint hits from dbgeng EXCEPTION_BREAKPOINT events.
     /// </summary>
@@ -125,12 +148,19 @@ public sealed class NativeDebuggerModel : IDisposable
     internal EventWaitHandle? ProfilerRehookEvent { get; set; }
 
     /// <summary>
-    /// Sorted map of all JIT-compiled methods reported by the profiler, keyed by native
-    /// code start address. Used for stack trace resolution: given an instruction pointer,
-    /// binary search finds the containing method → token + assembly → PDB source info.
-    /// Written by profiler reader thread, read by engine thread (under stop).
+    /// Map of all JIT-compiled methods reported by the profiler, keyed by native code
+    /// start address. Written by profiler reader thread (O(1) insert), read by engine
+    /// thread (under stop). <see cref="JitMethodMapSnapshot"/> is a sorted array built
+    /// lazily for binary search during stack trace resolution.
     /// </summary>
-    internal SortedList<ulong, JitMethodInfo> JitMethodMap { get; } = [];
+    internal Dictionary<ulong, JitMethodInfo> JitMethodMap { get; } = [];
+
+    /// <summary>
+    /// Sorted snapshot of <see cref="JitMethodMap"/> for binary search. Invalidated
+    /// (set to null) whenever a new entry is added to JitMethodMap. Rebuilt lazily by
+    /// <see cref="ManagedDebuggerService.FindContainingMethod"/>.
+    /// </summary>
+    internal (ulong Key, JitMethodInfo Value)[]? JitMethodMapSnapshot;
 
     // Managed step state — tracks active managed step operation with temp BPs.
     internal ManagedStepState? ActiveManagedStep;
@@ -275,4 +305,20 @@ internal sealed class ManagedStepState
     /// dbgeng breakpoint IDs of temporary hardware BPs set for this step.
     /// </summary>
     public List<uint> TempBreakpointIds { get; } = [];
+}
+
+/// <summary>
+/// Case-insensitive comparer for (Token, Assembly) tuples used by
+/// <see cref="NativeDebuggerModel.DeferredBreakpointIndex"/>.
+/// </summary>
+internal sealed class DeferredBreakpointKeyComparer : IEqualityComparer<(int Token, string Assembly)>
+{
+    public static readonly DeferredBreakpointKeyComparer Instance = new();
+
+    public bool Equals((int Token, string Assembly) x, (int Token, string Assembly) y)
+        => x.Token == y.Token
+        && string.Equals(x.Assembly, y.Assembly, StringComparison.OrdinalIgnoreCase);
+
+    public int GetHashCode((int Token, string Assembly) obj)
+        => HashCode.Combine(obj.Token, StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Assembly));
 }

@@ -931,6 +931,7 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
     {
         foreach (DeferredManagedBreakpoint d in deferred)
             _model.DeferredManagedBreakpoints.Add(d);
+        _model.RebuildDeferredBreakpointIndex();
     }
 
     private void GivenClrStackOutput(string output) => _clrStackOutput = output;

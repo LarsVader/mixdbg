@@ -175,6 +175,7 @@ internal sealed class ManagedBreakpointService(
         model.DeferredManagedBreakpoints.Add(
             new DeferredManagedBreakpoint(filePath, line, resolved.MethodToken, resolved.ILOffset,
                 bpId, resolved.AssemblyName, resolved.IsCliMethod));
+        model.RebuildDeferredBreakpointIndex();
         TrackFileBreakpoint(model, filePath, bpId);
         _log.LogInfo(_logStore, $"  Deferred managed bp #{bpId}: method not JIT'd yet");
 
@@ -393,6 +394,7 @@ internal sealed class ManagedBreakpointService(
 
         _ = model.DeferredManagedBreakpoints.RemoveAll(d =>
             d.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
+        model.RebuildDeferredBreakpointIndex();
     }
 
     /// <summary>

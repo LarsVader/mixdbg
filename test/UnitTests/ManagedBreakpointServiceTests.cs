@@ -771,8 +771,11 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         => _model.PendingILBreakpoints.Add(new PendingManagedBreakpoint(filePath, line, bpId));
 
     private void GivenDeferredManagedBreakpoint(string filePath, int line, int token, int bpId)
-        => _model.DeferredManagedBreakpoints.Add(
+    {
+        _model.DeferredManagedBreakpoints.Add(
             new DeferredManagedBreakpoint(filePath, line, token, 0, bpId, "SomeAssembly"));
+        _model.RebuildDeferredBreakpointIndex();
+    }
 
     private void GivenCliProjectExists()
     {

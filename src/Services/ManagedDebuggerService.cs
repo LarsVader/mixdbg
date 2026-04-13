@@ -138,7 +138,7 @@ internal sealed class ManagedDebuggerService(
         JitMethodInfo? method;
         lock (model.JitMethodMap)
         {
-            method = FindContainingMethod(model.JitMethodMap, instructionPointer);
+            method = FindContainingMethod(model, instructionPointer);
         }
 
         if (method == null)
@@ -274,7 +274,7 @@ internal sealed class ManagedDebuggerService(
         JitMethodInfo? method;
         lock (model.JitMethodMap)
         {
-            method = FindContainingMethod(model.JitMethodMap, instructionPointer);
+            method = FindContainingMethod(model, instructionPointer);
         }
         if (method == null)
             return 0;
@@ -625,22 +625,26 @@ internal sealed class ManagedDebuggerService(
     }
 
     /// <summary>
-    /// Binary searches the sorted JIT method map for the method containing the given IP.
-    /// Returns <c>null</c> if no method contains the address.
+    /// Binary searches the JIT method map for the method containing the given IP.
+    /// Builds a sorted snapshot lazily (cached until new entries are added).
+    /// Caller must hold <c>lock (model.JitMethodMap)</c>.
     /// </summary>
-    internal static JitMethodInfo? FindContainingMethod(SortedList<ulong, JitMethodInfo> map, ulong ip)
+    internal static JitMethodInfo? FindContainingMethod(NativeDebuggerModel model, ulong ip)
     {
-        if (map.Count == 0)
+        if (model.JitMethodMap.Count == 0)
             return null;
 
-        IList<ulong> keys = map.Keys;
-        int lo = 0, hi = keys.Count - 1;
+        // Build sorted snapshot if invalidated.
+        (ulong Key, JitMethodInfo Value)[] snapshot = model.JitMethodMapSnapshot
+            ?? RebuildSnapshot(model);
+
+        int lo = 0, hi = snapshot.Length - 1;
 
         // Find the largest key ≤ ip.
         while (lo <= hi)
         {
             int mid = lo + (hi - lo) / 2;
-            if (keys[mid] <= ip)
+            if (snapshot[mid].Key <= ip)
                 lo = mid + 1;
             else
                 hi = mid - 1;
@@ -650,7 +654,15 @@ internal sealed class ManagedDebuggerService(
         if (hi < 0)
             return null;
 
-        JitMethodInfo entry = map.Values[hi];
+        JitMethodInfo entry = snapshot[hi].Value;
         return ip < entry.StartAddress + entry.CodeSize ? entry : null;
+    }
+
+    private static (ulong Key, JitMethodInfo Value)[] RebuildSnapshot(NativeDebuggerModel model)
+    {
+        (ulong Key, JitMethodInfo Value)[] snapshot =
+            [.. model.JitMethodMap.Select(kv => (kv.Key, kv.Value)).OrderBy(e => e.Key)];
+        model.JitMethodMapSnapshot = snapshot;
+        return snapshot;
     }
 }

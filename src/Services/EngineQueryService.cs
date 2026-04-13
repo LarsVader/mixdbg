@@ -232,7 +232,7 @@ internal sealed class EngineQueryService(
                 JitMethodInfo? method;
                 lock (model.JitMethodMap)
                 {
-                    method = ManagedDebuggerService.FindContainingMethod(model.JitMethodMap, ip);
+                    method = ManagedDebuggerService.FindContainingMethod(model, ip);
                 }
 
                 if (method != null)
@@ -306,8 +306,11 @@ internal sealed class EngineQueryService(
         for (int i = 1; i < frames.Length; i++)
         {
             ulong address = frames[i].InstructionOffset;
-            JitMethodInfo? method = ManagedDebuggerService.FindContainingMethod(
-                model.JitMethodMap, address);
+            JitMethodInfo? method;
+            lock (model.JitMethodMap)
+            {
+                method = ManagedDebuggerService.FindContainingMethod(model, address);
+            }
 
             if (method == null)
             {
@@ -637,6 +640,7 @@ internal sealed class EngineQueryService(
             BpId: -1, // Step-into — no DAP breakpoint ID.
             AssemblyName: callTarget.TargetAssembly,
             IsCliMethod: true));
+        model.RebuildDeferredBreakpointIndex();
 
         // Send WATCH command to the profiler so it enables ENTER hooks for this method.
         string watchLine = $"WATCH:{callTarget.TargetAssembly}:{targetToken.Value:X8}";

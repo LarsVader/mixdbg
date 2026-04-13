@@ -250,12 +250,14 @@ internal sealed class EngineLifecycleService(
                     // Step BP fired — step complete.
                     // Remove step-into deferred BPs (BpId=-1) so they don't fire again.
                     _ = model.DeferredManagedBreakpoints.RemoveAll(d => d.BpId == -1);
+                    model.RebuildDeferredBreakpointIndex();
                     CompleteManagedStep(model);
                     return "step";
                 }
 
                 // Real user BP hit during managed step — cancel step, report breakpoint.
                 _ = model.DeferredManagedBreakpoints.RemoveAll(d => d.BpId == -1);
+                model.RebuildDeferredBreakpointIndex();
                 CompleteManagedStep(model);
                 return "breakpoint";
             }

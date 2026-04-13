@@ -88,6 +88,8 @@ internal sealed class ManagedBreakpointResolverService(
 
         foreach (DeferredManagedBreakpoint r in bound)
             _ = model.DeferredManagedBreakpoints.Remove(r);
+        if (bound.Count > 0)
+            model.RebuildDeferredBreakpointIndex();
 
         return [.. resolved];
     }
@@ -106,6 +108,8 @@ internal sealed class ManagedBreakpointResolverService(
 
         foreach (DeferredManagedBreakpoint r in bound)
             _ = model.DeferredManagedBreakpoints.Remove(r);
+        if (bound.Count > 0)
+            model.RebuildDeferredBreakpointIndex();
 
         // Signal the ACK event to unblock the profiler's JITCompilationFinished callback.
         // The hardware BP is now set, so when the profiler unblocks and the CLR dispatches

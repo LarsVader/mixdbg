@@ -1129,8 +1129,11 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     private void GivenSymbolPath(string path) => _model.SymbolPath = path;
 
     private void GivenDeferredManagedBreakpointExists()
-        => _model.DeferredManagedBreakpoints.Add(
+    {
+        _model.DeferredManagedBreakpoints.Add(
             new DeferredManagedBreakpoint("test.cs", 10, 0x06000001, 0, 1, "TestAssembly"));
+        _model.RebuildDeferredBreakpointIndex();
+    }
 
     #endregion
 

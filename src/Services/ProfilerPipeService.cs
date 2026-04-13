@@ -259,18 +259,28 @@ internal sealed class ProfilerPipeService(
 
         string jAsm = jitParts[3];
         lock (model.JitMethodMap)
+        {
             model.JitMethodMap[jAddr] = new JitMethodInfo(jToken, jAddr, jSize, jAsm);
+            model.JitMethodMapSnapshot = null;
+        }
 
         // Parse IL-to-native mapping if present (5th field).
+        // Format: IL0=N0,IL1=N1,... (hex values). Parsed with spans to avoid
+        // per-entry string[] allocations on this hot path.
         if (jitParts.Length >= 5 && jitParts[4].Length > 0)
         {
             List<(int ILOffset, int NativeOffset)> mapEntries = [];
-            foreach (string entry in jitParts[4].Split(','))
+            ReadOnlySpan<char> mapSpan = jitParts[4].AsSpan();
+            while (mapSpan.Length > 0)
             {
-                string[] eqParts = entry.Split('=');
-                if (eqParts.Length == 2 &&
-                    int.TryParse(eqParts[0], System.Globalization.NumberStyles.HexNumber, null, out int il) &&
-                    int.TryParse(eqParts[1], System.Globalization.NumberStyles.HexNumber, null, out int nat))
+                int comma = mapSpan.IndexOf(',');
+                ReadOnlySpan<char> entry = comma >= 0 ? mapSpan[..comma] : mapSpan;
+                mapSpan = comma >= 0 ? mapSpan[(comma + 1)..] : default;
+
+                int eq = entry.IndexOf('=');
+                if (eq > 0 &&
+                    int.TryParse(entry[..eq], System.Globalization.NumberStyles.HexNumber, null, out int il) &&
+                    int.TryParse(entry[(eq + 1)..], System.Globalization.NumberStyles.HexNumber, null, out int nat))
                 {
                     mapEntries.Add((il, nat));
                 }
@@ -334,9 +344,12 @@ internal sealed class ProfilerPipeService(
         if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out uint codeSize)) return;
         string assembly = parts[3];
 
-        // Store in sorted map for stack trace resolution.
+        // Store in map for stack trace resolution.
         lock (model.JitMethodMap)
+        {
             model.JitMethodMap[address] = new JitMethodInfo(token, address, codeSize, assembly);
+            model.JitMethodMapSnapshot = null;
+        }
 
         if (MatchesDeferredBreakpoint(model, token, assembly))
         {
@@ -366,16 +379,5 @@ internal sealed class ProfilerPipeService(
     }
 
     private static bool MatchesDeferredBreakpoint(NativeDebuggerModel model, int token, string assembly)
-    {
-        foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
-        {
-            if (deferred.MethodToken == token &&
-                deferred.AssemblyName != null &&
-                deferred.AssemblyName.Equals(assembly, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
+        => model.DeferredBreakpointIndex.Contains((token, assembly));
 }

@@ -574,7 +574,8 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         _model.ProfilerRehookEvent = new EventWaitHandle(false, EventResetMode.AutoReset);
     }
 
-    private void GivenDeferredBreakpoint(int token, string assembly) =>
+    private void GivenDeferredBreakpoint(int token, string assembly)
+    {
         _model.DeferredManagedBreakpoints.Add(
             new DeferredManagedBreakpoint(
                 FilePath: @"C:\src\Test.cs",
@@ -583,6 +584,8 @@ public sealed class ProfilerPipeServiceTests : IDisposable
                 ILOffset: 0,
                 BpId: 1,
                 AssemblyName: assembly));
+        _model.RebuildDeferredBreakpointIndex();
+    }
 
     private void GivenInWaitForEvent() => _model.InWaitForEvent = true;
 
