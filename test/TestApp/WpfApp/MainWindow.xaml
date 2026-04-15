@@ -1,10 +1,12 @@
 <Window x:Class="WpfApp.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="CLRApp3 - Calculator" Height="300" Width="400"
+        Title="CLRApp3 - Calculator" Height="500" Width="400"
         WindowStartupLocation="CenterScreen">
     <Grid Margin="20">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -25,12 +27,26 @@
         <TextBlock Grid.Row="2" Text="Number B:" VerticalAlignment="Center" Margin="0,0,10,5"/>
         <TextBox Grid.Row="2" Grid.Column="1" x:Name="TextBoxB" Text="3" Margin="0,0,0,5"/>
 
-        <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,10,0,10">
+        <!-- Basic operations -->
+        <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,10,0,5">
             <Button Content="Add" Width="80" Margin="0,0,10,0" Click="OnAddClick"/>
             <Button Content="Multiply" Width="80" Click="OnMultiplyClick"/>
         </StackPanel>
 
-        <TextBlock Grid.Row="4" Grid.ColumnSpan="2" x:Name="ResultText"
-                   FontSize="18" Foreground="DarkBlue"/>
+        <!-- Complex operations -->
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,5,0,5">
+            <Button Content="Fibonacci" Width="80" Margin="0,0,10,0" Click="OnFibonacciClick"/>
+            <Button Content="Primes" Width="80" Margin="0,0,10,0" Click="OnCountPrimesClick"/>
+            <Button Content="Factorial" Width="80" Click="OnFactorialClick"/>
+        </StackPanel>
+
+        <!-- Async + complex scenarios -->
+        <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,5,0,10">
+            <Button Content="Async Calc" Width="80" Margin="0,0,10,0" Click="OnAsyncCalcClick"/>
+            <Button Content="Complex" Width="80" Click="OnComplexClick"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="6" Grid.ColumnSpan="2" x:Name="ResultText"
+                   FontSize="18" Foreground="DarkBlue" TextWrapping="Wrap"/>
     </Grid>
 </Window>

@@ -408,6 +408,21 @@ internal sealed class EngineQueryService(
                 {
                     _log.LogInfo(_logStore,
                         $"Managed step-over: temp BP at 0x{targetAddr:X} (IL 0x{nextPoint.Value.ILOffset:X} -> {nextPoint.Value.File}:{nextPoint.Value.Line})");
+
+                    // Also set a step-out BP in the caller to handle early returns
+                    // (e.g. "return true;" mid-method won't reach the next sequence point).
+                    NativeStackFrame[] callerFrames = _wrapper.GetStackTrace(model.Wrapper, 5);
+                    if (callerFrames.Length >= 2)
+                    {
+                        ulong? stepOutAddr = FindStepOutTarget(model, callerFrames);
+                        if (stepOutAddr != null)
+                        {
+                            _ = SetManagedStepBreakpoint(model, stepOutAddr.Value);
+                            _log.LogInfo(_logStore,
+                                $"Managed step-over: step-out fallback at 0x{stepOutAddr.Value:X}");
+                        }
+                    }
+
                     _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
                     return true;
                 }
@@ -448,23 +463,23 @@ internal sealed class EngineQueryService(
         bool haveBp = false;
 
         // 1. Parse IL to find the call target at this offset.
-        (int TargetToken, string? TargetAssembly, string? TargetMethodName)? callTarget =
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName, int CallILOffset)? callTarget =
             _pdbMapper.GetCallTargetAtOffset(assemblyPath, method.MethodToken, currentIL);
 
         if (callTarget != null)
         {
+            // Same-assembly calls (MethodDefinition tokens) have TargetAssembly=null.
+            // Fill in the caller's assembly name so JitMethodMap lookups work.
+            if (callTarget.Value.TargetAssembly == null)
+            {
+                callTarget = (callTarget.Value.TargetToken, method.AssemblyName,
+                    callTarget.Value.TargetMethodName, callTarget.Value.CallILOffset);
+            }
+
             _log.LogInfo(_logStore,
                 $"Managed step-into: IL call target token=0x{callTarget.Value.TargetToken:X} asm={callTarget.Value.TargetAssembly} name={callTarget.Value.TargetMethodName}");
 
-            // If call target has no assembly (native call from C++/CLI), resolve via dbgeng
-            // symbols and set a hardware BP at the native function entry.
-            if (string.IsNullOrEmpty(callTarget.Value.TargetAssembly)
-                && callTarget.Value.TargetMethodName != null)
-            {
-                haveBp = TrySetNativeStepIntoBp(model, callTarget.Value.TargetMethodName);
-            }
-
-            // 2a. Try JitMethodMap (for JIT'd managed methods).
+            // 2a. Try JitMethodMap (for JIT'd managed methods, including same-assembly).
             if (!haveBp)
                 haveBp = TrySetStepIntoBpFromJitMap(model, callTarget.Value);
 
@@ -474,15 +489,27 @@ internal sealed class EngineQueryService(
                 _log.LogInfo(_logStore, "Managed step-into: JitMap miss, trying profiler WATCH");
                 haveBp = TrySetStepIntoBpViaProfiler(model, callTarget.Value);
             }
+
+            // 2c. Last resort: try native symbol resolution via dbgeng.
+            if (!haveBp && callTarget.Value.TargetMethodName != null)
+            {
+                haveBp = TrySetNativeStepIntoBp(model, callTarget.Value.TargetMethodName);
+            }
         }
 
-        // 3. Set fallback BP at next source line (step-over) in case call target not resolved.
+        // 3. Set fallback BP at the next source line PAST the call instruction.
+        // The call instruction is 5 bytes (1 opcode + 4 token). The fallback must
+        // be after the call returns, not at the call site — otherwise it fires before
+        // the call is made when the current IP is on a preceding brace line.
+        int fallbackThreshold = callTarget != null
+            ? callTarget.Value.CallILOffset + 5  // Past the call/callvirt instruction.
+            : currentIL;                          // No call found — use current offset.
         (int ILOffset, string File, int Line)[] seqPoints = _pdbMapper.GetMethodSequencePoints(assemblyPath, method.MethodToken);
         if (model.JitMethodMappings.TryGetValue(callerBpKey, out JitMethodMapping? callerMapping))
         {
             foreach ((int ILOffset, string File, int Line) sp in seqPoints)
             {
-                if (sp.ILOffset > currentIL)
+                if (sp.ILOffset > fallbackThreshold)
                 {
                     ulong fallbackAddr = callerMapping.GetNativeAddress(sp.ILOffset);
                     _ = SetManagedStepBreakpoint(model, fallbackAddr);
@@ -560,7 +587,7 @@ internal sealed class EngineQueryService(
     /// sets a transient hardware BP when the ENTER hook fires.
     /// </summary>
     private bool TrySetStepIntoBpViaProfiler(NativeDebuggerModel model,
-        (int TargetToken, string? TargetAssembly, string? TargetMethodName) callTarget)
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName, int CallILOffset) callTarget)
     {
         if (callTarget.TargetMethodName == null || callTarget.TargetAssembly == null)
             return false;
@@ -606,9 +633,19 @@ internal sealed class EngineQueryService(
             _pdbMapper.GetMethodSequencePoints(targetAsmPath, targetToken.Value);
         if (seqPoints.Length > 0)
         {
-            filePath = seqPoints[0].File;
-            line = seqPoints[0].Line;
-            ilOffset = seqPoints[0].ILOffset;
+            // Skip the method prologue sequence point (IL offset 0, typically the
+            // opening brace for out/ref param init) when the next point is on a later line.
+            int spIndex = 0;
+            if (seqPoints.Length > 1
+                && seqPoints[0].ILOffset == 0
+                && seqPoints[1].ILOffset > 0
+                && seqPoints[1].Line > seqPoints[0].Line)
+            {
+                spIndex = 1;
+            }
+            filePath = seqPoints[spIndex].File;
+            line = seqPoints[spIndex].Line;
+            ilOffset = seqPoints[spIndex].ILOffset;
         }
         else
         {
@@ -677,7 +714,7 @@ internal sealed class EngineQueryService(
     /// name-based scan across JIT'd methods otherwise.
     /// </summary>
     private bool TrySetStepIntoBpFromJitMap(NativeDebuggerModel model,
-        (int TargetToken, string? TargetAssembly, string? TargetMethodName) callTarget)
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName, int CallILOffset) callTarget)
     {
         // Fast path: direct lookup by token + assembly (O(1) via secondary index).
         if (callTarget.TargetToken != 0 && callTarget.TargetAssembly != null)
@@ -749,11 +786,22 @@ internal sealed class EngineQueryService(
         if (!model.JitMethodMappings.TryGetValue((jitMethod.MethodToken, jitMethod.AssemblyName), out JitMethodMapping? targetMapping))
             return false;
 
-        ulong targetAddr = targetMapping.GetNativeAddress(targetSeqPoints[0].ILOffset);
+        // Skip the method prologue sequence point (IL offset 0, typically the opening
+        // brace for methods with out/ref params) when the next point is on a later line.
+        int spIndex = 0;
+        if (targetSeqPoints.Length > 1
+            && targetSeqPoints[0].ILOffset == 0
+            && targetSeqPoints[1].ILOffset > 0
+            && targetSeqPoints[1].Line > targetSeqPoints[0].Line)
+        {
+            spIndex = 1;
+        }
+
+        ulong targetAddr = targetMapping.GetNativeAddress(targetSeqPoints[spIndex].ILOffset);
         if (SetManagedStepBreakpoint(model, targetAddr))
         {
             _log.LogInfo(_logStore,
-                $"Managed step-into: target BP at 0x{targetAddr:X} ({targetSeqPoints[0].File}:{targetSeqPoints[0].Line}) in {jitMethod.AssemblyName}");
+                $"Managed step-into: target BP at 0x{targetAddr:X} ({targetSeqPoints[spIndex].File}:{targetSeqPoints[spIndex].Line}) in {jitMethod.AssemblyName}");
             return true;
         }
         return false;

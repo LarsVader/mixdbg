@@ -300,7 +300,7 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     /// Scans IL bytecodes starting from the given offset for the first call/callvirt
     /// instruction. Returns the target method token and resolved name info.
     /// </summary>
-    public (int TargetToken, string? TargetAssembly, string? TargetMethodName)? GetCallTargetAtOffset(
+    public (int TargetToken, string? TargetAssembly, string? TargetMethodName, int CallILOffset)? GetCallTargetAtOffset(
         string assemblyPath, int methodToken, int ilOffset)
     {
         (PEReader Pe, MetadataReader Reader)? peInfo = GetOrLoadPeReader(assemblyPath);
@@ -346,7 +346,7 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
                         | (il[pos + 3] << 16)
                         | (il[pos + 4] << 24);
 
-                    return ResolveCallTarget(reader, targetToken);
+                    return ResolveCallTarget(reader, targetToken, pos);
                 }
 
                 // Skip instruction based on opcode operand size.
@@ -365,8 +365,8 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     /// Resolves a call target token (MethodDef or MemberRef) to a token, assembly name,
     /// and method name.
     /// </summary>
-    private static (int TargetToken, string? TargetAssembly, string? TargetMethodName)? ResolveCallTarget(
-        MetadataReader reader, int targetToken)
+    private static (int TargetToken, string? TargetAssembly, string? TargetMethodName, int CallILOffset)? ResolveCallTarget(
+        MetadataReader reader, int targetToken, int callILOffset)
     {
         EntityHandle handle = MetadataTokens.EntityHandle(targetToken);
 
@@ -379,7 +379,7 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
             string typeName = reader.GetString(type.Name);
             string ns = reader.GetString(type.Namespace);
             string fullName = string.IsNullOrEmpty(ns) ? $"{typeName}.{methodName}" : $"{ns}.{typeName}.{methodName}";
-            return (targetToken, null, fullName);
+            return (targetToken, null, fullName, callILOffset);
         }
 
         if (handle.Kind == HandleKind.MemberReference)
@@ -409,10 +409,10 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
             }
 
             string fullName = typeName != null ? $"{typeName}.{methodName}" : methodName;
-            return (targetToken, assemblyName, fullName);
+            return (targetToken, assemblyName, fullName, callILOffset);
         }
 
-        return (targetToken, null, null);
+        return (targetToken, null, null, callILOffset);
     }
 
     /// <summary>

@@ -74,6 +74,6 @@ public interface IPdbSourceMapper
     /// if no call is found within the next sequence point's range.
     /// Used by managed step-into to determine the call target.
     /// </summary>
-    (int TargetToken, string? TargetAssembly, string? TargetMethodName)? GetCallTargetAtOffset(
+    (int TargetToken, string? TargetAssembly, string? TargetMethodName, int CallILOffset)? GetCallTargetAtOffset(
         string assemblyPath, int methodToken, int ilOffset);
 }

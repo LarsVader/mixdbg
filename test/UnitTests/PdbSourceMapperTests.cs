@@ -239,7 +239,7 @@ public sealed class PdbSourceMapperTests
         if (method == null) return;
 
         // The IL at line 67's offset should contain a call to ManagedCalculator.Add.
-        (int TargetToken, string? TargetAssembly, string? TargetMethodName)? callTarget =
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName, int CallILOffset)? callTarget =
             mapper.GetCallTargetAtOffset(_wpfAppDll, method.Value.MethodToken, method.Value.ILOffset);
 
         _ = Assert.NotNull(callTarget);
@@ -252,7 +252,7 @@ public sealed class PdbSourceMapperTests
     {
         using PdbSourceMapperService mapper = new();
 
-        (int TargetToken, string? TargetAssembly, string? TargetMethodName)? result =
+        (int TargetToken, string? TargetAssembly, string? TargetMethodName, int CallILOffset)? result =
             mapper.GetCallTargetAtOffset(@"C:\nonexistent.dll", 0x06000001, 0);
 
         Assert.Null(result);
