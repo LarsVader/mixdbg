@@ -24,8 +24,7 @@ class MixDbgProfiler : public IUnknown {
     ProfilerInfo* m_pInfo;
     HANDLE m_hPipe;
     HANDLE m_hCmdPipe;   // Command pipe — reads WATCH commands from MixDbg at runtime.
-    HANDLE m_hAckEvent;  // Signaled by MixDbg after processing a notification.
-    HANDLE m_hRehookEvent; // Signaled by MixDbg on Continue — re-enables enter/leave hooks.
+    HANDLE m_hAckEvent;  // Signaled by MixDbg after processing the first ENTER (count 0→1).
     CRITICAL_SECTION m_pipeLock;
     CRITICAL_SECTION m_watchLock; // Protects m_watchEntries/m_watchCount (written by cmd reader thread).
 
@@ -76,6 +75,7 @@ public:
     void RegisterWatchedFunction(FunctionID funcId, const FunctionWatchInfo& info);
     const FunctionWatchInfo* FindWatchedFunction(FunctionID funcId);
     void OnFunctionEnter(FunctionID funcId);
+    void OnFunctionLeave(FunctionID funcId);
 
 public:
     MixDbgProfiler();
@@ -137,7 +137,10 @@ public:
     virtual HRESULT STDMETHODCALLTYPE JITCachedFunctionSearchStarted(FunctionID, BOOL*) { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE JITCachedFunctionSearchFinished(FunctionID, int) { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE JITFunctionPitched(FunctionID) { return S_OK; }
-    virtual HRESULT STDMETHODCALLTYPE JITInlining(FunctionID, FunctionID, BOOL*) { return S_OK; }
+
+    // Slot 28: JITInlining — called before JIT inlines a callee into a caller.
+    // Disables inlining for watched methods so every call fires FunctionEnter/Leave.
+    virtual HRESULT STDMETHODCALLTYPE JITInlining(FunctionID callerId, FunctionID calleeId, BOOL* pfShouldInline);
 
     // Slot 29-31: Thread callbacks
     virtual HRESULT STDMETHODCALLTYPE ThreadCreated(ThreadID) { return S_OK; }

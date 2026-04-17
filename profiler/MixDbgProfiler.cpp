@@ -14,7 +14,7 @@ MixDbgProfiler* g_pProfiler = nullptr;
 
 MixDbgProfiler::MixDbgProfiler() : m_refCount(1), m_pInfo(nullptr),
     m_hPipe(INVALID_HANDLE_VALUE), m_hCmdPipe(INVALID_HANDLE_VALUE),
-    m_hAckEvent(nullptr), m_hRehookEvent(nullptr),
+    m_hAckEvent(nullptr),
     m_watchCount(0), m_watchAssemblyCount(0) {
     memset(m_watchEntries, 0, sizeof(m_watchEntries));
     memset(m_watchAssemblies, 0, sizeof(m_watchAssemblies));
@@ -30,7 +30,6 @@ MixDbgProfiler::~MixDbgProfiler() {
     if (m_hCmdPipe != INVALID_HANDLE_VALUE)
         CloseHandle(m_hCmdPipe);
     if (m_hAckEvent) CloseHandle(m_hAckEvent);
-    if (m_hRehookEvent) CloseHandle(m_hRehookEvent);
     DeleteCriticalSection(&m_pipeLock);
     DeleteCriticalSection(&m_watchLock);
     DeleteCriticalSection(&m_funcLock);
@@ -147,26 +146,66 @@ void MixDbgProfiler::OnFunctionEnter(FunctionID funcId) {
     if (codeAddr == 0) return;
 
     // Get the native offset of the actual method body (past any hook preamble).
-    // With enter/leave hooks, the JIT may insert a stub at the entry.
     ULONG32 bodyOffset = m_pInfo->GetMethodBodyOffset(funcId);
     UINT_PTR bodyAddr = codeAddr + bodyOffset;
 
-    // Disable enter/leave hooks so the method body runs through the normal code path.
-    m_pInfo->SetEventMask(COR_PRF_MONITOR_JIT_COMPILATION);
-
+    // Send ENTER notification. MixDbg tracks activation count:
+    //   - count 0→1 (first entry): installs HW BP at the method body, then ACKs.
+    //   - count > 0 (nested/recursive): ACKs immediately.
+    // We always block on ACK so first-entry is synchronous; recursive entries
+    // return immediately because MixDbg signals without waiting.
     DWORD osThreadId = GetCurrentThreadId();
     char line[512];
     int len = sprintf_s(line, sizeof(line), "ENTER:%08X:%016llX:%08X:%s\n",
         (unsigned int)info->token, (unsigned long long)bodyAddr, osThreadId, info->assembly);
     if (len > 0) {
         WriteToPipe(line, len);
-        // Block until MixDbg sets the hardware BP.
         if (m_hAckEvent) WaitForSingleObject(m_hAckEvent, 500);
     }
+}
 
-    // Do NOT re-enable hooks here — the method body must run without hook
-    // trampolines so the hardware BP fires. Hooks are re-enabled by the
-    // rehook watcher thread when MixDbg signals after the user continues.
+void MixDbgProfiler::OnFunctionLeave(FunctionID funcId) {
+    auto* info = FindWatchedFunction(funcId);
+    if (!info || m_hPipe == INVALID_HANDLE_VALUE) return;
+
+    DWORD osThreadId = GetCurrentThreadId();
+    char line[512];
+    int len = sprintf_s(line, sizeof(line), "LEAVE:%08X:%08X:%s\n",
+        (unsigned int)info->token, osThreadId, info->assembly);
+    if (len > 0) {
+        // Fire-and-forget: MixDbg decrements the activation count and,
+        // when it reaches 0, removes the HW BP. No ACK required.
+        WriteToPipe(line, len);
+    }
+}
+
+// JITInlining — disables inlining when the callee is watched. Without this,
+// the JIT can inline the callee body into the caller, and FunctionEnter/Leave
+// hooks will never fire for the inlined copy.
+HRESULT STDMETHODCALLTYPE MixDbgProfiler::JITInlining(
+    FunctionID /*callerId*/, FunctionID calleeId, BOOL* pfShouldInline)
+{
+    if (!pfShouldInline) return S_OK;
+    *pfShouldInline = TRUE;
+
+    if (!m_pInfo) return S_OK;
+
+    ClassID classId = 0; ModuleID moduleId = 0; mdToken token = 0;
+    if (FAILED(m_pInfo->GetFunctionInfo(calleeId, &classId, &moduleId, &token)))
+        return S_OK;
+
+    WCHAR modulePath[512] = {}; ULONG pathLen = 0; AssemblyID asmId = 0; LPCBYTE baseAddr = nullptr;
+    if (FAILED(m_pInfo->GetModuleInfo(moduleId, &baseAddr, 512, &pathLen, modulePath, &asmId)))
+        return S_OK;
+    if (modulePath[0] == L'\0') return S_OK;
+
+    char asmUtf8[256] = {};
+    ExtractAssemblyName(modulePath, asmUtf8, sizeof(asmUtf8));
+
+    if (IsWatchedMethod(asmUtf8, token) || IsWatchedAssembly(asmUtf8))
+        *pfShouldInline = FALSE;
+
+    return S_OK;
 }
 
 // ============================================================================
@@ -270,32 +309,14 @@ HRESULT STDMETHODCALLTYPE MixDbgProfiler::Initialize(IUnknown* pICorProfilerInfo
     if (m_hPipe == INVALID_HANDLE_VALUE)
         return E_FAIL;
 
-    // Open the ACK event that MixDbg signals after processing each notification.
-    // The profiler blocks on this event in JITCompilationFinished so that the
-    // hardware breakpoint is set before the method body executes.
+    // Open the ACK event that MixDbg signals after processing each ENTER notification.
+    // The profiler blocks on this event in OnFunctionEnter so that the hardware
+    // breakpoint is installed on first entry (count 0→1) before the method body
+    // runs. For recursive/nested entries, MixDbg signals the ACK immediately.
     WCHAR ackEventName[256] = {};
     len = GetEnvironmentVariableW(L"MIXDBG_ACK_EVENT", ackEventName, 256);
     if (len > 0 && len < 256)
         m_hAckEvent = OpenEventW(SYNCHRONIZE, FALSE, ackEventName);
-
-    // REHOOK event — signaled by MixDbg on Continue to re-enable enter/leave hooks.
-    WCHAR rehookName[256] = {};
-    len = GetEnvironmentVariableW(L"MIXDBG_REHOOK_EVENT", rehookName, 256);
-    if (len > 0 && len < 256) {
-        m_hRehookEvent = OpenEventW(SYNCHRONIZE, FALSE, rehookName);
-        if (m_hRehookEvent) {
-            // Watcher thread: waits for REHOOK signal, re-enables enter/leave hooks.
-            CreateThread(nullptr, 0, [](LPVOID param) -> DWORD {
-                auto* self = (MixDbgProfiler*)param;
-                while (self->m_hRehookEvent && self->m_hPipe != INVALID_HANDLE_VALUE) {
-                    if (WaitForSingleObject(self->m_hRehookEvent, 1000) == WAIT_OBJECT_0)
-                        self->m_pInfo->SetEventMask(
-                            COR_PRF_MONITOR_JIT_COMPILATION | COR_PRF_MONITOR_ENTERLEAVE);
-                }
-                return 0;
-            }, this, 0, nullptr);
-        }
-    }
 
     // Connect to MixDbg's command pipe for receiving dynamic WATCH commands.
     WCHAR cmdPipeName[256] = {};

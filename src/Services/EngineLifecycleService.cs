@@ -30,9 +30,7 @@ internal sealed class EngineLifecycleService(
             model.Commands.CompleteAdding();
             _ = (model.EngineThread?.Join(3000));
             _ = (model.ProfilerAckEvent?.Set()); // Unblock profiler if waiting.
-            _ = (model.ProfilerRehookEvent?.Set()); // Unblock rehook watcher.
             model.ProfilerAckEvent?.Dispose();
-            model.ProfilerRehookEvent?.Dispose();
             model.ProfilerPipeReader?.Dispose();
             model.ProfilerPipe?.Dispose();
             _ = (model.ProfilerReaderThread?.Join(1000));
@@ -46,7 +44,6 @@ internal sealed class EngineLifecycleService(
             Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", null);
             Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", null);
             Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", null);
-            Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", null);
             Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", null);
             Environment.SetEnvironmentVariable("MIXDBG_WATCH_ASSEMBLIES", null);
         };
@@ -167,7 +164,9 @@ internal sealed class EngineLifecycleService(
         // Process JIT notifications and resolve deferred managed breakpoints.
         _bpResolver.ProcessPendingManagedBreakpoints(model);
 
-        if (_bpResolver.HandleEnterBreakpoint(model))
+        // Drain profiler notifications (ENTER installs HW BPs, LEAVE removes them).
+        // Returns true only when this was a bookkeeping-only stop — auto-resume.
+        if (_bpResolver.ProcessProfilerNotifications(model))
         {
             model.Stopped.Reset();
             _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
@@ -239,16 +238,13 @@ internal sealed class EngineLifecycleService(
             if (model.HitUserBreakpoint)
             {
                 bool isTempBp = model.ActiveManagedStep.TempBreakpointIds.Contains(model.LastHitBpId);
-                // Also check for step-into deferred BP: transient BP from ENTER hook
-                // set by HandleEnterBreakpoint for a deferred BP with BpId=-1.
-                bool isStepIntoEnterBp = !isTempBp
-                    && model.DeferredManagedBreakpoints.Exists(d => d.BpId == -1);
+                // Also check for step-into one-shot BP: an HW BP installed by the
+                // profiler ENTER handler for a step-into plan site (IsStepIntoOneShot).
+                bool isStepIntoEnterBp = !isTempBp && IsStepIntoOneShotHit(model);
                 model.HitUserBreakpoint = false;
 
-                // Remove step-into deferred BPs (BpId=-1) in both cases.
-                int removed = model.DeferredManagedBreakpoints.RemoveAll(d => d.BpId == -1);
-                if (removed > 0)
-                    model.RebuildDeferredBreakpointIndex();
+                // Remove any step-into one-shot sites from their plans.
+                RemoveStepIntoOneShotSites(model);
                 CompleteManagedStep(model);
 
                 if (isTempBp || isStepIntoEnterBp)
@@ -284,6 +280,37 @@ internal sealed class EngineLifecycleService(
         }
 
         return reason;
+    }
+
+    /// <summary>
+    /// Returns true if any method plan has an un-consumed step-into one-shot site
+    /// whose address equals <see cref="NativeDebuggerModel.ManagedBreakpointAddresses"/>
+    /// — i.e. the HW BP that just fired was a step-into BP installed on ENTER.
+    /// </summary>
+    private static bool IsStepIntoOneShotHit(NativeDebuggerModel model)
+    {
+        foreach (ManagedMethodBreakpointPlan plan in model.ManagedBpPlans.Values)
+        {
+            if (plan.Sites.Exists(s => s.IsStepIntoOneShot))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Removes one-shot step-into sites from their plans. Drops empty plans.
+    /// </summary>
+    private static void RemoveStepIntoOneShotSites(NativeDebuggerModel model)
+    {
+        List<(int Token, string Assembly)> emptyKeys = [];
+        foreach (KeyValuePair<(int Token, string Assembly), ManagedMethodBreakpointPlan> kv in model.ManagedBpPlans)
+        {
+            _ = kv.Value.Sites.RemoveAll(s => s.IsStepIntoOneShot);
+            if (kv.Value.Sites.Count == 0)
+                emptyKeys.Add(kv.Key);
+        }
+        foreach ((int Token, string Assembly) k in emptyKeys)
+            _ = model.ManagedBpPlans.Remove(k);
     }
 
     /// <summary>

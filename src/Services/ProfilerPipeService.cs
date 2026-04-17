@@ -81,11 +81,6 @@ internal sealed class ProfilerPipeService(
         Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", $@"\\.\pipe\{pipeName}");
         Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", ackEventName);
 
-        // REHOOK event — signaled on Continue to re-enable enter/leave hooks in the profiler.
-        string rehookEventName = $"MixDbgProfilerRehook-{pipeName}";
-        model.ProfilerRehookEvent = new EventWaitHandle(false, EventResetMode.AutoReset, rehookEventName);
-        Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", rehookEventName);
-
         if (watchTokens != null)
             Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", watchTokens);
 
@@ -121,10 +116,10 @@ internal sealed class ProfilerPipeService(
     }
 
     /// <summary>
-    /// Starts a background thread that reads JIT notifications from the profiler pipe.
-    /// Each notification is parsed and added to <c>model.JitNotifications</c>.
-    /// When a notification matches a deferred breakpoint, <c>SetInterrupt</c> is called
-    /// to wake the engine thread so it can set the hardware breakpoint.
+    /// Starts a background thread that reads profiler notifications from the pipe.
+    /// JIT/ENTER/LEAVE/TAILCALL notifications are enqueued onto
+    /// <c>model.ProfilerNotifications</c>. <c>SetInterrupt</c> is called when the
+    /// engine thread needs to wake up to process them.
     /// </summary>
     public void StartProfilerReader(NativeDebuggerModel model)
     {
@@ -182,8 +177,10 @@ internal sealed class ProfilerPipeService(
     /// Background thread loop: waits for the profiler to connect, then reads
     /// notification lines until the pipe closes or the session terminates.
     /// Protocol:
-    ///   JIT:token:address:codeSize:assembly   — method JIT'd (for stack trace map)
-    ///   ENTER:token:address:assembly           — method about to execute (set BP)
+    ///   JIT:token:address:codeSize:assembly[:IL-map]  — method JIT'd (for stack trace map)
+    ///   ENTER:token:bodyAddress:threadId:assembly     — method activation starts
+    ///   LEAVE:token:threadId:assembly                 — method activation ends
+    ///   TAILCALL:token:threadId:assembly              — method activation ends via tailcall
     /// </summary>
     private void ProfilerReaderLoop(NativeDebuggerModel model)
     {
@@ -204,12 +201,6 @@ internal sealed class ProfilerPipeService(
                     break;
                 }
 
-                // Parse notification line. Supports two formats:
-                // Old: TOKEN:ADDRESS:SIZE:ASSEMBLY (JIT notification, may block for watched tokens)
-                // New: JIT:TOKEN:ADDRESS:SIZE:ASSEMBLY / ENTER:TOKEN:ADDRESS:ASSEMBLY (prefixed)
-                string payload = line;
-                bool isEnterNotification = false;
-
                 if (line.StartsWith("READY:"))
                 {
                     _log.LogInfo(_logStore, $"ProfilerReader: profiler ready ({line[6..]})");
@@ -223,20 +214,22 @@ internal sealed class ProfilerPipeService(
                 }
                 if (line.StartsWith("ENTER:"))
                 {
-                    payload = line[6..];
-                    isEnterNotification = true;
+                    ParseEnterNotification(model, line[6..].Split(':'));
+                    continue;
                 }
-
-                string[] parts = payload.Split(':');
-
-                if (isEnterNotification)
+                if (line.StartsWith("LEAVE:"))
                 {
-                    ParseEnterNotification(model, parts);
+                    ParseLeaveOrTailcallNotification(model, line[6..].Split(':'), isTailcall: false);
+                    continue;
+                }
+                if (line.StartsWith("TAILCALL:"))
+                {
+                    ParseLeaveOrTailcallNotification(model, line[9..].Split(':'), isTailcall: true);
                     continue;
                 }
 
                 // JIT notification (old format): TOKEN:ADDRESS:SIZE:ASSEMBLY
-                ParseOldFormatJitNotification(model, parts);
+                ParseOldFormatJitNotification(model, line.Split(':'));
             }
         }
         catch (Exception ex) when (!model.Terminated)
@@ -312,7 +305,7 @@ internal sealed class ProfilerPipeService(
         // Check if this JIT matches a deferred breakpoint.
         if (MatchesDeferredBreakpoint(model, jToken, jAsm))
         {
-            model.JitNotifications.Enqueue(new JitNotification(jToken, jAddr, jSize, jAsm));
+            model.ProfilerNotifications.Enqueue(new JitNotification(jToken, jAddr, jSize, jAsm));
             _log.LogInfo(_logStore,
                 $"ProfilerReader: JIT: match! token=0x{jToken:X8} addr=0x{jAddr:X} asm={jAsm} — interrupting engine");
             RequestInterrupt(model);
@@ -321,30 +314,39 @@ internal sealed class ProfilerPipeService(
 
     private void ParseEnterNotification(NativeDebuggerModel model, string[] parts)
     {
-        // ENTER:TOKEN:ADDRESS:THREADID:ASSEMBLY — method frozen in enter hook.
+        // ENTER:TOKEN:BODYADDRESS:THREADID:ASSEMBLY
         if (parts.Length < 4) return;
         if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out int eToken)) return;
         if (!ulong.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out ulong eAddr)) return;
         if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out uint eTid)) return;
         string eAsm = parts[3];
 
-        // Don't queue another ENTER breakpoint if one is already pending
-        // (prevents duplicate stops from repeated calls before user continues).
-        if (!model.PendingEnterBreakpoint)
+        model.ProfilerNotifications.Enqueue(new EnterNotification(eToken, eAddr, eTid, eAsm));
+        _log.LogInfo(_logStore,
+            $"ProfilerReader: ENTER token=0x{eToken:X8} addr=0x{eAddr:X} tid={eTid} asm={eAsm} — interrupting engine");
+        RequestInterrupt(model);
+    }
+
+    private void ParseLeaveOrTailcallNotification(NativeDebuggerModel model, string[] parts, bool isTailcall)
+    {
+        // LEAVE:TOKEN:THREADID:ASSEMBLY  or  TAILCALL:TOKEN:THREADID:ASSEMBLY
+        if (parts.Length < 3) return;
+        if (!int.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out int token)) return;
+        if (!uint.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out uint tid)) return;
+        string asm = parts[2];
+
+        ProfilerNotification notification = isTailcall
+            ? new TailcallNotification(token, tid, asm)
+            : new LeaveNotification(token, tid, asm);
+        model.ProfilerNotifications.Enqueue(notification);
+
+        // Only interrupt when this method has active HW BPs that need to be removed.
+        // Assembly-level-watch methods without plans don't require engine attention.
+        if (model.ActiveMethodBreakpoints.ContainsKey((token, asm)))
         {
-            model.PendingEnterBreakpoint = true;
-            model.EnterBreakpointThreadId = eTid;
-            model.EnterBreakpointToken = eToken;
-            model.EnterBreakpointAddress = eAddr;
-            model.EnterBreakpointAssembly = eAsm;
-            _log.LogInfo(_logStore,
-                $"ProfilerReader: ENTER token=0x{eToken:X8} addr=0x{eAddr:X} tid={eTid} asm={eAsm} — interrupting engine");
+            _log.LogVerbose(_logStore,
+                $"ProfilerReader: {(isTailcall ? "TAILCALL" : "LEAVE")} token=0x{token:X8} tid={tid} asm={asm} — interrupting engine");
             RequestInterrupt(model);
-        }
-        else
-        {
-            // Already have a pending BP — ACK immediately so profiler doesn't block.
-            _ = (model.ProfilerAckEvent?.Set());
         }
     }
 
@@ -367,7 +369,7 @@ internal sealed class ProfilerPipeService(
 
         if (MatchesDeferredBreakpoint(model, token, assembly))
         {
-            model.JitNotifications.Enqueue(new JitNotification(token, address, codeSize, assembly));
+            model.ProfilerNotifications.Enqueue(new JitNotification(token, address, codeSize, assembly));
             _log.LogInfo(_logStore,
                 $"ProfilerReader: JIT match! token=0x{token:X8} addr=0x{address:X} asm={assembly} — interrupting engine");
             RequestInterrupt(model);

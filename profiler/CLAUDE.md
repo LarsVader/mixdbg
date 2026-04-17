@@ -1,6 +1,6 @@
 # MixDbgProfiler — CLR Profiler DLL
 
-Native C++ DLL implementing `ICorProfilerCallback2`. Runs inside the debuggee, sends JIT and function-enter notifications to MixDbg via named pipe. See `README.md` for the full high-level explanation.
+Native C++ DLL implementing `ICorProfilerCallback2`. Runs inside the debuggee, sends JIT / FunctionEnter / FunctionLeave / FunctionTailcall notifications to MixDbg via named pipe. See `README.md` for the full high-level explanation.
 
 ## Build
 
@@ -17,8 +17,8 @@ profiler/
   CoreClrTypes.h            # Shared types: LPCBYTE, FunctionID, ClassID, mdToken, GUIDs, ILNativeMap, COR_PRF flags
   ProfilerInfo.h            # ProfilerInfo class — ICorProfilerInfo vtable wrapper (calls by slot index)
   MixDbgProfiler.h          # MixDbgProfiler class declaration — ICorProfilerCallback2 (75 virtuals in vtable order)
-  MixDbgProfiler.cpp         # MixDbgProfiler implementation — Initialize, Shutdown, JITCompilationFinished, OnFunctionEnter, CmdReaderLoop
-  FunctionCallbacks.cpp      # extern "C" callbacks — FunctionIDMapper, FunctionEnterImpl, FunctionLeaveImpl, FunctionTailcallImpl
+  MixDbgProfiler.cpp         # MixDbgProfiler implementation — Initialize, Shutdown, JITCompilationFinished, OnFunctionEnter/Leave, JITInlining, CmdReaderLoop
+  FunctionCallbacks.cpp      # extern "C" callbacks — FunctionIDMapper, FunctionEnterImpl, FunctionLeaveImpl (→ OnFunctionLeave), FunctionTailcallImpl (→ OnFunctionLeave)
   ClassFactory.h             # ClassFactory class declaration
   ClassFactory.cpp           # ClassFactory implementation — COM class factory creating MixDbgProfiler instances
   DllExports.cpp             # DllGetClassObject + DllCanUnloadNow — COM DLL entry points
@@ -34,9 +34,13 @@ profiler/
 
 `MixDbgProfiler` derives from `IUnknown` and declares all `ICorProfilerCallback` (67 methods, slots 3-69) and `ICorProfilerCallback2` (8 methods, slots 70-77) virtual methods in exact `corprof.idl` order. MSVC single-inheritance places them in declaration order in the vtable. The CLR calls these by slot index — **reordering, adding, or removing virtual methods will silently break the profiler**.
 
-The no-op stubs (`{ return S_OK; }`) are inline in the header. Only `Initialize`, `Shutdown`, and `JITCompilationFinished` have real implementations in `.cpp`.
+The no-op stubs (`{ return S_OK; }`) are inline in the header. Real implementations in `.cpp`:
+- `Initialize` (slot 3)
+- `Shutdown` (slot 4)
+- `JITCompilationFinished` (slot 24)
+- `JITInlining` (slot 28) — returns `*pfShouldInline = FALSE` for watched callees so hooks always fire.
 
-Non-virtual public methods (`IsWatchedMethod`, `OnFunctionEnter`, `RegisterWatchedFunction`, etc.) have no vtable impact and can be freely added/reordered.
+Non-virtual public methods (`IsWatchedMethod`, `OnFunctionEnter`, `OnFunctionLeave`, `RegisterWatchedFunction`, etc.) have no vtable impact and can be freely added/reordered.
 
 ### ProfilerInfo Vtable Slot Indices
 
@@ -54,13 +58,15 @@ Non-virtual public methods (`IsWatchedMethod`, `OnFunctionEnter`, `RegisterWatch
 
 ### Named Pipe Protocol
 
-Text lines, one per notification. Two formats depending on `m_hooksActive`:
+Text lines, one per notification. Format depends on `m_hooksActive`:
 
 **Notification pipe** (`MIXDBG_PIPE_NAME`, profiler → MixDbg):
 
 With hooks (`MIXDBG_WATCH_TOKENS` or `MIXDBG_WATCH_ASSEMBLIES` set):
 - `JIT:<token_hex>:<addr_hex>:<size_hex>:<assembly>[:<IL0=N0,IL1=N1,...>]\n`
 - `ENTER:<token_hex>:<body_addr_hex>:<thread_id_hex>:<assembly>\n`
+- `LEAVE:<token_hex>:<thread_id_hex>:<assembly>\n`
+- `TAILCALL:<token_hex>:<thread_id_hex>:<assembly>\n`
 
 Without hooks (JIT notifications only):
 - `<token_hex>:<addr_hex>:<size_hex>:<assembly>\n`
@@ -72,18 +78,20 @@ IL-to-native mapping is included for ALL JIT'd methods (not just watched) so mid
 
 ### Synchronization
 
-- `MIXDBG_ACK_EVENT` — MixDbg signals after setting hardware BP. Profiler's `OnFunctionEnter` blocks on this (500ms timeout).
-- `MIXDBG_REHOOK_EVENT` — MixDbg signals on Continue. Rehook watcher thread re-enables `COR_PRF_MONITOR_ENTERLEAVE`.
-- `m_pipeLock` (CRITICAL_SECTION) — protects `WriteToPipe` from concurrent access (main thread JIT + enter hook thread).
+- `MIXDBG_ACK_EVENT` — MixDbg signals this after installing HW BPs on the first `ENTER` of a method (activation 0→1). Profiler's `OnFunctionEnter` always blocks on this (500ms timeout), but MixDbg signals it immediately for nested/recursive ENTERs (no work to do). `OnFunctionLeave` is fire-and-forget — no ACK.
+- `m_pipeLock` (CRITICAL_SECTION) — protects `WriteToPipe` from concurrent access (JIT + enter/leave hooks on arbitrary threads).
 - `m_watchLock` (CRITICAL_SECTION) — protects `m_watchEntries`/`m_watchCount` (written by cmd reader thread, read by `IsWatchedMethod`).
-- `m_funcLock` (CRITICAL_SECTION) — protects `m_funcSlots` (written by `FunctionIDMapper`, read by `OnFunctionEnter`).
+- `m_funcLock` (CRITICAL_SECTION) — protects `m_funcSlots` (written by `FunctionIDMapper`, read by `OnFunctionEnter`/`OnFunctionLeave`).
 
 ### Thread Model
 
 - **CLR JIT thread**: calls `JITCompilationFinished`. Writes to pipe, optionally blocks on ACK (non-hook mode only for watched methods).
-- **Application threads**: call `FunctionEnterNaked` → `FunctionEnterImpl` → `OnFunctionEnter`. Disables hooks, writes ENTER to pipe, blocks on ACK.
-- **Rehook watcher thread**: created in `Initialize`. Loops on `WaitForSingleObject(m_hRehookEvent)`, re-enables enter/leave hooks via `SetEventMask`.
+- **Application threads**: call `FunctionEnterNaked` / `FunctionLeaveNaked` / `FunctionTailcallNaked` → C++ impls → `OnFunctionEnter` or `OnFunctionLeave`. Enter writes and blocks on ACK; Leave writes and returns.
 - **Command reader thread**: created in `Initialize`. Reads `WATCH:` commands from command pipe (`MIXDBG_CMD_PIPE`), adds to `m_watchEntries` under `m_watchLock`, enables hooks if not already active.
+
+### JIT Inlining
+
+`JITInlining` (slot 28) sets `*pfShouldInline = FALSE` whenever the callee is in a watched list (exact token match or assembly match). Without this, the JIT may inline a small watched callee into its caller, and `FunctionEnter`/`FunctionLeave` hooks would never fire for the inlined copy — the BP would be invisible.
 
 ### Environment Variables (set by MixDbg before CreateProcess)
 
@@ -93,8 +101,7 @@ IL-to-native mapping is included for ALL JIT'd methods (not just watched) so mid
 | `CORECLR_PROFILER` | `{D13D53A1-...}` | Profiler CLSID |
 | `CORECLR_PROFILER_PATH` | Path to DLL | Profiler DLL location |
 | `MIXDBG_PIPE_NAME` | `\\.\pipe\MixDbg_<pid>` | Named pipe for notifications |
-| `MIXDBG_ACK_EVENT` | Event name | ACK synchronization event |
-| `MIXDBG_REHOOK_EVENT` | Event name | Rehook synchronization event |
+| `MIXDBG_ACK_EVENT` | Event name | ACK synchronization event (first-entry sync only) |
 | `MIXDBG_CMD_PIPE` | `\\.\pipe\MixDbgCmd_<name>` | Command pipe for dynamic WATCH commands |
 | `MIXDBG_WATCH_TOKENS` | `Asm1:Token1,Asm2:Token2,...` | Exact methods to hook (C#) |
 | `MIXDBG_WATCH_ASSEMBLIES` | `Asm1,Asm2,...` | Assemblies to hook entirely (C++/CLI) |

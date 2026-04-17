@@ -298,13 +298,13 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     // ── EngineLoopStep: enter breakpoint ───────────────────
 
     [Fact]
-    public void EngineLoopStep_WhenEnterBreakpointHandled_AutoContinues()
+    public void EngineLoopStep_WhenProfilerNotificationHandled_AutoContinues()
     {
         GivenWrapperCreateModelReturns();
         GivenConfigDone();
         GivenWaitForEventSucceedsThenFails();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
-        GivenHandleEnterBreakpointReturns(true);
+        GivenProcessProfilerNotificationsReturns(true);
 
         WhenStartingEngineThread();
         WhenWaitingForEngineReady();
@@ -322,7 +322,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         GivenConfigDone();
         GivenWaitForEventSucceedsThenTerminates();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Breakpoint"));
-        GivenHandleEnterBreakpointReturns(false);
+        GivenProcessProfilerNotificationsReturns(false);
         GivenHitUserBreakpoint();
         GivenGetCurrentThreadIdReturns(42);
         // ProcessCommandsUntilResume needs a command that sets Go.
@@ -344,7 +344,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         GivenConfigDone();
         GivenWaitForEventSucceedsThenTerminates();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Step"));
-        GivenHandleEnterBreakpointReturns(false);
+        GivenProcessProfilerNotificationsReturns(false);
         GivenStepping();
         GivenGetCurrentThreadIdReturns(42);
         GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
@@ -364,7 +364,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         GivenConfigDone();
         GivenWaitForEventSucceedsThenTerminates();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Pause"));
-        GivenHandleEnterBreakpointReturns(false);
+        GivenProcessProfilerNotificationsReturns(false);
         GivenPauseRequested();
         GivenGetCurrentThreadIdReturns(42);
         GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
@@ -386,7 +386,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         GivenConfigDone();
         GivenWaitForEventSucceedsThenFails();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "System break"));
-        GivenHandleEnterBreakpointReturns(false);
+        GivenProcessProfilerNotificationsReturns(false);
         GivenNoStopReason();
 
         WhenStartingEngineThread();
@@ -405,7 +405,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         GivenConfigDone();
         GivenWaitForEventSucceedsThenTerminates();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
-        GivenHandleEnterBreakpointReturns(false);
+        GivenProcessProfilerNotificationsReturns(false);
         GivenHitUserBreakpoint();
         GivenStepping(); // Both set but breakpoint checked first.
         GivenGetCurrentThreadIdReturns(1);
@@ -426,7 +426,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         GivenConfigDone();
         GivenWaitForEventSucceedsThenTerminates();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
-        GivenHandleEnterBreakpointReturns(false);
+        GivenProcessProfilerNotificationsReturns(false);
         GivenStepping();
         GivenPauseRequested();
         GivenGetCurrentThreadIdReturns(1);
@@ -449,7 +449,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         GivenConfigDone();
         GivenWaitForEventSucceedsThenTerminates();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
-        GivenHandleEnterBreakpointReturns(false);
+        GivenProcessProfilerNotificationsReturns(false);
         GivenActiveManagedStep(tempBpIds: [42]);
         GivenHitUserBreakpointWithBpId(42);
         GivenGetCurrentThreadIdReturns(1);
@@ -470,7 +470,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         GivenConfigDone();
         GivenWaitForEventSucceedsThenTerminates();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
-        GivenHandleEnterBreakpointReturns(false);
+        GivenProcessProfilerNotificationsReturns(false);
         GivenActiveManagedStep(tempBpIds: [42]);
         GivenHitUserBreakpointWithBpId(99); // Not a temp BP.
         GivenGetCurrentThreadIdReturns(1);
@@ -984,7 +984,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         GivenLaunchMode("C:\\app.exe");
         GivenConfigDone();
         GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Timeout"));
-        GivenHandleEnterBreakpointReturns(false);
+        GivenProcessProfilerNotificationsReturns(false);
         GivenNoStopReason();
         int callCount = 0;
         _ = _wrapper.WaitForEvent(Arg.Any<DbgEngWrapperModel>())
@@ -1064,8 +1064,8 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     private void GivenGetCurrentThreadIdReturns(uint threadId)
         => _ = _wrapper.GetCurrentThreadId(Arg.Any<DbgEngWrapperModel>()).Returns(threadId);
 
-    private void GivenHandleEnterBreakpointReturns(bool result)
-        => _ = _bpResolver.HandleEnterBreakpoint(Arg.Any<NativeDebuggerModel>()).Returns(result);
+    private void GivenProcessProfilerNotificationsReturns(bool result)
+        => _ = _bpResolver.ProcessProfilerNotifications(Arg.Any<NativeDebuggerModel>()).Returns(result);
 
     private void GivenConfigDone() => _model.ConfigDone = true;
 

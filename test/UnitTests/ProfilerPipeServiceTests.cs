@@ -30,8 +30,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         }
         else
         {
-            // Dev environment — the fallback path found the real profiler DLL.
-            // Verify the pipe was created (fallback path works).
             ThenProfilerPipeIsNotNull();
         }
     }
@@ -48,11 +46,21 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         ThenProfilerPipeIsNotNull();
         ThenProfilerPipeNameIsSet();
         ThenProfilerAckEventIsCreated();
-        ThenProfilerRehookEventIsCreated();
         ThenEnvVarIsSet("CORECLR_ENABLE_PROFILING", "1");
         ThenEnvVarIsSet("CORECLR_PROFILER", "{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}");
         ThenEnvVarContains("CORECLR_PROFILER_PATH", "MixDbgProfiler.dll");
         ThenEnvVarContains("MIXDBG_PIPE_NAME", _model.ProfilerPipeName!);
+    }
+
+    [Fact]
+    public void SetupProfilerPipe_DoesNotSetRehookEventEnvVar()
+    {
+        // The rehook event was removed — env var must not be set.
+        GivenProfilerDllExists();
+
+        WhenSettingUpProfilerPipe();
+
+        ThenEnvVarIsNull("MIXDBG_REHOOK_EVENT");
     }
 
     // ── SetupProfilerPipe (watch tokens resolution) ─────────────
@@ -159,8 +167,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         ThenProfilerReaderThreadName("profiler-reader");
         ThenProfilerReaderThreadIsBackground();
 
-        // Connect a client so the reader thread can proceed past WaitForConnection
-        // and exit cleanly when the pipe is disposed.
         ConnectClient();
     }
 
@@ -225,7 +231,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     // ── ProfilerReaderLoop: JIT matches deferred breakpoint ─────
 
     [Fact]
-    public void ProfilerReaderLoop_WhenJitMatchesDeferred_EnqueuesAndInterrupts()
+    public void ProfilerReaderLoop_WhenJitMatchesDeferred_EnqueuesJitAndInterrupts()
     {
         GivenProfilerPipeCreated();
         GivenDeferredBreakpoint(token: 0x06000001, assembly: "TestAsm");
@@ -235,8 +241,8 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("JIT:06000001:1000:40:TestAsm");
         WhenWaitingForProcessing();
 
-        ThenJitNotificationQueueHasCount(1);
-        ThenJitNotificationHasToken(0x06000001);
+        ThenProfilerNotificationQueueHasCount(1);
+        ThenProfilerNotificationIsJitWithToken(0x06000001);
         ThenSetInterruptWasCalled();
     }
 
@@ -250,7 +256,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("JIT:06000001:1000:40:TestAsm");
         WhenWaitingForProcessing();
 
-        ThenJitNotificationQueueIsEmpty();
+        ThenProfilerNotificationQueueIsEmpty();
         ThenSetInterruptWasNotCalled();
     }
 
@@ -264,13 +270,13 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("JIT:06000001:1000:40:TestAsm");
         WhenWaitingForProcessing();
 
-        ThenJitNotificationQueueHasCount(1);
+        ThenProfilerNotificationQueueHasCount(1);
     }
 
     // ── ProfilerReaderLoop: ENTER notification ──────────────────
 
     [Fact]
-    public void ProfilerReaderLoop_WhenEnterNotification_SetsPendingEnterState()
+    public void ProfilerReaderLoop_WhenEnterNotification_EnqueuesEnterAndInterrupts()
     {
         GivenProfilerPipeCreated();
         GivenInWaitForEvent();
@@ -279,11 +285,8 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("ENTER:06000001:2000:1234:TestAsm");
         WhenWaitingForProcessing();
 
-        ThenPendingEnterBreakpointIsTrue();
-        ThenEnterBreakpointToken(0x06000001);
-        ThenEnterBreakpointAddress(0x2000UL);
-        ThenEnterBreakpointThreadId(0x1234U);
-        ThenEnterBreakpointAssembly("TestAsm");
+        ThenProfilerNotificationQueueHasCount(1);
+        ThenProfilerNotificationIsEnter(0x06000001, 0x2000UL, 0x1234U, "TestAsm");
         ThenSetInterruptWasCalled();
     }
 
@@ -296,25 +299,104 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("ENTER:06000001:2000");
         WhenWaitingForProcessing();
 
-        ThenPendingEnterBreakpointIsFalse();
+        ThenProfilerNotificationQueueIsEmpty();
     }
 
-    // ── ProfilerReaderLoop: ENTER already pending ───────────────
+    // ── ProfilerReaderLoop: two ENTERs for same method — both are queued ──
 
     [Fact]
-    public void ProfilerReaderLoop_WhenEnterAlreadyPending_AcksImmediately()
+    public void ProfilerReaderLoop_WhenEnterNotificationTwice_EnqueuesBoth()
     {
         GivenProfilerPipeCreated();
-        GivenPendingEnterBreakpointAlreadySet();
         GivenProfilerReaderStarted();
 
-        WhenClientSendsLine("ENTER:06000002:3000:5678:OtherAsm");
+        WhenClientSendsLine("ENTER:06000001:2000:1234:TestAsm");
+        WhenClientSendsLine("ENTER:06000001:2000:5678:TestAsm");
         WhenWaitingForProcessing();
 
-        // Token should not be overwritten — still the original.
-        ThenEnterBreakpointToken(0x06000001);
-        // ACK event should have been signaled (Set() was called).
-        ThenProfilerAckEventWasSignaled();
+        // Both ENTERs are queued — activation counting happens engine-side.
+        ThenProfilerNotificationQueueHasCount(2);
+    }
+
+    // ── ProfilerReaderLoop: LEAVE notification ──────────────────
+
+    [Fact]
+    public void ProfilerReaderLoop_WhenLeaveNotification_EnqueuesLeave()
+    {
+        GivenProfilerPipeCreated();
+        GivenProfilerReaderStarted();
+
+        WhenClientSendsLine("LEAVE:06000001:1234:TestAsm");
+        WhenWaitingForProcessing();
+
+        ThenProfilerNotificationQueueHasCount(1);
+        ThenProfilerNotificationIsLeave(0x06000001, 0x1234U, "TestAsm");
+    }
+
+    [Fact]
+    public void ProfilerReaderLoop_WhenLeaveWithTooFewParts_IsIgnored()
+    {
+        GivenProfilerPipeCreated();
+        GivenProfilerReaderStarted();
+
+        WhenClientSendsLine("LEAVE:06000001");
+        WhenWaitingForProcessing();
+
+        ThenProfilerNotificationQueueIsEmpty();
+    }
+
+    [Fact]
+    public void ProfilerReaderLoop_WhenLeaveMatchesActiveMethod_InterruptsEngine()
+    {
+        GivenProfilerPipeCreated();
+        GivenActiveMethodBreakpoint(token: 0x06000001, assembly: "TestAsm");
+        GivenInWaitForEvent();
+        GivenProfilerReaderStarted();
+
+        WhenClientSendsLine("LEAVE:06000001:1234:TestAsm");
+        WhenWaitingForProcessing();
+
+        ThenSetInterruptWasCalled();
+    }
+
+    [Fact]
+    public void ProfilerReaderLoop_WhenLeaveNotMatchingActive_DoesNotInterrupt()
+    {
+        GivenProfilerPipeCreated();
+        GivenProfilerReaderStarted();
+
+        WhenClientSendsLine("LEAVE:06000001:1234:TestAsm");
+        WhenWaitingForProcessing();
+
+        ThenProfilerNotificationQueueHasCount(1);
+        ThenSetInterruptWasNotCalled();
+    }
+
+    // ── ProfilerReaderLoop: TAILCALL notification ───────────────
+
+    [Fact]
+    public void ProfilerReaderLoop_WhenTailcallNotification_EnqueuesTailcall()
+    {
+        GivenProfilerPipeCreated();
+        GivenProfilerReaderStarted();
+
+        WhenClientSendsLine("TAILCALL:06000001:1234:TestAsm");
+        WhenWaitingForProcessing();
+
+        ThenProfilerNotificationQueueHasCount(1);
+        ThenProfilerNotificationIsTailcall(0x06000001, 0x1234U, "TestAsm");
+    }
+
+    [Fact]
+    public void ProfilerReaderLoop_WhenTailcallWithTooFewParts_IsIgnored()
+    {
+        GivenProfilerPipeCreated();
+        GivenProfilerReaderStarted();
+
+        WhenClientSendsLine("TAILCALL:06000001");
+        WhenWaitingForProcessing();
+
+        ThenProfilerNotificationQueueIsEmpty();
     }
 
     // ── ProfilerReaderLoop: READY notification ──────────────────
@@ -342,7 +424,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         GivenProfilerPipeCreated();
         GivenProfilerReaderStarted();
 
-        // Old format: TOKEN:ADDRESS:SIZE:ASSEMBLY (no JIT: prefix)
         WhenClientSendsLine("06000001:1000:40:TestAsm");
         WhenWaitingForProcessing();
 
@@ -361,7 +442,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("06000001:1000:40:TestAsm");
         WhenWaitingForProcessing();
 
-        ThenJitNotificationQueueHasCount(1);
+        ThenProfilerNotificationQueueHasCount(1);
         ThenSetInterruptWasCalled();
     }
 
@@ -372,7 +453,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         GivenProfilerReaderStarted();
 
         WhenClientSendsLine("06000001:1000:40");
-        // Send a valid line after to prove the loop continues.
         WhenClientSendsLine("JIT:06000002:2000:80:TestAsm");
         WhenWaitingForProcessing();
 
@@ -433,7 +513,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         GivenProfilerPipeCreated();
         GivenProfilerReaderStarted();
 
-        // Two valid entries, one invalid (XY is not valid hex).
         WhenClientSendsLine("JIT:06000001:1000:40:TestAsm:0=0,XY=bad,A=10");
         WhenWaitingForProcessing();
 
@@ -452,7 +531,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("ENTER:ZZZZ:2000:1234:TestAsm");
         WhenWaitingForProcessing();
 
-        ThenPendingEnterBreakpointIsFalse();
+        ThenProfilerNotificationQueueIsEmpty();
     }
 
     [Fact]
@@ -464,7 +543,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("ENTER:06000001:ZZZZ:1234:TestAsm");
         WhenWaitingForProcessing();
 
-        ThenPendingEnterBreakpointIsFalse();
+        ThenProfilerNotificationQueueIsEmpty();
     }
 
     [Fact]
@@ -476,7 +555,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenClientSendsLine("ENTER:06000001:2000:ZZZZ:TestAsm");
         WhenWaitingForProcessing();
 
-        ThenPendingEnterBreakpointIsFalse();
+        ThenProfilerNotificationQueueIsEmpty();
     }
 
     // ── ProfilerReaderLoop: exception while reading ──────────────
@@ -487,8 +566,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         GivenProfilerPipeCreated();
         GivenProfilerReaderStarted();
 
-        // Force an exception by disposing the pipe from the test side
-        // while the reader is active.
         _model.ProfilerPipeReader?.Dispose();
         WhenWaitingForProcessing();
 
@@ -511,26 +588,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         ThenEnvVarIsSet("MIXDBG_WATCH_ASSEMBLIES", "CliWrapper");
     }
 
-    // ── ProfilerReaderLoop: ENTER already pending (ACK + rehook) ──
-
-    [Fact]
-    public void ProfilerReaderLoop_WhenEnterAlreadyPendingAndRehookSet_AcksOnly()
-    {
-        GivenProfilerPipeCreated();
-        GivenPendingEnterBreakpointAlreadySet();
-        _model.ProfilerRehookEvent = new EventWaitHandle(false, EventResetMode.AutoReset);
-        GivenProfilerReaderStarted();
-
-        WhenClientSendsLine("ENTER:06000003:4000:9999:SomeAsm");
-        WhenWaitingForProcessing();
-
-        // Original token should not be overwritten.
-        ThenEnterBreakpointToken(0x06000001);
-        ThenProfilerAckEventWasSignaled();
-        // Rehook should NOT have been signaled (only ACK for the duplicate).
-        Assert.False(_model.ProfilerRehookEvent.WaitOne(0));
-    }
-
     #region Given
 
     private static void GivenProfilerDllDoesNotExist()
@@ -542,7 +599,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
 
     private void GivenProfilerDllExists()
     {
-        // Place a fake MixDbgProfiler.dll next to the test exe so SetupProfilerPipe finds it.
         _profilerDllPath = Path.Combine(AppContext.BaseDirectory, "MixDbgProfiler.dll");
         if (!File.Exists(_profilerDllPath))
             File.WriteAllBytes(_profilerDllPath, [0]);
@@ -571,7 +627,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
             _pipeName, PipeDirection.In, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
         _model.ProfilerAckEvent = new EventWaitHandle(false, EventResetMode.AutoReset);
-        _model.ProfilerRehookEvent = new EventWaitHandle(false, EventResetMode.AutoReset);
     }
 
     private void GivenDeferredBreakpoint(int token, string assembly)
@@ -587,16 +642,11 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         _model.RebuildDeferredBreakpointIndex();
     }
 
-    private void GivenInWaitForEvent() => _model.InWaitForEvent = true;
+    private void GivenActiveMethodBreakpoint(int token, string assembly)
+        => _model.ActiveMethodBreakpoints[(token, assembly)] =
+            new ActiveMethodBreakpoint { ActivationCount = 1 };
 
-    private void GivenPendingEnterBreakpointAlreadySet()
-    {
-        _model.PendingEnterBreakpoint = true;
-        _model.EnterBreakpointToken = 0x06000001;
-        _model.EnterBreakpointAddress = 0x1000;
-        _model.EnterBreakpointThreadId = 0xAAAA;
-        _model.EnterBreakpointAssembly = "OriginalAsm";
-    }
+    private void GivenInWaitForEvent() => _model.InWaitForEvent = true;
 
     private void GivenProfilerReaderStarted()
     {
@@ -639,8 +689,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     private void ThenProfilerPipeNameIsSet() => Assert.NotNull(_model.ProfilerPipeName);
 
     private void ThenProfilerAckEventIsCreated() => Assert.NotNull(_model.ProfilerAckEvent);
-
-    private void ThenProfilerRehookEventIsCreated() => Assert.NotNull(_model.ProfilerRehookEvent);
 
     private void ThenLogWarningWasCalled(string messageContains) =>
         _log.Received().LogWarning(
@@ -727,37 +775,49 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     private void ThenJitMethodMappingCodeStart(int token, string assembly, ulong expected) =>
         Assert.Equal(expected, _model.JitMethodMappings[(token, assembly)].CodeStart);
 
-    private void ThenJitNotificationQueueHasCount(int expected) => Assert.Equal(expected, _model.JitNotifications.Count);
+    private void ThenProfilerNotificationQueueHasCount(int expected)
+        => Assert.Equal(expected, _model.ProfilerNotifications.Count);
 
-    private void ThenJitNotificationQueueIsEmpty() => Assert.True(_model.JitNotifications.IsEmpty);
+    private void ThenProfilerNotificationQueueIsEmpty() => Assert.True(_model.ProfilerNotifications.IsEmpty);
 
-    private void ThenJitNotificationHasToken(int expected)
+    private void ThenProfilerNotificationIsJitWithToken(int expected)
     {
-        Assert.True(_model.JitNotifications.TryPeek(out JitNotification? notification));
-        Assert.Equal(expected, notification.MethodToken);
+        Assert.True(_model.ProfilerNotifications.TryPeek(out ProfilerNotification? notification));
+        JitNotification jit = Assert.IsType<JitNotification>(notification);
+        Assert.Equal(expected, jit.MethodToken);
+    }
+
+    private void ThenProfilerNotificationIsEnter(int token, ulong address, uint tid, string asm)
+    {
+        Assert.True(_model.ProfilerNotifications.TryPeek(out ProfilerNotification? notification));
+        EnterNotification enter = Assert.IsType<EnterNotification>(notification);
+        Assert.Equal(token, enter.MethodToken);
+        Assert.Equal(address, enter.BodyAddress);
+        Assert.Equal(tid, enter.ThreadId);
+        Assert.Equal(asm, enter.AssemblyName);
+    }
+
+    private void ThenProfilerNotificationIsLeave(int token, uint tid, string asm)
+    {
+        Assert.True(_model.ProfilerNotifications.TryPeek(out ProfilerNotification? notification));
+        LeaveNotification leave = Assert.IsType<LeaveNotification>(notification);
+        Assert.Equal(token, leave.MethodToken);
+        Assert.Equal(tid, leave.ThreadId);
+        Assert.Equal(asm, leave.AssemblyName);
+    }
+
+    private void ThenProfilerNotificationIsTailcall(int token, uint tid, string asm)
+    {
+        Assert.True(_model.ProfilerNotifications.TryPeek(out ProfilerNotification? notification));
+        TailcallNotification tail = Assert.IsType<TailcallNotification>(notification);
+        Assert.Equal(token, tail.MethodToken);
+        Assert.Equal(tid, tail.ThreadId);
+        Assert.Equal(asm, tail.AssemblyName);
     }
 
     private void ThenSetInterruptWasCalled() => _dbgEngWrapper.Received().SetInterrupt(_model.Wrapper);
 
     private void ThenSetInterruptWasNotCalled() => _dbgEngWrapper.DidNotReceive().SetInterrupt(_model.Wrapper);
-
-    private void ThenPendingEnterBreakpointIsTrue() => Assert.True(_model.PendingEnterBreakpoint);
-
-    private void ThenPendingEnterBreakpointIsFalse() => Assert.False(_model.PendingEnterBreakpoint);
-
-    private void ThenEnterBreakpointToken(int expected) => Assert.Equal(expected, _model.EnterBreakpointToken);
-
-    private void ThenEnterBreakpointAddress(ulong expected) => Assert.Equal(expected, _model.EnterBreakpointAddress);
-
-    private void ThenEnterBreakpointThreadId(uint expected) => Assert.Equal(expected, _model.EnterBreakpointThreadId);
-
-    private void ThenEnterBreakpointAssembly(string expected) => Assert.Equal(expected, _model.EnterBreakpointAssembly);
-
-    // The ACK event was Set() for the duplicate ENTER. If we can WaitOne(0) and it
-    // returns true, that confirms it was signaled (AutoReset: one signal consumed).
-    private void ThenProfilerAckEventWasSignaled() =>
-        Assert.True(_model.ProfilerAckEvent!.WaitOne(0),
-            "ProfilerAckEvent should have been signaled");
 
     private void ThenProfilerReaderThreadCompletes()
     {
@@ -791,7 +851,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         };
         _testee = new ProfilerPipeService(_log, _logStore, _managedBp, _dbgEngWrapper);
 
-        // Default return values for NSubstitute mocks to prevent NullReferenceException.
         List<(string Assembly, int Token)> noTokens = [];
         _ = _managedBp.ResolveTokensFromBreakpoints(Arg.Any<IEnumerable<(string, int)>>())
             .Returns(noTokens);
@@ -799,7 +858,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         _ = _managedBp.ResolveWatchAssemblies(Arg.Any<IEnumerable<(string, int)>>())
             .Returns(noAssemblies);
 
-        // Clean env vars before each test to avoid cross-test contamination.
         ClearEnvVars();
     }
 
@@ -808,7 +866,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         _clientPipe = new NamedPipeClientStream(".", _pipeName!, PipeDirection.Out);
         _clientPipe.Connect(2000);
         _clientWriter = new StreamWriter(_clientPipe, Encoding.UTF8) { AutoFlush = true };
-        // Wait briefly for the reader to process the connection.
         Thread.Sleep(100);
     }
 
@@ -828,19 +885,15 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     {
         _model.Terminated = true;
 
-        // Close client first so pipe EOF is detected by reader.
         _clientWriter?.Dispose();
         _clientPipe?.Dispose();
 
-        // Dispose the pipe to break WaitForConnection if reader is still waiting.
         _model.ProfilerPipeReader?.Dispose();
         _model.ProfilerPipe?.Dispose();
 
-        // Wait for reader thread to exit after pipe disposal.
         _ = _model.ProfilerReaderThread?.Join(TimeSpan.FromSeconds(2));
 
         _model.ProfilerAckEvent?.Dispose();
-        _model.ProfilerRehookEvent?.Dispose();
 
         _model.Commands.CompleteAdding();
         _model.Commands.Dispose();

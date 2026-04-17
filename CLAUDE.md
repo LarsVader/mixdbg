@@ -216,13 +216,14 @@ ALL dbgeng calls (`DebugCreate`, `CreateProcess`, `WaitForEvent`, `GetStackTrace
 
 - **CLR detection**: `EventCallbacks.OnLoadModule` watches for `coreclr` module name. Sets `model.ClrLoaded` flag, captures `CoreClrPath` and `CoreClrBaseAddress`. ICorDebug V4 initialization happens on the next engine stop (can't init during `GO` state).
 - **ICorDebug V4 integration**: `ICLRDebugging::OpenVirtualProcess` creates an `ICorDebugProcess` piggybacked on the existing dbgeng session via `DbgEngDataTarget` (implements `ICorDebugMutableDataTarget`). No second debugger, no conflicts. dbgeng owns the process; ICorDebug V4 reads/writes memory through the bridge. `RuntimeLibraryProvider` locates `mscordbi.dll` next to `coreclr.dll`.
-- **CLR Profiler (`MixDbgProfiler.dll`)**: Native C++ DLL implementing `ICorProfilerCallback2`. CLR loads it at startup via `CORECLR_ENABLE_PROFILING` env vars. Uses two mechanisms:
+- **CLR Profiler (`MixDbgProfiler.dll`)**: Native C++ DLL implementing `ICorProfilerCallback2`. CLR loads it at startup via `CORECLR_ENABLE_PROFILING` env vars. Uses three mechanisms:
   1. `JITCompilationFinished` sends `JIT:token:address:size:assembly[:IL-map]` for stack trace resolution and IL-to-native mapping
-  2. `FunctionEnter` hooks (via x64 MASM stubs) fire on every call to breakpointed methods, enabling unlimited transient breakpoints
-- **Unlimited managed breakpoints via FunctionEnter hooks**: `FunctionIDMapper` selectively enables hooks for watched methods. Two watch granularities:
-  1. **Exact token watches** (`MIXDBG_WATCH_TOKENS`): C# methods — resolved from portable PDBs at pre-launch time. Only breakpointed methods are hooked.
-  2. **Assembly-level watches** (`MIXDBG_WATCH_ASSEMBLIES`): C++/CLI assemblies — resolved from vcxproj at pre-launch time. ALL methods from the assembly are hooked (can't resolve specific tokens before module loads). Non-BP method ENTERs are ACKed immediately with REHOOK to keep hooks active.
-  On each call: profiler disables hooks (`SetEventMask`) → sends ENTER notification → blocks on ACK → MixDbg sets transient hardware BP at exact line address (via IL-to-native mapping) → ACK → method runs without hooks → BP fires at correct line. On Continue: MixDbg removes BP, signals REHOOK event → profiler's watcher thread re-enables hooks for the next call.
+  2. `FunctionEnter` / `FunctionLeave` / `FunctionTailcall` hooks (via x64 MASM stubs) fire on every call/return of watched methods
+  3. `JITInlining` returns `*pfShouldInline = FALSE` for watched callees so hooks always fire (no inlining sinkhole)
+- **Method-lifetime managed breakpoints (M4V3)**: A managed BP lives as long as its method has at least one activation on the stack. `FunctionIDMapper` selectively enables hooks for watched methods. Two watch granularities:
+  1. **Exact token watches** (`MIXDBG_WATCH_TOKENS`): C# methods — resolved from portable PDBs at pre-launch time.
+  2. **Assembly-level watches** (`MIXDBG_WATCH_ASSEMBLIES`): C++/CLI assemblies — resolved from vcxproj at pre-launch time (all methods in the assembly are hooked because tokens can't be resolved before module load).
+  Flow: user `setBreakpoints` creates a `ManagedMethodBreakpointPlan` per (token, assembly). On `FunctionEnter` (count 0→1), MixDbg installs one HW BP per plan site at its exact line address (via `JitMethodMappings`), ACKs the profiler. Nested/recursive ENTERs just `count++` and ACK immediately. On `FunctionLeave`/`FunctionTailcall` (count→0), all HW BPs for that method are removed. Continue/step do NOT touch BPs — they persist for the lifetime of the activation, which means loop iterations all fire correctly.
 - **Exact-line breakpoints via IL-to-native mapping**: Profiler sends `GetILToNativeMapping` data for ALL JIT'd methods in JIT: notifications (not just watched methods). MixDbg maps the BP's IL offset (from PDB) to the exact native address inside the method body. Hardware BPs fire at the precise source line, not just at method entry. This enables mid-session BPs on already-JIT'd methods to resolve exact line addresses via `JitMethodMappings`.
 - **Managed stack traces**: Profiler's `JitMethodMap` (sorted by native address) maps any IP in JIT'd code to method token + assembly. `ResolveFrameFromProfilerData` binary-searches the map, reverse-maps native IP → IL offset via `JitMethodMappings`, then uses `PdbSourceMapperService` for method name + exact source file:line.
 - **Source resolution**: C# uses portable PDBs read by `PdbSourceMapperService` via `System.Reflection.Metadata`. C++/CLI uses Windows PDBs read natively by dbgeng's `GetLineByOffset`.
@@ -247,10 +248,7 @@ Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stop
 
 ### M4: Managed Debugging — DONE
 
-**Managed breakpoints (working):** Unlimited first-click breakpoints at exact source lines on both C# and C++/CLI code, including breakpoints added mid-session after the debugger is already running. Two mechanisms:
-1. **Pre-launch BPs (ENTER hooks):** `FunctionEnter` hooks (via x64 MASM stubs) detect each call to breakpointed methods, profiler temporarily disables hooks and blocks, MixDbg sets a transient hardware BP at the exact line address (via IL-to-native mapping from `GetILToNativeMapping`), method runs without hooks and hits the BP. On Continue, BP is removed and a REHOOK event re-enables hooks for the next call.
-2. **Mid-session BPs (JitMethodMap):** When a C# BP is added after launch on an already-JIT'd method, `BindResolvedMethod` finds it in the profiler's `JitMethodMap` and uses `JitMethodMappings` IL-to-native mapping for exact-line address. Sets a permanent hardware BP (tracked in `PermanentManagedBreakpointIds`, NOT removed on Continue). `QueueEngineQuery` calls `SetInterrupt` to wake the engine so the BP is processed immediately. If the method isn't JIT'd yet, falls to deferred + WATCH command path.
-C# uses exact token watches (`MIXDBG_WATCH_TOKENS`); C++/CLI uses assembly-level watches (`MIXDBG_WATCH_ASSEMBLIES`) because tokens can't be resolved before module load. Dynamic WATCH commands sent via the command pipe (`MIXDBG_CMD_PIPE`) for mid-session BPs.
+**Managed breakpoints (working, method-lifetime lifecycle):** First-click breakpoints at exact source lines on both C# and C++/CLI code, including breakpoints added mid-session. A BP lives as long as its method has at least one activation on the stack — so loop/recursion iterations all fire correctly. `BindResolvedMethod` creates a `ManagedMethodBreakpointPlan` entry per method; if the method is already running (`ActiveMethodBreakpoints` entry exists), the HW BP is installed immediately (piggyback). Otherwise it's installed on the next `FunctionEnter` (count 0→1) and removed on the final `FunctionLeave`/`FunctionTailcall` (count→0). C# uses exact token watches (`MIXDBG_WATCH_TOKENS`); C++/CLI uses assembly-level watches (`MIXDBG_WATCH_ASSEMBLIES`) because tokens can't be resolved before module load. Dynamic WATCH commands sent via the command pipe (`MIXDBG_CMD_PIPE`) for mid-session BPs. See `docs/M4V3-method-lifetime-breakpoints.md` for the design rationale.
 
 **Managed stack traces (working):** Profiler's `JitMethodMap` maps native IPs to method tokens + assemblies. `ResolveFrameFromProfilerData` binary-searches the map, reverse-maps native IP → IL offset via `JitMethodMappings`, then uses `PdbSourceMapperService` for method name + exact source file:line. Completely replaces the broken ICorDebug piggybacked thread enumeration (`E_NOTIMPL`).
 
@@ -258,17 +256,19 @@ C# uses exact token watches (`MIXDBG_WATCH_TOKENS`); C++/CLI uses assembly-level
 - Native C++ DLL implementing `ICorProfilerCallback2`
 - CLR loads it via `CORECLR_ENABLE_PROFILING` env vars set before `CreateProcess`
 - `JITCompilationFinished` resolves `FunctionID` → method token + native address + code size + assembly name + IL-to-native mapping (for ALL methods)
+- `JITInlining` returns `*pfShouldInline = FALSE` for watched callees, so every call to a watched method fires FunctionEnter
 - Sends `JIT:TOKEN:ADDRESS:SIZE:ASSEMBLY[:IL-map]\n` text lines to MixDbg via named pipe (`MIXDBG_PIPE_NAME`)
 - Receives `WATCH:Assembly:TokenHex\n` commands via command pipe (`MIXDBG_CMD_PIPE`) for mid-session breakpoints
-- `FunctionEnter` hooks (x64 MASM stubs in `EnterLeaveStubs.asm`) fire on every call to watched methods
+- `FunctionEnter` / `FunctionLeave` / `FunctionTailcall` hooks (x64 MASM stubs in `EnterLeaveStubs.asm`) fire on every call/return of watched methods
 - `FunctionIDMapper` enables hooks for methods matching `MIXDBG_WATCH_TOKENS` (exact), `MIXDBG_WATCH_ASSEMBLIES` (assembly-level for C++/CLI), or dynamically added WATCH tokens
-- On enter: disables hooks → sends `ENTER:TOKEN:ADDRESS:THREADID:ASSEMBLY\n` → blocks on ACK event (`MIXDBG_ACK_EVENT`) → MixDbg sets transient hardware BP → ACK → method runs → BP fires
-- On continue: MixDbg signals REHOOK event (`MIXDBG_REHOOK_EVENT`) → watcher thread re-enables hooks
-- Non-BP method ENTER (assembly-level watch): MixDbg ACKs immediately + signals REHOOK
+- On ENTER: sends `ENTER:TOKEN:BODYADDR:THREADID:ASSEMBLY\n`, blocks on ACK event (`MIXDBG_ACK_EVENT`). MixDbg installs HW BPs for the method's plan sites on first activation (0→1), then ACKs. Recursive/nested ENTERs are ACKed immediately.
+- On LEAVE/TAILCALL: sends `LEAVE:TOKEN:THREADID:ASSEMBLY\n` or `TAILCALL:TOKEN:THREADID:ASSEMBLY\n` (fire-and-forget). MixDbg decrements the activation count; when it reaches 0, all HW BPs for that method are removed.
 - Profiler CLSID: `{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}`
 - Uses `ICorProfilerInfo` vtable calls by slot index (no corprof.h header dependency)
 
 **Key findings (M4V2, 2026-04-04):** See `docs/M4V2-managed-breakpoints.md` for the full investigation of approaches that failed before the profiler approach succeeded.
+
+**M4V3 (2026-04-17):** Replaced the transient-on-Continue BP lifecycle with method-lifetime scoping (install on first ENTER, remove on final LEAVE). Fixes the foreach/loop bug where BPs only fired on the first iteration. See `docs/M4V3-method-lifetime-breakpoints.md`. Two integration tests (recursion step-over, mid-session C# BP stack frame source) are known to still fail after this change and are tracked in that doc.
 
 **Launch args:** DAP `launch` request `args` field is threaded through to `CreateProcess` command line.
 
@@ -294,7 +294,7 @@ Stepping DAP handlers (`next`, `stepIn`, `stepOut`) work across native/managed/c
 
 **Step-into:** Parses IL bytecode at the current offset to identify the call target:
 - **C# to C# calls**: `GetCallTargetAtOffset` scans IL for `call`/`callvirt` opcodes, resolves target via `FindMethodToken` + `JitMethodMap`, sets temp BP at first source line.
-- **C# to C++/CLI calls**: Profiler `WATCH` command + `ENTER` hook + transient BP (reuses M4 infrastructure).
+- **C# to C++/CLI calls**: Profiler `WATCH` command + one-shot `MethodBreakpointSite` (IsStepIntoOneShot=true) on the target method's plan. Next `FunctionEnter` installs the HW BP; hit triggers step complete.
 - **C++/CLI to native calls**: `GetOffsetByName` resolves symbol names to native addresses. BP lands on first statement (skips opening brace via `GetOffsetByLine(line+1)`).
 - **Fallback**: Temp BP at next source line (step-over behavior).
 

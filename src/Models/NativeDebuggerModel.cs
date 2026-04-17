@@ -53,13 +53,36 @@ public sealed class NativeDebuggerModel : IDisposable
     // Managed breakpoint tracking (ICorDebug V4).
     internal HashSet<uint> ManagedBreakpointIds { get; } = [];
 
-    /// <summary>
-    /// Managed breakpoint IDs set via the JitMethodMap path (already-JIT'd methods).
-    /// These are permanent — NOT removed on Continue like transient ENTER-hook BPs.
-    /// Cleared only by ClearManagedBreakpointsForFile (new setBreakpoints for the file).
-    /// </summary>
-    internal HashSet<uint> PermanentManagedBreakpointIds { get; } = [];
     internal List<SetBreakpointsArguments> PendingManagedBreakpoints { get; } = [];
+
+    /// <summary>
+    /// Per-method breakpoint plan keyed by (token, assembly). Created in
+    /// <see cref="Services.ManagedBreakpointService.SetManagedBreakpoints"/> when
+    /// the user sets breakpoints. Drives HW BP installation on FunctionEnter:
+    /// when a method transitions from 0→1 activations, every site in its plan
+    /// becomes an active HW BP; on the final LEAVE (count→0), those HW BPs are
+    /// removed. Sites persist across continue/step; entries are removed only by
+    /// <see cref="Services.ManagedBreakpointService.ClearManagedBreakpointsForFile"/>.
+    /// </summary>
+    internal Dictionary<(int Token, string Assembly), ManagedMethodBreakpointPlan> ManagedBpPlans { get; } =
+        new(DeferredBreakpointKeyComparer.Instance);
+
+    /// <summary>
+    /// Runtime activation tracking keyed by (token, assembly). An entry exists for
+    /// every method currently on the stack with at least one activation. Tracks
+    /// the activation count (incremented on ENTER, decremented on LEAVE/TAILCALL)
+    /// and the installed HW BP IDs so they can be removed when the count reaches 0.
+    /// </summary>
+    internal Dictionary<(int Token, string Assembly), ActiveMethodBreakpoint> ActiveMethodBreakpoints { get; } =
+        new(DeferredBreakpointKeyComparer.Instance);
+
+    /// <summary>
+    /// Unified queue of notifications received from the profiler pipe
+    /// (JIT, ENTER, LEAVE, TAILCALL). Written by the profiler reader thread,
+    /// drained by the engine thread via
+    /// <see cref="Services.IManagedBreakpointResolver.ProcessProfilerNotifications"/>.
+    /// </summary>
+    internal ConcurrentQueue<ProfilerNotification> ProfilerNotifications { get; } = new();
 
     // SOS extension state.
     internal volatile bool SosLoaded;
@@ -129,14 +152,8 @@ public sealed class NativeDebuggerModel : IDisposable
     /// Drained by the cmd pipe connect thread once the profiler connects.
     /// </summary>
     internal ConcurrentQueue<string> PendingWatchCommands { get; } = new();
-    internal ConcurrentQueue<JitNotification> JitNotifications { get; } = new();
     internal volatile bool ProfilerConnected;
     internal volatile bool ProfilerHooksActive; // True when profiler uses ENTER: notifications (enter/leave hooks).
-    internal volatile bool PendingEnterBreakpoint; // True when an ENTER notification matched — treat next stop as breakpoint.
-    internal uint EnterBreakpointThreadId; // OS thread ID of the thread frozen in the profiler's enter hook.
-    internal int EnterBreakpointToken; // Method token of the method being entered.
-    internal ulong EnterBreakpointAddress; // BP address (method body start, past hook preamble).
-    internal string? EnterBreakpointAssembly; // Assembly name of the method being entered.
 
     /// <summary>
     /// Maps (assembly:token) to the code start address and IL-to-native offset mapping
@@ -146,7 +163,6 @@ public sealed class NativeDebuggerModel : IDisposable
     internal Dictionary<(int Token, string Assembly), JitMethodMapping> JitMethodMappings { get; } =
         new(DeferredBreakpointKeyComparer.Instance);
     internal EventWaitHandle? ProfilerAckEvent { get; set; }
-    internal EventWaitHandle? ProfilerRehookEvent { get; set; }
 
     /// <summary>
     /// Map of all JIT-compiled methods reported by the profiler, keyed by native code
@@ -266,11 +282,79 @@ internal record PendingManagedBreakpoint(string FilePath, int Line, int BpId);
 internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodToken, int ILOffset, int BpId, string? AssemblyName, bool IsCliMethod = false);
 
 /// <summary>
+/// Base type for notifications received from the CLR profiler DLL over the named pipe.
+/// Dispatched on the engine thread via
+/// <see cref="Services.IManagedBreakpointResolver.ProcessProfilerNotifications"/>.
+/// </summary>
+internal abstract record ProfilerNotification;
+
+/// <summary>
 /// A JIT compilation notification received from the CLR profiler DLL via named pipe.
 /// Contains the metadata token, native code start address, code size, and assembly name
 /// of the freshly JIT-compiled method.
 /// </summary>
-internal record JitNotification(int MethodToken, ulong NativeAddress, uint CodeSize, string AssemblyName);
+internal sealed record JitNotification(int MethodToken, ulong NativeAddress, uint CodeSize, string AssemblyName)
+    : ProfilerNotification;
+
+/// <summary>
+/// A FunctionEnter notification for a watched method. The profiler blocks on the ACK
+/// event after sending this until MixDbg has handled it (either installed HW BPs on
+/// first entry or acknowledged a nested/recursive entry).
+/// </summary>
+internal sealed record EnterNotification(int MethodToken, ulong BodyAddress, uint ThreadId, string AssemblyName)
+    : ProfilerNotification;
+
+/// <summary>
+/// A FunctionLeave notification for a watched method. Fire-and-forget from the
+/// profiler's perspective; MixDbg decrements activation count and, when it reaches 0,
+/// removes all HW BPs for that method.
+/// </summary>
+internal sealed record LeaveNotification(int MethodToken, uint ThreadId, string AssemblyName)
+    : ProfilerNotification;
+
+/// <summary>
+/// A FunctionTailcall notification. Semantically identical to a LEAVE — the current
+/// activation is ending (control is being transferred to the tailcall target without
+/// returning through the current frame).
+/// </summary>
+internal sealed record TailcallNotification(int MethodToken, uint ThreadId, string AssemblyName)
+    : ProfilerNotification;
+
+/// <summary>
+/// Declarative breakpoint plan for a single managed method (keyed by token + assembly).
+/// Holds one or more <see cref="MethodBreakpointSite"/>s. While at least one activation
+/// of the method is on the stack, each site becomes an installed hardware BP.
+/// </summary>
+internal sealed class ManagedMethodBreakpointPlan
+{
+    public required int MethodToken { get; init; }
+    public required string AssemblyName { get; init; }
+    public List<MethodBreakpointSite> Sites { get; } = [];
+}
+
+/// <summary>
+/// A single breakpoint location inside a method. <see cref="IsStepIntoOneShot"/> marks
+/// temporary step-into sites that are removed on first hit instead of on LEAVE.
+/// </summary>
+internal sealed class MethodBreakpointSite
+{
+    public required int BpId { get; init; }
+    public required int ILOffset { get; init; }
+    public required string FilePath { get; init; }
+    public required int Line { get; init; }
+    public bool IsStepIntoOneShot { get; init; }
+}
+
+/// <summary>
+/// Runtime activation tracker for a method currently on the stack. Created on the
+/// first FunctionEnter (count 0→1), removed on the final LEAVE/TAILCALL (count→0).
+/// </summary>
+internal sealed class ActiveMethodBreakpoint
+{
+    public int ActivationCount { get; set; }
+    public List<uint> InstalledBpIds { get; } = [];
+    public HashSet<ulong> InstalledAddresses { get; } = [];
+}
 
 /// <summary>
 /// IL-to-native offset mapping for a JIT'd method. Used to compute exact native

@@ -51,6 +51,11 @@ extern "C" void FunctionEnterImpl(FunctionID funcId) {
     if (g_pProfiler) g_pProfiler->OnFunctionEnter(funcId);
 }
 
-extern "C" void FunctionLeaveImpl(FunctionID) {}
+extern "C" void FunctionLeaveImpl(FunctionID funcId) {
+    if (g_pProfiler) g_pProfiler->OnFunctionLeave(funcId);
+}
 
-extern "C" void FunctionTailcallImpl(FunctionID) {}
+extern "C" void FunctionTailcallImpl(FunctionID funcId) {
+    // Tailcalls are also "leaving" this activation — treat identically to LEAVE.
+    if (g_pProfiler) g_pProfiler->OnFunctionLeave(funcId);
+}

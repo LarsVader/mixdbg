@@ -226,8 +226,7 @@ internal sealed class BreakpointService(
         }
         model.HitUserBreakpoint = true;
 
-        // Resolve the hw BP ID so RemoveTransientManagedBreakpoints knows which
-        // transient BP was hit (needed when multiple BPs target the same method).
+        // Resolve the hw BP ID so DetermineStopReason can identify which site hit.
         if (model.ManagedBreakpointSources.TryGetValue(address, out (string File, int Line) source))
         {
             string key = $"{source.File}:{source.Line}";

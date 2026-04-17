@@ -15,7 +15,6 @@ internal sealed class EngineQueryService(
     ILoggingService _log,
     LogStore _logStore,
     IManagedDebugger _managedDebugger,
-    IManagedBreakpointService _managedBp,
     ICorDebugWrapper _corDebug,
     IPdbSourceMapper _pdbMapper,
     IDbgEngWrapper _wrapper) : IEngineQueryService
@@ -204,8 +203,6 @@ internal sealed class EngineQueryService(
         CancelActiveManagedStep(model);
         model.LastContinuedBpId = model.LastHitBpId;
         model.ContinueTimestampTicks = Environment.TickCount64;
-        _managedBp.RemoveTransientManagedBreakpoints(model);
-        _ = (model.ProfilerRehookEvent?.Set());
         model.ConfigDone = true;
         model.CachedStackTraceResult = null;
         _wrapper.ClearVariables(model.Wrapper);
@@ -217,7 +214,6 @@ internal sealed class EngineQueryService(
     public void ExecuteStepOnEngine(NativeDebuggerModel model, EngineExecutionStatus stepKind)
     {
         CancelActiveManagedStep(model);
-        _managedBp.RemoveTransientManagedBreakpoints(model);
         _wrapper.ClearVariables(model.Wrapper);
         if (model.CorWrapper != null)
             _corDebug.ClearManagedVariables(model.CorWrapper);
@@ -239,13 +235,11 @@ internal sealed class EngineQueryService(
                 {
                     if (stepKind == EngineExecutionStatus.StepOver)
                     {
-                        _ = (model.ProfilerRehookEvent?.Set());
                         if (TryManagedStepOver(model, method, ip))
                             return;
                     }
                     else if (stepKind == EngineExecutionStatus.StepInto)
                     {
-                        // Do NOT rehook — step-into needs raw call path without ENTER hooks.
                         if (TryManagedStepInto(model, method, ip))
                             return;
                     }
@@ -253,9 +247,7 @@ internal sealed class EngineQueryService(
             }
         }
 
-        // Native step — rehook and use dbgeng directly.
-        // Record the current source location so the event loop can detect "no progress."
-        _ = (model.ProfilerRehookEvent?.Set());
+        // Native step — record the current source location so the event loop can detect "no progress."
         NativeStackFrame[] nativeFrames = _wrapper.GetStackTrace(model.Wrapper, 1);
         if (nativeFrames.Length > 0)
         {
@@ -271,8 +263,6 @@ internal sealed class EngineQueryService(
     public void ExecuteStepOutOnEngine(NativeDebuggerModel model)
     {
         CancelActiveManagedStep(model);
-        _managedBp.RemoveTransientManagedBreakpoints(model);
-        _ = (model.ProfilerRehookEvent?.Set());
         _wrapper.ClearVariables(model.Wrapper);
         if (model.CorWrapper != null)
             _corDebug.ClearManagedVariables(model.CorWrapper);
@@ -583,8 +573,8 @@ internal sealed class EngineQueryService(
 
     /// <summary>
     /// For C++/CLI call targets not in JitMethodMap: sends a WATCH command to the
-    /// profiler and adds a temporary deferred BP so <c>HandleEnterBreakpoint</c>
-    /// sets a transient hardware BP when the ENTER hook fires.
+    /// profiler and registers a one-shot step-into site on the target method's plan.
+    /// The next ENTER hook installs the HW BP; the site is removed on LEAVE.
     /// </summary>
     private bool TrySetStepIntoBpViaProfiler(NativeDebuggerModel model,
         (int TargetToken, string? TargetAssembly, string? TargetMethodName, int CallILOffset) callTarget)
@@ -669,13 +659,27 @@ internal sealed class EngineQueryService(
             }
         }
 
-        // Add temporary deferred BP so HandleEnterBreakpoint matches the ENTER notification.
-        model.DeferredManagedBreakpoints.Add(new DeferredManagedBreakpoint(
-            filePath, line, targetToken.Value, ilOffset,
-            BpId: -1, // Step-into — no DAP breakpoint ID.
-            AssemblyName: callTarget.TargetAssembly,
-            IsCliMethod: true));
-        model.RebuildDeferredBreakpointIndex();
+        // Register a one-shot site on the target method's plan so the next ENTER hook
+        // installs an HW BP. The site is marked IsStepIntoOneShot so it's removed on
+        // the final LEAVE (same as any other site) — the user sees the BP hit once.
+        (int Token, string Assembly) planKey = (targetToken.Value, callTarget.TargetAssembly);
+        if (!model.ManagedBpPlans.TryGetValue(planKey, out ManagedMethodBreakpointPlan? plan))
+        {
+            plan = new ManagedMethodBreakpointPlan
+            {
+                MethodToken = targetToken.Value,
+                AssemblyName = callTarget.TargetAssembly,
+            };
+            model.ManagedBpPlans[planKey] = plan;
+        }
+        plan.Sites.Add(new MethodBreakpointSite
+        {
+            BpId = -1, // Step-into — no DAP breakpoint ID.
+            ILOffset = ilOffset,
+            FilePath = filePath,
+            Line = line,
+            IsStepIntoOneShot = true,
+        });
 
         // Send WATCH command to the profiler so it enables ENTER hooks for this method.
         string watchLine = $"WATCH:{callTarget.TargetAssembly}:{targetToken.Value:X8}";
@@ -699,12 +703,10 @@ internal sealed class EngineQueryService(
             return false;
         }
 
-        // Signal rehook so the profiler re-enables ENTER hooks.
-        _ = (model.ProfilerRehookEvent?.Set());
         model.ProfilerHooksActive = true;
 
         _log.LogInfo(_logStore,
-            $"Managed step-into: WATCH sent, deferred BP added for {callTarget.TargetAssembly}:0x{targetToken.Value:X8}");
+            $"Managed step-into: WATCH sent, plan site added for {callTarget.TargetAssembly}:0x{targetToken.Value:X8}");
         return true;
     }
 

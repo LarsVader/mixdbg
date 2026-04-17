@@ -21,14 +21,6 @@ public interface IManagedBreakpointResolver
     Breakpoint[] TryResolveDeferredBreakpoints(NativeDebuggerModel model);
 
     /// <summary>
-    /// Handles a JIT compilation notification from the CLR profiler. If the
-    /// JIT'd method matches a deferred managed breakpoint (by token + assembly name),
-    /// sets a hardware breakpoint at the reported native address immediately.
-    /// </summary>
-    /// <returns>DAP breakpoint objects for each matched and resolved breakpoint.</returns>
-    Breakpoint[] HandleJitNotifications(NativeDebuggerModel model);
-
-    /// <summary>
     /// Called when a new module is loaded (from dbgeng LoadModule callback).
     /// Re-enumerates ICorDebug modules and tries to bind any pending managed
     /// breakpoints against newly loaded assemblies.
@@ -50,11 +42,19 @@ public interface IManagedBreakpointResolver
     void ProcessPendingManagedBreakpoints(NativeDebuggerModel model);
 
     /// <summary>
-    /// Handles a pending ENTER notification from the profiler. Sets a transient hardware
-    /// breakpoint at the exact source line, ACKs the profiler, and resumes execution.
-    /// Returns <c>true</c> if an ENTER was handled (caller should auto-continue).
+    /// Drains <see cref="NativeDebuggerModel.ProfilerNotifications"/> and dispatches
+    /// each notification:
+    /// <list type="bullet">
+    /// <item>JIT: merges the reported method into <see cref="NativeDebuggerModel.ManagedBpPlans"/> (if a deferred BP matches).</item>
+    /// <item>ENTER: on first activation, installs HW BPs for every site in the plan and ACKs the profiler. On nested activations, increments the count and ACKs immediately.</item>
+    /// <item>LEAVE/TAILCALL: decrements the activation count. When it reaches 0, removes all HW BPs installed for this method and drops the <see cref="NativeDebuggerModel.ActiveMethodBreakpoints"/> entry.</item>
+    /// </list>
+    /// Returns <c>true</c> if the event that brought us here was a bookkeeping-only
+    /// stop (ENTER on an unplanned method, LEAVE decrement) and the caller should
+    /// auto-continue. Returns <c>false</c> if no notifications were processed or a
+    /// user-visible stop should proceed.
     /// </summary>
-    bool HandleEnterBreakpoint(NativeDebuggerModel model);
+    bool ProcessProfilerNotifications(NativeDebuggerModel model);
 
     /// <summary>
     /// Starts a timer that periodically interrupts the target to check if deferred

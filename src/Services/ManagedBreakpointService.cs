@@ -131,60 +131,91 @@ internal sealed class ManagedBreakpointService(
     }
 
     /// <summary>
-    /// After method resolution succeeds, tries to set a hardware breakpoint directly
-    /// (if the method is JIT'd) or stores a deferred breakpoint for later resolution.
+    /// After method resolution succeeds, registers a plan entry for the method. If the
+    /// method already has a live activation on the stack (
+    /// <see cref="NativeDebuggerModel.ActiveMethodBreakpoints"/>), also installs the HW BP
+    /// immediately so the current execution can hit it; otherwise the BP is installed
+    /// on the next FunctionEnter.
     /// </summary>
     private bool BindResolvedMethod(
         NativeDebuggerModel model, string filePath, int line, int bpId,
         (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod) resolved)
     {
-        // For managed methods (C# and C++/CLI), skip GetOffsetByLine — dbgeng returns
-        // bogus IL stub addresses for managed code, not actual JIT'd native addresses.
-        // Instead, check the profiler's JitMethodMap for already-JIT'd methods and use
-        // IL-to-native mapping for exact-line breakpoint addresses.
-        if (resolved.AssemblyName != null)
+        if (resolved.AssemblyName == null)
+            return false;
+
+        (int Token, string Assembly) key = (resolved.MethodToken, resolved.AssemblyName);
+
+        // Always create/update the method plan so ENTER hooks install HW BPs on every call.
+        MethodBreakpointSite site = new()
+        {
+            BpId = bpId,
+            ILOffset = resolved.ILOffset,
+            FilePath = filePath,
+            Line = line,
+        };
+        AddSiteToPlan(model, key, site);
+        TrackFileBreakpoint(model, filePath, bpId);
+
+        // Send WATCH command to profiler so it enables FunctionEnter hooks for this method.
+        // For C++/CLI, assembly-level watches are set up at pre-launch time.
+        if (!resolved.IsCliMethod)
+            SendWatchToken(model, resolved.AssemblyName, resolved.MethodToken);
+
+        // If the method is already running on the stack (ActiveMethodBreakpoints entry
+        // exists), install the HW BP immediately so the in-progress execution can hit it.
+        if (model.ActiveMethodBreakpoints.TryGetValue(key, out ActiveMethodBreakpoint? active))
         {
             JitMethodInfo? jitInfo = FindInJitMethodMap(model, resolved.MethodToken, resolved.AssemblyName);
-            if (jitInfo != null)
-            {
-                // Use IL-to-native mapping for exact-line address if available.
-                ulong targetAddress = jitInfo.StartAddress;
-                if (model.JitMethodMappings.TryGetValue((resolved.MethodToken, resolved.AssemblyName), out JitMethodMapping? mapping))
-                {
-                    targetAddress = mapping.GetNativeAddress(resolved.ILOffset);
-                    _log.LogInfo(_logStore, $"  JitMethodMap: IL 0x{resolved.ILOffset:X} -> native 0x{targetAddress:X}");
-                }
+            if (jitInfo == null)
+                return true;
 
-                _log.LogInfo(_logStore, $"  Found in JitMethodMap: token=0x{resolved.MethodToken:X8} addr=0x{targetAddress:X}");
-                uint? hwBpId = SetManagedCodeBreakpoint(model, targetAddress, filePath, line);
-                if (hwBpId != null)
-                {
-                    // Mark as permanent — NOT removed on Continue (unlike transient ENTER-hook BPs).
-                    _ = model.PermanentManagedBreakpointIds.Add(hwBpId.Value);
-                    TrackFileBreakpoint(model, filePath, bpId);
-                    return true;
-                }
-                _log.LogWarning(_logStore, $"  Hardware breakpoint limit reached for managed bp #{bpId}");
-                return false;
+            ulong targetAddress = jitInfo.StartAddress;
+            if (model.JitMethodMappings.TryGetValue(key, out JitMethodMapping? mapping))
+                targetAddress = mapping.GetNativeAddress(resolved.ILOffset);
+
+            uint? hwBpId = SetManagedCodeBreakpoint(model, targetAddress, filePath, line);
+            if (hwBpId != null)
+            {
+                active.InstalledBpIds.Add(hwBpId.Value);
+                _ = active.InstalledAddresses.Add(targetAddress);
+                _log.LogInfo(_logStore,
+                    $"  Piggybacked onto live activation: hw BP #{hwBpId} at 0x{targetAddress:X}");
+            }
+            else
+            {
+                _log.LogWarning(_logStore, $"  HW BP limit reached piggybacking on live activation for bp #{bpId}");
             }
         }
 
-        // Method not JIT'd yet — store as deferred. Send a WATCH command to the
-        // profiler so it enables FunctionEnter hooks for this method (mid-session BPs).
-        model.DeferredManagedBreakpoints.Add(
-            new DeferredManagedBreakpoint(filePath, line, resolved.MethodToken, resolved.ILOffset,
-                bpId, resolved.AssemblyName, resolved.IsCliMethod));
-        model.RebuildDeferredBreakpointIndex();
-        TrackFileBreakpoint(model, filePath, bpId);
-        _log.LogInfo(_logStore, $"  Deferred managed bp #{bpId}: method not JIT'd yet");
-
-        // Send watch token to profiler so it blocks on JIT and enables ENTER hooks.
-        if (resolved.AssemblyName != null && !resolved.IsCliMethod)
+        // If the method isn't JIT'd yet (no JitMethodMap entry), store a deferred BP so
+        // the JIT notification can fold it into the plan when the method compiles.
+        if (FindInJitMethodMap(model, resolved.MethodToken, resolved.AssemblyName) == null)
         {
-            SendWatchToken(model, resolved.AssemblyName, resolved.MethodToken);
+            model.DeferredManagedBreakpoints.Add(
+                new DeferredManagedBreakpoint(filePath, line, resolved.MethodToken, resolved.ILOffset,
+                    bpId, resolved.AssemblyName, resolved.IsCliMethod));
+            model.RebuildDeferredBreakpointIndex();
+            _log.LogInfo(_logStore, $"  Deferred managed bp #{bpId}: method not JIT'd yet");
         }
 
         return true;
+    }
+
+    private static void AddSiteToPlan(
+        NativeDebuggerModel model, (int Token, string Assembly) key, MethodBreakpointSite site)
+    {
+        if (!model.ManagedBpPlans.TryGetValue(key, out ManagedMethodBreakpointPlan? plan))
+        {
+            plan = new ManagedMethodBreakpointPlan
+            {
+                MethodToken = key.Token,
+                AssemblyName = key.Assembly,
+            };
+            model.ManagedBpPlans[key] = plan;
+        }
+        if (!plan.Sites.Exists(s => s.ILOffset == site.ILOffset && s.BpId == site.BpId))
+            plan.Sites.Add(site);
     }
 
     /// <summary>
@@ -206,6 +237,13 @@ internal sealed class ManagedBreakpointService(
             return null;
         }
 
+        // dbgeng reuses breakpoint IDs after removal. The new BP may take the same ID
+        // as a previously-continued BP, which would cause the re-fire suppression to
+        // swallow the legitimate first hit. Invalidate the tracking as soon as any new
+        // BP is installed — it's a fresh BP regardless of the ID it reuses.
+        if (model.LastContinuedBpId == bpId)
+            model.LastContinuedBpId = uint.MaxValue;
+
         string key = $"{filePath}:{line}";
         model.BreakpointIds[key] = bpId;
         _ = model.UserBreakpointIds.Add(bpId);
@@ -215,85 +253,6 @@ internal sealed class ManagedBreakpointService(
 
         _log.LogInfo(_logStore, $"  Hardware bp #{bpId} set at 0x{address:X} for {key}");
         return bpId;
-    }
-
-    public void SetTransientBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line)
-    {
-        uint? bpId = SetManagedCodeBreakpoint(model, address, filePath, line);
-        // Clear re-fire tracking: the new BP may reuse an ID from a recently removed BP,
-        // and we must not suppress it as a re-fire.
-        if (bpId != null)
-            model.LastContinuedBpId = uint.MaxValue;
-    }
-
-    public void RemoveTransientManagedBreakpoints(NativeDebuggerModel model)
-    {
-        // Only remove BPs when using enter/leave hooks (BPs are transient per-call).
-        // With JIT-blocking fallback, BPs are permanent and must persist.
-        if (!model.ProfilerHooksActive || model.ManagedBreakpointIds.Count == 0)
-            return;
-
-        // If a managed BP was hit, only remove that one — other transient BPs in the
-        // same method may not have fired yet (e.g. BPs before and after a native call).
-        // If a non-managed BP was hit (e.g. native), leave all transient BPs intact —
-        // the method is still executing and the remaining BPs may still fire.
-        uint hitId = model.LastHitBpId;
-        if (model.ManagedBreakpointIds.Contains(hitId))
-            RemoveSingleTransientBreakpoint(model, hitId);
-    }
-
-    /// <summary>
-    /// Removes a single transient managed hardware breakpoint by ID.
-    /// </summary>
-    private void RemoveSingleTransientBreakpoint(NativeDebuggerModel model, uint bpId)
-    {
-        // Permanent BPs (set via JitMethodMap for already-JIT'd methods) persist across
-        // continue/step cycles — only removed by ClearManagedBreakpointsForFile.
-        if (model.PermanentManagedBreakpointIds.Contains(bpId))
-            return;
-
-        if (_dbgEng.RemoveBreakpoint(model.Wrapper, bpId))
-            _log.LogInfo(_logStore, $"Removed transient managed hw bp #{bpId}");
-        _ = model.UserBreakpointIds.Remove(bpId);
-        _ = model.ManagedBreakpointIds.Remove(bpId);
-
-        // Remove the address for this BP.
-        string? keyToRemove = model.BreakpointIds
-            .Where(kv => kv.Value == bpId)
-            .Select(kv => kv.Key)
-            .FirstOrDefault();
-        if (keyToRemove != null)
-        {
-            _ = model.BreakpointIds.Remove(keyToRemove);
-            // Try to find and remove the matching address.
-            string[] parts = keyToRemove.Split(':', 2);
-            if (parts.Length == 2 && ulong.TryParse(parts[1], out ulong addr))
-                _ = model.ManagedBreakpointAddresses.Remove(addr);
-        }
-    }
-
-    /// <summary>
-    /// Removes all transient managed hardware breakpoints.
-    /// </summary>
-    private void RemoveAllTransientBreakpoints(NativeDebuggerModel model)
-    {
-        // Skip permanent BPs — only remove transient (ENTER hook) BPs.
-        List<uint> idsToRemove = [.. model.ManagedBreakpointIds
-            .Where(id => !model.PermanentManagedBreakpointIds.Contains(id))];
-        foreach (uint hwBpId in idsToRemove)
-        {
-            if (_dbgEng.RemoveBreakpoint(model.Wrapper, hwBpId))
-                _log.LogInfo(_logStore, $"Removed transient managed hw bp #{hwBpId}");
-            _ = model.UserBreakpointIds.Remove(hwBpId);
-            _ = model.ManagedBreakpointIds.Remove(hwBpId);
-        }
-
-        // Clear the key→id mappings for removed (transient) breakpoints only.
-        List<string> keysToRemove = [.. model.BreakpointIds
-            .Where(kv => idsToRemove.Contains(kv.Value))
-            .Select(kv => kv.Key)];
-        foreach (string key in keysToRemove)
-            _ = model.BreakpointIds.Remove(key);
     }
 
     public List<(string Assembly, int Token)> ResolveTokensFromBreakpoints(
@@ -365,10 +324,13 @@ internal sealed class ManagedBreakpointService(
 
     private void ClearManagedBreakpointsForFile(NativeDebuggerModel model, string filePath)
     {
+        HashSet<int> clearedBpIds = [];
         if (model.ManagedFileBreakpointIds.TryGetValue(filePath, out List<int>? existingIds))
         {
             foreach (int id in existingIds)
             {
+                _ = clearedBpIds.Add(id);
+
                 // Remove hardware breakpoints set by the managed debugger.
                 KeyValuePair<string, uint> key = model.BreakpointIds.FirstOrDefault(kv => kv.Value == (uint)id
                     || kv.Key.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase));
@@ -377,8 +339,11 @@ internal sealed class ManagedBreakpointService(
                     _ = _dbgEng.RemoveBreakpoint(model.Wrapper, hwId);
                     _ = model.UserBreakpointIds.Remove(hwId);
                     _ = model.ManagedBreakpointIds.Remove(hwId);
-                    _ = model.PermanentManagedBreakpointIds.Remove(hwId);
                     _ = model.BreakpointIds.Remove(key.Key);
+
+                    // Also drop from any ActiveMethodBreakpoints entry that owned this HW BP.
+                    foreach (ActiveMethodBreakpoint active in model.ActiveMethodBreakpoints.Values)
+                        _ = active.InstalledBpIds.Remove(hwId);
                 }
 
                 // Also deactivate any ICorDebug breakpoints (legacy path).
@@ -394,6 +359,19 @@ internal sealed class ManagedBreakpointService(
         _ = model.DeferredManagedBreakpoints.RemoveAll(d =>
             d.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase));
         model.RebuildDeferredBreakpointIndex();
+
+        // Drop sites from method plans that match the file or any cleared BP id.
+        List<(int Token, string Assembly)> emptyPlanKeys = [];
+        foreach (KeyValuePair<(int Token, string Assembly), ManagedMethodBreakpointPlan> kv in model.ManagedBpPlans)
+        {
+            _ = kv.Value.Sites.RemoveAll(s =>
+                s.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase)
+                || clearedBpIds.Contains(s.BpId));
+            if (kv.Value.Sites.Count == 0)
+                emptyPlanKeys.Add(kv.Key);
+        }
+        foreach ((int Token, string Assembly) emptyKey in emptyPlanKeys)
+            _ = model.ManagedBpPlans.Remove(emptyKey);
     }
 
     /// <summary>
