@@ -80,6 +80,7 @@ After a native step, `CheckStepLanding` compares the current RSP (`frames[0].Sta
 - `HandleBreakpointHit`: if `breakpointId == LastContinuedBpId` → suppress, set `HitUserBreakpoint = false`, return early.
 - One-shot: reset to `uint.MaxValue` after any BP hit (suppressed or not).
 - **Purpose**: prevent race where SetInterrupt causes the same BP to re-fire immediately after continue.
+- **Important**: both `LastHitBpId` and `LastContinuedBpId` are initialized to `uint.MaxValue` (sentinel). If `LastHitBpId` defaults to `0`, `configurationDone`'s continue sets `LastContinuedBpId = 0`, which suppresses the first hit of a native BP with dbgeng ID 0.
 
 ## Step-Over vs Step-Into vs Step-Out
 

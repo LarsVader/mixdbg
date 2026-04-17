@@ -495,6 +495,50 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     }
 
     /// <summary>
+    /// Reproduces bug: when ONLY a native breakpoint is set (no managed BPs),
+    /// the first hit is suppressed by the re-fire detection logic. Root cause:
+    /// <see cref="NativeDebuggerModel.LastHitBpId"/> defaults to 0, and dbgeng
+    /// assigns BP ID 0 to the first breakpoint. When configurationDone calls
+    /// <see cref="IEngineQueryService.ExecuteContinueOnEngine"/>, it sets
+    /// <c>LastContinuedBpId = LastHitBpId = 0</c>, which then matches the
+    /// native BP's ID on first fire and suppresses it as a duplicate.
+    /// </summary>
+    [Fact]
+    public async Task NativeBreakpoint_WhenOnlyNativeBpSet_FiresOnFirstHit()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set ONLY a native breakpoint — no managed BPs. This is the key scenario:
+        // the native BP gets dbgeng ID 0, which collides with LastHitBpId's default.
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _nativeBpFile, name = "Calculator.cpp" },
+            breakpoints = new[] { new { line = _nativeAddLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        await WhenLaunchingWithAutoTest();
+        await WhenSendingConfigurationDone();
+
+        // The native BP must fire on the FIRST execution of Calculator::Add.
+        // Before the fix, this was suppressed by re-fire detection.
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "Calculator.cpp");
+        ThenStackTraceStoppedAtLine(hitIndex: 0, _nativeAddLine);
+
+        await WhenSendingContinue();
+        await WhenWaitingForSeconds(2);
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+        ThenNoLogErrors();
+    }
+
+    /// <summary>
     /// Reproduces bug: C# breakpoints set AFTER the debugger is already running
     /// (mid-session) don't hit. Uses --auto-test-double (clicks Add twice, 15s apart).
     /// The C# BP is set WHILE STOPPED at the first click's native BP (so the engine

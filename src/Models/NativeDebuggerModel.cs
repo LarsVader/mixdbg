@@ -40,7 +40,7 @@ public sealed class NativeDebuggerModel : IDisposable
 
     // Native breakpoint tracking.
     internal HashSet<uint> UserBreakpointIds { get; } = [];
-    internal uint LastHitBpId;
+    internal uint LastHitBpId = uint.MaxValue;
     internal uint LastContinuedBpId = uint.MaxValue;
     internal long ContinueTimestampTicks;
     internal volatile bool HitUserBreakpoint;
