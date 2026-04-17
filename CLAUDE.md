@@ -268,7 +268,7 @@ Scopes and variables inspection via `IDebugSymbolGroup2`. When the debugger stop
 
 **Key findings (M4V2, 2026-04-04):** See `docs/M4V2-managed-breakpoints.md` for the full investigation of approaches that failed before the profiler approach succeeded.
 
-**M4V3 (2026-04-17):** Replaced the transient-on-Continue BP lifecycle with method-lifetime scoping (install on first ENTER, remove on final LEAVE). Fixes the foreach/loop bug where BPs only fired on the first iteration. See `docs/M4V3-method-lifetime-breakpoints.md`. Two integration tests (recursion step-over, mid-session C# BP stack frame source) are known to still fail after this change and are tracked in that doc.
+**M4V3 (2026-04-17):** Replaced the transient-on-Continue BP lifecycle with method-lifetime scoping (install on first ENTER, remove on final LEAVE). Fixes the foreach/loop bug where BPs only fired on the first iteration. Step-into one-shot HW BPs are cleaned up on completion so they don't interfere with subsequent step-over operations. See `docs/M4V3-method-lifetime-breakpoints.md`. One integration test (mid-session C# BP stack frame source) is known to still fail and is tracked in that doc.
 
 **Launch args:** DAP `launch` request `args` field is threaded through to `CreateProcess` command line.
 

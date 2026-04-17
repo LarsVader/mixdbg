@@ -5,4 +5,4 @@ namespace MixDbg.Models;
 /// pointer needed for symbol resolution; the full dbgeng frame data is
 /// cached internally by the wrapper for scope/variable operations.
 /// </summary>
-public readonly record struct NativeStackFrame(ulong InstructionOffset);
+public readonly record struct NativeStackFrame(ulong InstructionOffset, ulong StackOffset);

@@ -305,7 +305,7 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
             // Return public-facing frames with only the instruction offset.
             NativeStackFrame[] result = new NativeStackFrame[filled];
             for (int i = 0; i < (int)filled; i++)
-                result[i] = new NativeStackFrame(rawFrames[i].InstructionOffset);
+                result[i] = new NativeStackFrame(rawFrames[i].InstructionOffset, rawFrames[i].StackOffset);
             return result;
         }
         finally

@@ -303,7 +303,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     [Fact]
     public void GetStackTraceOnEngine_WhenDbgEngSourceResolved_ReturnsFrameWithSource()
     {
-        GivenNativeStackFrames([new NativeStackFrame(0x1000)]);
+        GivenNativeStackFrames([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x1000)]);
         GivenNameByOffset(0x1000, ("MyFunc", 0UL));
         GivenLineByOffset(0x1000, (10, @"C:\src\file.cpp"));
 
@@ -318,7 +318,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     [Fact]
     public void GetStackTraceOnEngine_WhenDbgEngFails_UsesProfilerFallback()
     {
-        GivenNativeStackFrames([new NativeStackFrame(0x2000)]);
+        GivenNativeStackFrames([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x2000)]);
         GivenNameByOffset(0x2000, ("NativeFunc", 0UL));
         GivenLineByOffsetReturnsNull(0x2000);
         GivenJitMethodMapHasEntries();
@@ -335,7 +335,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     [Fact]
     public void GetStackTraceOnEngine_WhenNoSourceResolution_ReturnsHexAddressName()
     {
-        GivenNativeStackFrames([new NativeStackFrame(0x3000)]);
+        GivenNativeStackFrames([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x3000)]);
         GivenNameByOffsetReturnsNull(0x3000);
         GivenLineByOffsetReturnsNull(0x3000);
 
@@ -349,7 +349,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     [Fact]
     public void GetStackTraceOnEngine_WhenCalled_CachesResult()
     {
-        GivenNativeStackFrames([new NativeStackFrame(0x1000)]);
+        GivenNativeStackFrames([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x1000)]);
         GivenNameByOffset(0x1000, ("Func", 0UL));
         GivenLineByOffsetReturnsNull(0x1000);
 
@@ -362,7 +362,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     [Fact]
     public void GetStackTraceOnEngine_WhenManagedInitialized_MergesManagedFrames()
     {
-        GivenNativeStackFrames([new NativeStackFrame(0x1000)]);
+        GivenNativeStackFrames([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x1000)]);
         GivenNameByOffset(0x1000, ("Func", 0UL));
         GivenLineByOffsetReturnsNull(0x1000);
         _model.ManagedInitialized = true;
@@ -375,7 +375,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     [Fact]
     public void GetStackTraceOnEngine_WhenManagedNotInitialized_DoesNotMergeManagedFrames()
     {
-        GivenNativeStackFrames([new NativeStackFrame(0x1000)]);
+        GivenNativeStackFrames([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x1000)]);
         GivenNameByOffset(0x1000, ("Func", 0UL));
         GivenLineByOffsetReturnsNull(0x1000);
 
@@ -387,7 +387,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     [Fact]
     public void GetStackTraceOnEngine_WhenDisplacementGreaterThanZero_FormatsNameWithOffset()
     {
-        GivenNativeStackFrames([new NativeStackFrame(0x1010)]);
+        GivenNativeStackFrames([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x1010)]);
         GivenNameByOffset(0x1010, ("MyFunc", 0x10UL));
         GivenLineByOffsetReturnsNull(0x1010);
 
@@ -399,7 +399,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     [Fact]
     public void GetStackTraceOnEngine_WhenProfilerThrowsException_ReturnsFrameWithoutSource()
     {
-        GivenNativeStackFrames([new NativeStackFrame(0x5000)]);
+        GivenNativeStackFrames([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x5000)]);
         GivenNameByOffset(0x5000, ("Func", 0UL));
         GivenLineByOffsetReturnsNull(0x5000);
         GivenJitMethodMapHasEntries();
@@ -415,7 +415,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     [Fact]
     public void GetStackTraceOnEngine_WhenProfilerReturnsNull_ReturnsFrameWithoutSource()
     {
-        GivenNativeStackFrames([new NativeStackFrame(0x6000)]);
+        GivenNativeStackFrames([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x6000)]);
         GivenNameByOffset(0x6000, ("Func", 0UL));
         GivenLineByOffsetReturnsNull(0x6000);
         GivenJitMethodMapHasEntries();
@@ -437,7 +437,7 @@ public sealed class EngineQueryServiceTests : IDisposable
         // Current IP 0x5010 → native offset 0x10 → IL offset 10.
         // Next SP: IL 20 → native offset 0x20 → address 0x5020.
         GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
-        GivenStackFramesForStep([new NativeStackFrame(0x5010), new NativeStackFrame(0x3000)]);
+        GivenStackFramesForStep([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x5010), new NativeStackFrame(StackOffset: 0, InstructionOffset:0x3000)]);
         GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
         GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
         GivenSequencePoints(@"C:\src\App.dll", 0x06000001, [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
@@ -454,7 +454,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     public void ExecuteStepOnEngine_WhenManagedFrame_CallsGoNotStepOver()
     {
         GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
-        GivenStackFramesForStep([new NativeStackFrame(0x5010), new NativeStackFrame(0x3000)]);
+        GivenStackFramesForStep([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x5010), new NativeStackFrame(StackOffset: 0, InstructionOffset:0x3000)]);
         GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
         GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
         GivenSequencePoints(@"C:\src\App.dll", 0x06000001, [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
@@ -479,7 +479,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     {
         // IL offset 20 is at the current position; no next sequence point after it.
         GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
-        GivenStackFramesForStep([new NativeStackFrame(0x5020), new NativeStackFrame(0x3000)]);
+        GivenStackFramesForStep([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x5020), new NativeStackFrame(StackOffset: 0, InstructionOffset:0x3000)]);
         GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
         GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
         GivenSequencePoints(@"C:\src\App.dll", 0x06000001, [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
@@ -498,7 +498,7 @@ public sealed class EngineQueryServiceTests : IDisposable
     public void ExecuteStepOutOnEngine_WhenManagedFrame_SetsBpAtReturnAddress()
     {
         GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
-        GivenStackFramesForStep([new NativeStackFrame(0x5010), new NativeStackFrame(0x3000)]);
+        GivenStackFramesForStep([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x5010), new NativeStackFrame(StackOffset: 0, InstructionOffset:0x3000)]);
         GivenAddHardwareBreakpointSucceeds(0x3000, bpId: 77);
 
         WhenExecutingStepOutOnEngine();

@@ -198,6 +198,7 @@ internal sealed class EngineLifecycleService(
             }
 
             model.StepOriginLocation = null;
+            model.StepOriginStackPointer = 0;
             SendStopDapResponseAndProcessCommands(model, dbgEngWrapperModel, reason);
             return true;
         }
@@ -238,6 +239,31 @@ internal sealed class EngineLifecycleService(
             if (model.HitUserBreakpoint)
             {
                 bool isTempBp = model.ActiveManagedStep.TempBreakpointIds.Contains(model.LastHitBpId);
+
+                // Temp BP fired inside a recursive call (deeper stack than step origin).
+                // Suppress the hit — the step should complete at the original depth.
+                if (isTempBp && model.ActiveManagedStep.OriginStackPointer > 0)
+                {
+                    NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 1);
+                    if (frames.Length > 0 && frames[0].StackOffset < model.ActiveManagedStep.OriginStackPointer)
+                    {
+                        _log.LogInfo(_logStore,
+                            $"Managed step temp BP suppressed: RSP 0x{frames[0].StackOffset:X} < origin 0x{model.ActiveManagedStep.OriginStackPointer:X}");
+                        model.HitUserBreakpoint = false;
+                        return null;
+                    }
+                }
+                else if (isTempBp)
+                {
+                    _log.LogInfo(_logStore,
+                        $"DetermineStop: temp BP id={model.LastHitBpId} originDepth=0 (depth check skipped)");
+                }
+                else
+                {
+                    _log.LogInfo(_logStore,
+                        $"DetermineStop: non-temp BP id={model.LastHitBpId} during active step");
+                }
+
                 // Also check for step-into one-shot BP: an HW BP installed by the
                 // profiler ENTER handler for a step-into plan site (IsStepIntoOneShot).
                 bool isStepIntoEnterBp = !isTempBp && IsStepIntoOneShotHit(model);
@@ -265,6 +291,21 @@ internal sealed class EngineLifecycleService(
         string? reason = null;
         if (model.HitUserBreakpoint)
         {
+            // A method-lifetime HW BP fired during a native step-over into a recursive
+            // call — the stack is deeper than when the step started. Suppress the hit
+            // and re-issue the step so dbgeng continues stepping at the correct depth.
+            if (model.Stepping && model.StepOriginStackPointer > 0)
+            {
+                NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 1);
+                if (frames.Length > 0 && frames[0].StackOffset < model.StepOriginStackPointer)
+                {
+                    _log.LogInfo(_logStore,
+                        $"Native step BP suppressed: RSP 0x{frames[0].StackOffset:X} < origin 0x{model.StepOriginStackPointer:X}");
+                    model.HitUserBreakpoint = false;
+                    _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.StepOver);
+                    return null;
+                }
+            }
             model.HitUserBreakpoint = false;
             reason = "breakpoint";
         }
@@ -298,14 +339,41 @@ internal sealed class EngineLifecycleService(
     }
 
     /// <summary>
-    /// Removes one-shot step-into sites from their plans. Drops empty plans.
+    /// Removes one-shot step-into sites from their plans, including their installed
+    /// HW BPs so they don't fire during subsequent step-over operations.
     /// </summary>
-    private static void RemoveStepIntoOneShotSites(NativeDebuggerModel model)
+    private void RemoveStepIntoOneShotSites(NativeDebuggerModel model)
     {
         List<(int Token, string Assembly)> emptyKeys = [];
         foreach (KeyValuePair<(int Token, string Assembly), ManagedMethodBreakpointPlan> kv in model.ManagedBpPlans)
         {
-            _ = kv.Value.Sites.RemoveAll(s => s.IsStepIntoOneShot);
+            List<MethodBreakpointSite> oneShotSites = kv.Value.Sites.FindAll(s => s.IsStepIntoOneShot);
+            if (oneShotSites.Count > 0)
+            {
+                // Remove the HW BPs that were installed for these one-shot sites.
+                _ = model.ActiveMethodBreakpoints.TryGetValue(kv.Key, out ActiveMethodBreakpoint? active);
+                foreach (MethodBreakpointSite site in oneShotSites)
+                {
+                    string siteKey = $"{site.FilePath}:{site.Line}";
+                    if (model.BreakpointIds.TryGetValue(siteKey, out uint bpId))
+                    {
+                        _ = _wrapper.RemoveBreakpoint(model.Wrapper, bpId);
+                        _ = model.UserBreakpointIds.Remove(bpId);
+                        _ = model.ManagedBreakpointIds.Remove(bpId);
+                        _ = model.BreakpointIds.Remove(siteKey);
+                        _ = active?.InstalledBpIds.Remove(bpId);
+                    }
+                    // Clean up address tracking via JIT mapping. Keep ManagedBreakpointSources
+                    // because the user may request a stack trace after the step completes.
+                    if (model.JitMethodMappings.TryGetValue(kv.Key, out JitMethodMapping? mapping))
+                    {
+                        ulong addr = mapping.GetNativeAddress(site.ILOffset);
+                        _ = model.ManagedBreakpointAddresses.Remove(addr);
+                        _ = (active?.InstalledAddresses.Remove(addr));
+                    }
+                }
+                _ = kv.Value.Sites.RemoveAll(s => s.IsStepIntoOneShot);
+            }
             if (kv.Value.Sites.Count == 0)
                 emptyKeys.Add(kv.Key);
         }
@@ -349,6 +417,16 @@ internal sealed class EngineLifecycleService(
         NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 1);
         if (frames.Length == 0)
             return StepAutoAction.None;
+
+        // Step-over must never land deeper. If RSP is lower than origin, the native
+        // step entered a called function — re-step to continue past it.
+        if (model.StepOriginStackPointer != 0
+            && frames[0].StackOffset < model.StepOriginStackPointer)
+        {
+            _log.LogInfo(_logStore,
+                $"CheckStepLanding: deeper stack (RSP 0x{frames[0].StackOffset:X} < origin 0x{model.StepOriginStackPointer:X}) → ReStep");
+            return StepAutoAction.ReStep;
+        }
 
         ulong ip = frames[0].InstructionOffset;
         (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(model.Wrapper, ip);

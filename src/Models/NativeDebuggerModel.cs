@@ -198,6 +198,12 @@ public sealed class NativeDebuggerModel : IDisposable
     // can detect "no progress" (same line) or "closing brace" stops and auto-step-out.
     internal (string File, int Line)? StepOriginLocation;
 
+    /// <summary>
+    /// Stack pointer (RSP) of frame[0] when a step started. A recursive call has a
+    /// lower stack pointer (stack grows downward on x86-64). Zero means no check.
+    /// </summary>
+    internal ulong StepOriginStackPointer;
+
     // Stack trace cache — DAP-level result, invalidated on continue/step.
     internal StackFrame[]? CachedStackTraceResult { get; set; }
 
@@ -436,6 +442,12 @@ internal sealed class ManagedStepState
     /// dbgeng breakpoint IDs of temporary hardware BPs set for this step.
     /// </summary>
     public List<uint> TempBreakpointIds { get; } = [];
+
+    /// <summary>
+    /// Stack pointer (RSP) when the step started. A lower RSP means deeper stack
+    /// on x86-64 — we're inside a recursive call and should suppress the temp BP hit.
+    /// </summary>
+    public ulong OriginStackPointer { get; set; }
 }
 
 /// <summary>

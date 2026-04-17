@@ -123,28 +123,33 @@ blocked from inlining; everything else still inlines normally.
   sends an immediate ACK (no HW BP work). Activation counting is skipped
   for those methods since we don't need to track them.
 
+## Step-into one-shot cleanup
+
+When `TrySetStepIntoBpViaProfiler` creates a one-shot plan site for step-into,
+`HandleEnter` installs an HW BP at the site's native address. After the
+step-into completes, `RemoveStepIntoOneShotSites` removes the site AND the HW
+BP from dbgeng. Without this cleanup, the leftover HW BP fires during
+subsequent step-over operations, causing a race condition: if the leftover BP's
+callback fires after the temp step BP's callback, `LastHitBpId` records the
+leftover BP (not in `TempBreakpointIds`), and `DetermineStopReason` reports
+"breakpoint" instead of "step".
+
+The cleanup preserves `ManagedBreakpointSources` entries so stack trace
+resolution still works after the step completes.
+
+User breakpoints (non-one-shot plan sites) are never removed by this logic.
+During step-over of a recursive call, if the recursive callee has a user BP,
+the method-lifetime HW BP fires and correctly reports "breakpoint".
+
 ## Known issues (not yet investigated)
 
-Two integration tests are still failing after this change and are tracked for
-follow-up:
-
-1. **`Recursion_WhenStepOverInTryGetA_ReturnsToFibonacciClick`** — step-over
-   inside a recursive method that re-enters the same method hits the
-   still-installed method-lifetime HW BP on the recursive call, and
-   `DetermineStopReason` reports "breakpoint" instead of "step". A trial fix
-   (suppress method-lifetime BP hits during `ActiveManagedStep`) was reverted —
-   the test expectations may need re-auditing first; stopping on the BP in the
-   recursion might actually be the correct debugger behavior, in which case
-   the test needs updating rather than the code.
-
-2. **`ManagedBreakpoint_WhenCSharpAddedMidSession_StillFires`** — a mid-session
+1. **`ManagedBreakpoint_WhenCSharpAddedMidSession_StillFires`** — a mid-session
    C# BP fires but the stack trace for the expected hit is missing
    `MainWindow.xaml.cs`. The BP hit address or the stack frame source
    resolution is off; not diagnosed yet.
 
-Neither failure affects the primary goal: BPs inside loops/foreach work
-correctly (covered by
-`Complex_WhenBpInsideForeachWithLambda_StopsWithSource`, which now passes).
+This does not affect the primary goal: BPs inside loops/foreach work correctly
+(covered by `Complex_WhenBpInsideForeachWithLambda_StopsWithSource`).
 
 ## Files touched
 

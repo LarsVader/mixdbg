@@ -256,6 +256,7 @@ internal sealed class EngineQueryService(
             model.StepOriginLocation = lineInfo != null
                 ? (lineInfo.Value.File, (int)lineInfo.Value.Line)
                 : null;
+            model.StepOriginStackPointer = nativeFrames[0].StackOffset;
         }
         _wrapper.SetExecutionStatus(model.Wrapper, stepKind);
     }
@@ -399,9 +400,13 @@ internal sealed class EngineQueryService(
                     _log.LogInfo(_logStore,
                         $"Managed step-over: temp BP at 0x{targetAddr:X} (IL 0x{nextPoint.Value.ILOffset:X} -> {nextPoint.Value.File}:{nextPoint.Value.Line})");
 
+                    // Record stack pointer for recursive call detection.
+                    NativeStackFrame[] callerFrames = _wrapper.GetStackTrace(model.Wrapper, 5);
+                    if (callerFrames.Length > 0)
+                        model.ActiveManagedStep!.OriginStackPointer = callerFrames[0].StackOffset;
+
                     // Also set a step-out BP in the caller to handle early returns
                     // (e.g. "return true;" mid-method won't reach the next sequence point).
-                    NativeStackFrame[] callerFrames = _wrapper.GetStackTrace(model.Wrapper, 5);
                     if (callerFrames.Length >= 2)
                     {
                         ulong? stepOutAddr = FindStepOutTarget(model, callerFrames);
