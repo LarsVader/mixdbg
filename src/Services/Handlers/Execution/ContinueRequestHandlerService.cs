@@ -10,7 +10,7 @@ namespace MixDbg.Services.Handlers.Execution;
 public class ContinueRequestHandlerService(
         ILoggingService log,
         LogStore logStore,
-        IEngineQueryService engineQuery,
+        ISteppingService stepping,
         DebugSessionModel sessionModel)
     : DapHandlerServiceBase<ContinueResponseBody, ContinueArguments>
 {
@@ -24,7 +24,7 @@ public class ContinueRequestHandlerService(
         {
             log.LogInfo(logStore, "Continue queued");
             model.CachedStackTraceResult = null;
-            model.Commands.Add(() => engineQuery.ExecuteContinueOnEngine(model));
+            model.Commands.Add(() => stepping.ExecuteContinueOnEngine(model));
             sessionModel.State = SessionState.Running;
         }
         return new ContinueResponseBody { AllThreadsContinued = true };

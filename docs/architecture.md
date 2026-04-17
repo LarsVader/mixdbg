@@ -18,7 +18,8 @@
 ### Engine Layer
 - `IEngineLifecycleService` — Engine thread management, `WaitForEvent` loop, process lifecycle
 - `IBreakpointService` — Native/managed breakpoint management, hit callbacks, classification
-- `IEngineQueryService` — Stack trace, scopes, variables, threads, execution control (continue, step)
+- `IEngineQueryService` — Stack trace, scopes, variables, threads
+- `ISteppingService` — Execution control (continue, step over/into/out), managed step temp BPs
 
 ### Managed Debugging Layer
 - `IManagedDebugger` — CLR runtime lifecycle, managed stack frame resolution via profiler JIT map

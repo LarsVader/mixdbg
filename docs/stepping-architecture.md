@@ -138,7 +138,7 @@ After a native step, in order:
 ## File Reference
 
 - `src/Services/EngineLifecycleService.cs` — event loop, DetermineStopReason, CompleteManagedStep, CheckStepLanding, RemoveStepIntoOneShotSites, ProcessCommandsUntilResume
-- `src/Services/EngineQueryService.cs` — ExecuteContinueOnEngine, ExecuteStepOnEngine, TryManagedStepOver, TryManagedStepInto, TrySetStepIntoBpViaProfiler, SetManagedStepBreakpoint, CancelActiveManagedStep, ExecuteStepOutOnEngine, FindStepOutTarget
+- `src/Services/SteppingService.cs` — ExecuteContinueOnEngine, ExecuteStepOnEngine, TryManagedStepOver, TryManagedStepInto, TrySetStepIntoBpViaProfiler, SetManagedStepBreakpoint, CancelActiveManagedStep, ExecuteStepOutOnEngine, FindStepOutTarget
 - `src/Services/ManagedBreakpointService.cs` — SetManagedBreakpoints, BindResolvedMethod, SetManagedCodeBreakpoint, ClearManagedBreakpointsForFile
 - `src/Services/ManagedBreakpointResolverService.cs` — ProcessProfilerNotifications, FoldJitIntoPlans
 - `src/Services/BreakpointService.cs` — HandleBreakpointHit (re-fire suppression), HandleExceptionBreakpoint

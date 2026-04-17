@@ -13,7 +13,7 @@ public class ConfigurationDoneHandlerService(
         ILoggingService log,
         LogStore logStore,
         IBreakpointService breakpointService,
-        IEngineQueryService engineQuery,
+        ISteppingService stepping,
         IDapServer server,
         DapServerModel transport,
         DebugSessionModel sessionModel)
@@ -47,7 +47,7 @@ public class ConfigurationDoneHandlerService(
 
             log.LogInfo(logStore, "Continue queued");
             model.CachedStackTraceResult = null;
-            model.Commands.Add(() => engineQuery.ExecuteContinueOnEngine(model));
+            model.Commands.Add(() => stepping.ExecuteContinueOnEngine(model));
             sessionModel.State = SessionState.Running;
         }
     }

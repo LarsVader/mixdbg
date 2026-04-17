@@ -18,7 +18,7 @@ internal sealed class EngineLifecycleService(
     IManagedBreakpointResolver _bpResolver,
     IProfilerPipeService _profilerPipe,
     IBreakpointService _breakpointService,
-    IEngineQueryService _engineQuery,
+    ISteppingService _stepping,
     IDbgEngWrapper _wrapper) : IEngineLifecycleService
 {
     public NativeDebuggerModel CreateModel()
@@ -192,7 +192,7 @@ internal sealed class EngineLifecycleService(
                 {
                     _log.LogInfo(_logStore, "Step on sourceless/brace line — auto-stepping-out");
                     model.CachedStackTraceResult = null;
-                    _engineQuery.ExecuteStepOutOnEngine(model);
+                    _stepping.ExecuteStepOutOnEngine(model);
                     return true;
                 }
             }

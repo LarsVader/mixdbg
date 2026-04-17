@@ -113,7 +113,8 @@ src/
       IDapMessage.cs             # Marker interface for DAP response types
       IEngineLifecycleService.cs         # Stateless engine lifecycle — engine thread, event loop, break/terminate/detach
       IBreakpointService.cs      # Stateless breakpoint management — set, remove, hit handling
-      IEngineQueryService.cs     # Stateless engine queries + execution control — stack trace, scopes, variables, threads, continue, step
+      IEngineQueryService.cs     # Stateless engine queries — stack trace, scopes, variables, threads
+      ISteppingService.cs        # Stateless stepping/execution control — continue, step over/into/out
       ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
       IManagedDebugger.cs        # Stateless managed debugging — runtime lifecycle, frame resolution
       IManagedBreakpointService.cs # Stateless managed breakpoint setting/removal — PDB resolution, hardware BPs
@@ -123,7 +124,8 @@ src/
     DapDispatcherService.cs      # IDapDispatcher: command routing via DI-resolved handler services
     EngineLifecycleService.cs     # IEngineLifecycleService: engine thread, event loop, process lifecycle
     BreakpointService.cs         # IBreakpointService: native/managed/deferred breakpoint management, hit callbacks
-    EngineQueryService.cs        # IEngineQueryService: stack trace, scopes, variables, threads, execution control
+    EngineQueryService.cs        # IEngineQueryService: stack trace, scopes, variables, threads
+    SteppingService.cs           # ISteppingService: continue, step over/into/out, managed step temp BPs
     ManagedDebuggerService.cs    # IManagedDebugger: runtime lifecycle, stack frame resolution
     ManagedBreakpointService.cs  # IManagedBreakpointService: managed BP setting/removal, PDB resolution, hardware BPs
     ManagedBreakpointResolverService.cs # IManagedBreakpointResolver: deferred BP resolution, JIT notifications, ENTER hooks

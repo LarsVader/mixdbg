@@ -480,6 +480,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
         _ = services.AddSingleton<IEngineLifecycleService>(_engine);
         _ = services.AddSingleton<IBreakpointService>(_breakpointService);
         _ = services.AddSingleton<IEngineQueryService>(_engineQuery);
+        _ = services.AddSingleton<ISteppingService>(_stepping);
         _ = services.AddSingleton(Substitute.For<IManagedBreakpointService>());
         _ = services.AddSingleton(Substitute.For<IManagedBreakpointResolver>());
         _ = services.AddSingleton(Substitute.For<IManagedDebugger>());
@@ -549,13 +550,13 @@ public sealed class DapPipelineIntegrationTests : IDisposable
             filePath,
             Arg.Any<SourceBreakpoint[]>());
 
-    private void ThenNativeDebuggerContinueWasCalled() => _engineQuery.Received().ExecuteContinueOnEngine(Arg.Any<NativeDebuggerModel>());
+    private void ThenNativeDebuggerContinueWasCalled() => _stepping.Received().ExecuteContinueOnEngine(Arg.Any<NativeDebuggerModel>());
 
-    private void ThenNativeDebuggerStepOverWasCalled() => _engineQuery.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepOver);
+    private void ThenNativeDebuggerStepOverWasCalled() => _stepping.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepOver);
 
-    private void ThenNativeDebuggerStepIntoWasCalled() => _engineQuery.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepInto);
+    private void ThenNativeDebuggerStepIntoWasCalled() => _stepping.Received(1).ExecuteStepOnEngine(Arg.Any<NativeDebuggerModel>(), EngineExecutionStatus.StepInto);
 
-    private void ThenNativeDebuggerStepOutWasCalled() => _engineQuery.Received(1).ExecuteStepOutOnEngine(Arg.Any<NativeDebuggerModel>());
+    private void ThenNativeDebuggerStepOutWasCalled() => _stepping.Received(1).ExecuteStepOutOnEngine(Arg.Any<NativeDebuggerModel>());
 
     private void ThenNativeDebuggerTerminateWasCalled() => _engine.Received().Terminate(Arg.Any<NativeDebuggerModel>());
 
@@ -652,6 +653,7 @@ public sealed class DapPipelineIntegrationTests : IDisposable
     private readonly IEngineLifecycleService _engine = Substitute.For<IEngineLifecycleService>();
     private readonly IBreakpointService _breakpointService = Substitute.For<IBreakpointService>();
     private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
+    private readonly ISteppingService _stepping = Substitute.For<ISteppingService>();
     private readonly ISourceFileService _sourceFiles = Substitute.For<ISourceFileService>();
     private MemoryStream? _inputStream;
     private MemoryStream? _outputStream;

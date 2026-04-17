@@ -8,7 +8,7 @@ namespace MixDbg.Services.Handlers.Execution;
 /// Handles the DAP next (step over) request.
 /// </summary>
 public class NextRequestHandlerService(
-        IEngineQueryService engineQuery,
+        ISteppingService stepping,
         DebugSessionModel sessionModel)
     : DapVoidHandlerServiceBase<StepArguments>
 {
@@ -22,7 +22,7 @@ public class NextRequestHandlerService(
         {
             model.Stepping = true;
             model.CachedStackTraceResult = null;
-            model.Commands.Add(() => engineQuery.ExecuteStepOnEngine(model, EngineExecutionStatus.StepOver));
+            model.Commands.Add(() => stepping.ExecuteStepOnEngine(model, EngineExecutionStatus.StepOver));
         }
         sessionModel.State = SessionState.Running;
     }

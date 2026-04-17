@@ -100,7 +100,7 @@ public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
     #region Misc
 
     private readonly IBreakpointService _breakpointService = Substitute.For<IBreakpointService>();
-    private readonly IEngineQueryService _engineQuery = Substitute.For<IEngineQueryService>();
+    private readonly ISteppingService _stepping = Substitute.For<ISteppingService>();
     private readonly IDapServer _server = Substitute.For<IDapServer>();
     private readonly DapServerModel _transport = new(Stream.Null, Stream.Null);
     private readonly DebugSessionModel _session = new();
@@ -110,7 +110,7 @@ public sealed class ConfigurationDoneHandlerServiceTests : IDisposable
     public ConfigurationDoneHandlerServiceTests() => _testee = new ConfigurationDoneHandlerService(
             Substitute.For<ILoggingService>(),
             new LogStore(Path.Combine(Path.GetTempPath(), "test.log")),
-            _breakpointService, _engineQuery, _server, _transport, _session);
+            _breakpointService, _stepping, _server, _transport, _session);
 
     public void Dispose()
     {
