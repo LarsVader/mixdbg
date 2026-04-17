@@ -141,15 +141,15 @@ User breakpoints (non-one-shot plan sites) are never removed by this logic.
 During step-over of a recursive call, if the recursive callee has a user BP,
 the method-lifetime HW BP fires and correctly reports "breakpoint".
 
-## Known issues (not yet investigated)
+## Mid-session BPs on already-JIT'd methods
 
-1. **`ManagedBreakpoint_WhenCSharpAddedMidSession_StillFires`** — a mid-session
-   C# BP fires but the stack trace for the expected hit is missing
-   `MainWindow.xaml.cs`. The BP hit address or the stack frame source
-   resolution is off; not diagnosed yet.
-
-This does not affect the primary goal: BPs inside loops/foreach work correctly
-(covered by `Complex_WhenBpInsideForeachWithLambda_StopsWithSource`).
+`FunctionIDMapper` is called once per function during JIT. For methods not in the
+initial watch list (`MIXDBG_WATCH_TOKENS` / `MIXDBG_WATCH_ASSEMBLIES`), sending a
+`WATCH` command after JIT cannot retroactively enable ENTER/LEAVE hooks. So for
+mid-session BPs on already-JIT'd, previously-unwatched methods, `BindResolvedMethod`
+installs the HW BP immediately — it persists until the user clears the breakpoint
+(no ENTER/LEAVE lifecycle). This keeps a HW slot occupied but is correct: the BP
+fires on every call to the method, which matches user expectations.
 
 ## Files touched
 

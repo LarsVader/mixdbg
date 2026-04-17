@@ -99,14 +99,15 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         GivenPdbResolvesMethodAtLine(@"C:\out\MyApp.dll", @"C:\src\Program.cs", 10,
             ("MyApp", "Main", 0x06000001, 0));
         GivenMethodInJitMethodMap("MyApp", 0x06000001, 0x5000);
+        GivenAddHardwareBreakpointSucceedsForAnyAddress(bpId: 42);
 
         bool result = WhenTryingToBindBreakpoint(@"C:\src\Program.cs", 10, bpId: 100);
 
         Assert.True(result);
-        // Plan is created; HW BP installs on next FunctionEnter, not here.
         Assert.True(_model.ManagedBpPlans.ContainsKey((0x06000001, "MyApp")));
-        _ = _dbgEng.DidNotReceive().AddHardwareBreakpoint(
-            Arg.Any<DbgEngWrapperModel>(), Arg.Any<ulong>(), Arg.Any<uint>());
+        // Already JIT'd with no active hooks → HW BP installed immediately.
+        ThenManagedBreakpointIdsContains(42);
+        ThenManagedBreakpointAddressesContains(0x5000);
     }
 
     [Fact]
@@ -353,7 +354,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     }
 
     [Fact]
-    public void BindResolvedMethod_WhenNoActiveActivation_DoesNotInstallHwBp()
+    public void BindResolvedMethod_WhenNoActiveActivation_InstallsHwBpImmediately()
     {
         GivenLoadedModule(@"C:\out\MyApp.dll", @"C:\out\MyApp.pdb");
         GivenPdbResolvesMethodAtLine(@"C:\out\MyApp.dll", @"C:\src\Program.cs", 10,
@@ -364,9 +365,10 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         bool result = WhenTryingToBindBreakpoint(@"C:\src\Program.cs", 10, bpId: 100);
 
         Assert.True(result);
-        // No active entry exists → BP installation is deferred to ENTER.
-        _ = _dbgEng.DidNotReceive().AddHardwareBreakpoint(
-            Arg.Any<DbgEngWrapperModel>(), Arg.Any<ulong>(), Arg.Any<uint>());
+        // No active entry but method is JIT'd → HW BP installed immediately
+        // (FunctionIDMapper won't re-enable hooks for already-JIT'd methods).
+        ThenManagedBreakpointIdsContains(42);
+        ThenManagedBreakpointAddressesContains(0x1000);
     }
 
     [Fact]

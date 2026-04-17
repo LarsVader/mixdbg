@@ -187,6 +187,22 @@ internal sealed class ManagedBreakpointService(
                 _log.LogWarning(_logStore, $"  HW BP limit reached piggybacking on live activation for bp #{bpId}");
             }
         }
+        else if (FindInJitMethodMap(model, resolved.MethodToken, resolved.AssemblyName) is { } jitHit)
+        {
+            // Method is already JIT'd but has no ENTER tracking — FunctionIDMapper wasn't
+            // called with this token (mid-session BP added after JIT). Install HW BP now;
+            // it stays until the user clears the breakpoint (ClearManagedBreakpointsForFile).
+            ulong targetAddress = jitHit.StartAddress;
+            if (model.JitMethodMappings.TryGetValue(key, out JitMethodMapping? mapping))
+                targetAddress = mapping.GetNativeAddress(resolved.ILOffset);
+
+            uint? hwBpId = SetManagedCodeBreakpoint(model, targetAddress, filePath, line);
+            if (hwBpId != null)
+            {
+                _log.LogInfo(_logStore,
+                    $"  Installed hw BP #{hwBpId} at 0x{targetAddress:X} (method JIT'd, no active hooks)");
+            }
+        }
 
         // If the method isn't JIT'd yet (no JitMethodMap entry), store a deferred BP so
         // the JIT notification can fold it into the plan when the method compiles.

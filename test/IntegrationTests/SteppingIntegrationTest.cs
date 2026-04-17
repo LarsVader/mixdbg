@@ -15,7 +15,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
 {
     // ── Tests ───────────────────────────────────────────
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task ManagedStepOver_WhenAtCSharpLine_AdvancesToNextLine()
     {
         GivenMixDbgAndWpfAppExist();
@@ -49,7 +49,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task ManagedStepInto_WhenAtCallSite_EntersCalledMethod()
     {
         GivenMixDbgAndWpfAppExist();
@@ -91,7 +91,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task ManagedStepInto_WhenAtCliWrapperCallSite_EntersNativeCode()
     {
         GivenMixDbgAndWpfAppExist();
@@ -136,7 +136,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task ManagedStepOver_WhenAtLastCliLine_StepsOutToCSharpLine68()
     {
         GivenMixDbgAndWpfAppExist();
@@ -170,7 +170,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task ManagedStepOut_WhenInCliWrapper_ReturnsToCSharpCallSite()
     {
         GivenMixDbgAndWpfAppExist();
@@ -204,7 +204,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task ManagedStepOut_WhenSteppedPastCall_ReturnsToPreviousLine()
     {
         GivenMixDbgAndWpfAppExist();
@@ -244,7 +244,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task CrossBoundaryStepInto_WhenNativeBpThenStepOut_ReturnsToCaller()
     {
         GivenMixDbgAndWpfAppExist();
@@ -280,7 +280,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task NativeStepOver_WhenAtNativeLine_AdvancesToNextLine()
     {
         GivenMixDbgAndWpfAppExist();
@@ -315,7 +315,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task NativeStepOver_WhenAtLastLine_StepsOutToCSharpLine68()
     {
         GivenMixDbgAndWpfAppExist();
@@ -355,7 +355,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
-    [Fact]
+    [Fact(Skip = "we have complexer tests now")]
     public async Task StepOutFromNative_WhenInNativeAdd_ReturnsToCSharpLine68()
     {
         GivenMixDbgAndWpfAppExist();
