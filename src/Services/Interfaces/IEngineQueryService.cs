@@ -26,7 +26,7 @@ public interface IEngineQueryService
     /// <summary>Gets the engine thread ID that hit the last event.</summary>
     int GetStoppedThreadIdOnEngine(NativeDebuggerModel model);
 
-    /// <summary>Resumes execution, clears transient BPs, and re-enables profiler hooks.</summary>
+    /// <summary>Resumes execution, cancels any active managed step, and clears variable state.</summary>
     void ExecuteContinueOnEngine(NativeDebuggerModel model);
 
     /// <summary>Steps over/into by setting the execution status.</summary>

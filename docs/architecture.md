@@ -87,8 +87,8 @@ Current settings: `Breakpoint` → BREAK, `CreateProcess` → BREAK, `ExitProces
 
 ## Process Startup Sequence
 
-1. **Pre-configDone**: First `WaitForEvent` return → `_configDone` is false → enter `ProcessCommandsUntilResume`. Process queued commands (setBreakpoints, then Continue from configurationDone).
-2. **`_configDone` is set by the Continue command ON THE ENGINE THREAD** — not from the main thread. This avoids a race where configDone is true before the engine processes initial events.
+1. **Pre-configDone**: First `WaitForEvent` return → `ConfigDone` is false → enter `ProcessCommandsUntilResume`. Process queued commands (setBreakpoints, then Continue from configurationDone).
+2. **`ConfigDone` is set by the Continue command ON THE ENGINE THREAD** — not from the main thread. This avoids a race where configDone is true before the engine processes initial events.
 3. **Post-configDone system stops**: auto-continue silently (no DAP event).
 4. **User breakpoint / step / pause**: send DAP `stopped` event, enter command loop.
 
@@ -122,6 +122,7 @@ Three mechanisms:
 - **Assembly-level watches** (`MIXDBG_WATCH_ASSEMBLIES`): C++/CLI assemblies — all methods hooked because tokens can't be resolved before module load
 
 Named pipe protocol:
+- `READY:\n` — profiler initialization complete
 - `JIT:TOKEN:ADDRESS:SIZE:ASSEMBLY[:IL-map]\n` — JIT compilation notification
 - `ENTER:TOKEN:BODYADDR:THREADID:ASSEMBLY\n` — method entry (blocks on `MIXDBG_ACK_EVENT`)
 - `LEAVE:TOKEN:THREADID:ASSEMBLY\n` — method exit (fire-and-forget)
@@ -175,7 +176,7 @@ Profiler's `JitMethodMap` (sorted by native address) maps any IP in JIT'd code t
 
 ### Module Tracking
 
-`ManagedDebuggerService.EnumerateModules` walks `ICorDebugProcess.AppDomains` → assemblies → modules. Called on init and on each dbgeng LoadModule event for managed DLLs. Pending breakpoints bind when their module becomes available.
+`ICorDebugWrapper.GetModules()` walks `ICorDebugProcess.AppDomains` → assemblies → modules. Called on init and on each dbgeng LoadModule event for managed DLLs. Pending breakpoints bind when their module becomes available.
 
 ## Variable Inspection
 

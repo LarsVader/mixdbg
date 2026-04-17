@@ -148,10 +148,10 @@ test/
   IntegrationTests/                  # End-to-end tests against TestApp (xunit.runner.json disables parallel execution)
     SteppingIntegrationTest.cs       # M6: cross-boundary stepping integration tests
   TestApp/                           # Mixed-mode WPF integration test target
-  TestApp.sln                        # Solution: NativeLib + CliWrapper + WpfApp
-  Makefile                           # Build via MSBuild (make all)
-  NativeLib/                         # Native C++ library (Calculator::Add/Multiply)
-  CliWrapper/                        # C++/CLI wrapper (ManagedCalculator)
+    TestApp.sln                      # Solution: NativeLib + CliWrapper + WpfApp
+    Makefile                         # Build via MSBuild (make all)
+    NativeLib/                       # Native C++ library (Calculator::Add/Multiply)
+    CliWrapper/                      # C++/CLI wrapper (ManagedCalculator)
   WpfApp/                            # C# WPF frontend — --auto-test / --auto-test-slow for CI
 ```
 
@@ -163,7 +163,7 @@ Key points for making changes:
 - Services are **stateless singletons**; all mutable state lives in model objects.
 - ALL dbgeng COM calls MUST happen on the **engine thread** (thread affinity). Methods suffixed `OnEngine`.
 - dbgeng string output uses `IntPtr` + `Marshal.PtrToStringAnsi` — NOT `StringBuilder`.
-- `_configDone` is set ON THE ENGINE THREAD to avoid a race with initial events.
+- `ConfigDone` is set ON THE ENGINE THREAD to avoid a race with initial events.
 - CLR notification exceptions (code `e0444143`): returned as `GO_HANDLED` from `EventCallbacks.Exception`.
 - Managed BPs use method-lifetime scoping (ENTER/LEAVE activation counting). See `docs/architecture.md`.
 - Mid-session BPs on already-JIT'd methods without active hooks install HW BPs immediately.

@@ -213,8 +213,8 @@ internal sealed class ManagedDebuggerService(
 
             // C++/CLI fallback: PdbSourceMapper can't read Windows PDBs.
             // Look up the source from the managed BP we set at this method's address.
-            // Check both method start and exact IP (transient BPs from ENTER hooks
-            // are set at an IL-mapped offset, not the method start).
+            // Check both method start and exact IP (method-lifetime HW BPs are set
+            // at an IL-mapped offset, not the method start).
             if (source == null)
                 (source, line) = FallbackToBreakpointSource(model, method.StartAddress, instructionPointer);
         }

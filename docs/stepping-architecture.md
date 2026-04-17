@@ -139,7 +139,7 @@ After a native step, in order:
 - `src/Services/EngineLifecycleService.cs` — event loop, DetermineStopReason, CompleteManagedStep, CheckStepLanding, RemoveStepIntoOneShotSites, ProcessCommandsUntilResume
 - `src/Services/EngineQueryService.cs` — ExecuteContinueOnEngine, ExecuteStepOnEngine, TryManagedStepOver, TryManagedStepInto, TrySetStepIntoBpViaProfiler, SetManagedStepBreakpoint, CancelActiveManagedStep, ExecuteStepOutOnEngine, FindStepOutTarget
 - `src/Services/ManagedBreakpointService.cs` — SetManagedBreakpoints, BindResolvedMethod, SetManagedCodeBreakpoint, ClearManagedBreakpointsForFile
-- `src/Services/ManagedBreakpointResolverService.cs` — ProcessProfilerNotifications, HandleJitNotifications, TryMatchJitToDeferred
+- `src/Services/ManagedBreakpointResolverService.cs` — ProcessProfilerNotifications, FoldJitIntoPlans
 - `src/Services/BreakpointService.cs` — HandleBreakpointHit (re-fire suppression), HandleExceptionBreakpoint
-- `src/Services/ProfilerPipeService.cs` — ParseJitNotification, ParseEnterNotification, ParseLeaveNotification, RequestInterrupt
+- `src/Services/ProfilerPipeService.cs` — ParseJitNotification, ParseEnterNotification, ParseLeaveOrTailcallNotification, RequestInterrupt
 - `profiler/MixDbgProfiler.cpp` — JITCompilationFinished, OnFunctionEnter, OnFunctionLeave, JITInlining
