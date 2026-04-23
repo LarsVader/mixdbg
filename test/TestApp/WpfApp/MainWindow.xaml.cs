@@ -181,4 +181,9 @@ public partial class MainWindow : Window
         ResultText.Text = "Please enter a valid integer for A.";
         return false;
     }
+
+    public System.Windows.Input.ICommand TestCommand
+    {
+        get; set;
+    }
 }
