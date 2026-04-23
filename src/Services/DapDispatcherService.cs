@@ -29,13 +29,13 @@ internal sealed class DapDispatcherService(
             {
                 string argsStr = request.Arguments.HasValue
                     ? request.Arguments.Value.ToString() : "null";
-                _log.LogInfo(_logStore, $"DAP request: seq={request.Seq} cmd={request.Command} args={argsStr}");
+                _log.LogVerbose(_logStore, $"DAP request: seq={request.Seq} cmd={request.Command} args={argsStr}");
 
                 if (_handlers.TryGetValue(request.Command, out IDapHandlerService? handler))
                 {
                     IDapMessage? body = handler.Execute(request.Arguments);
                     _server.SendResponse(_transport, request, body);
-                    _log.LogInfo(_logStore, $"DAP response: cmd={request.Command} success=true");
+                    _log.LogVerbose(_logStore, $"DAP response: cmd={request.Command} success=true");
                 }
                 else
                 {
