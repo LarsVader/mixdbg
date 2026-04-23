@@ -45,8 +45,9 @@ public sealed class SourceFileService : ISourceFileService
     }
 
     /// <summary>
-    /// Checks whether the directory contains a vcxproj with CLRSupport.
-    /// Results are cached per directory to avoid repeated disk reads.
+    /// Checks whether the directory (or a parent up to 5 levels) contains a
+    /// vcxproj with CLRSupport. Results are cached per directory to avoid
+    /// repeated disk reads.
     /// </summary>
     private bool HasClrSupport(string? dir)
     {
@@ -57,19 +58,46 @@ public sealed class SourceFileService : ISourceFileService
             return cached;
 
         bool result = false;
-        try
+        string? current = dir;
+        for (int up = 0; up < 5 && current != null; up++)
         {
-            foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
+            // Check cache for ancestor directories too.
+            if (_clrSupportCache.TryGetValue(current, out bool ancestorCached))
             {
-                string text = File.ReadAllText(vcx);
-                if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                result = ancestorCached;
+                break;
+            }
+
+            try
+            {
+                // Stop at solution or repo root — don't cross project boundaries.
+                if (Directory.GetFiles(current, "*.sln").Length > 0
+                    || Directory.Exists(Path.Combine(current, ".git")))
                 {
-                    result = true;
+                    break;
+                }
+
+                string[] vcxprojs = Directory.GetFiles(current, "*.vcxproj");
+                if (vcxprojs.Length > 0)
+                {
+                    // Found a vcxproj — check for CLR support and stop walking
+                    // regardless (this is the owning project).
+                    foreach (string vcx in vcxprojs)
+                    {
+                        string text = File.ReadAllText(vcx);
+                        if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                        {
+                            result = true;
+                            break;
+                        }
+                    }
                     break;
                 }
             }
+            catch { /* ignore IO errors */ }
+
+            current = Path.GetDirectoryName(current);
         }
-        catch { /* ignore IO errors */ }
 
         _clrSupportCache[dir] = result;
         return result;

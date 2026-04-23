@@ -22,6 +22,7 @@ public class NextRequestHandlerService(
         {
             model.Stepping = true;
             model.CachedStackTraceResult = null;
+            model.CachedThreadsResult = null;
             model.Commands.Add(() => stepping.ExecuteStepOnEngine(model, EngineExecutionStatus.StepOver));
         }
         sessionModel.State = SessionState.Running;

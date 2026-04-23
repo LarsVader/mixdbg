@@ -47,6 +47,7 @@ public class ConfigurationDoneHandlerService(
 
             log.LogInfo(logStore, "Continue queued");
             model.CachedStackTraceResult = null;
+            model.CachedThreadsResult = null;
             model.Commands.Add(() => stepping.ExecuteContinueOnEngine(model));
             sessionModel.State = SessionState.Running;
         }

@@ -27,6 +27,12 @@ public class ThreadsRequestHandlerService(
             };
         }
 
+        // Return cached result without engine round-trip when available.
+        if (model.CachedThreadsResult != null)
+        {
+            return new ThreadsResponseBody { Threads = model.CachedThreadsResult };
+        }
+
         DapThread[] threads = model.QueueEngineQuery(
             () => engineQuery.GetThreadsOnEngine(model));
         return new ThreadsResponseBody { Threads = threads };

@@ -204,8 +204,9 @@ public sealed class NativeDebuggerModel : IDisposable
     /// </summary>
     internal ulong StepOriginStackPointer;
 
-    // Stack trace cache — DAP-level result, invalidated on continue/step.
+    // Per-stop caches — invalidated on continue/step.
     internal StackFrame[]? CachedStackTraceResult { get; set; }
+    internal DapMessages.Threads.DapThread[]? CachedThreadsResult { get; set; }
 
     /// <summary>
     /// Caches source file lines for <c>CheckStepLanding</c> to avoid

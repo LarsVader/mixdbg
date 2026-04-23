@@ -21,6 +21,16 @@ public class StackTraceRequestHandlerService(
         if (sessionModel.Engine is not NativeDebuggerModel model)
             return new StackTraceResponseBody { StackFrames = [] };
 
+        // Return cached result without engine round-trip when available.
+        if (model.CachedStackTraceResult != null)
+        {
+            return new StackTraceResponseBody
+            {
+                StackFrames = model.CachedStackTraceResult,
+                TotalFrames = model.CachedStackTraceResult.Length,
+            };
+        }
+
         int maxFrames = args.Levels > 0 ? args.Levels : 50;
         StackFrame[] frames = model.QueueEngineQuery(
             () => engineQuery.GetStackTraceOnEngine(model, maxFrames));

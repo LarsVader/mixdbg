@@ -22,6 +22,7 @@ public class StepInRequestHandlerService(
         {
             model.Stepping = true;
             model.CachedStackTraceResult = null;
+            model.CachedThreadsResult = null;
             model.Commands.Add(() => stepping.ExecuteStepOnEngine(model, EngineExecutionStatus.StepInto));
         }
         sessionModel.State = SessionState.Running;

@@ -24,6 +24,7 @@ internal sealed class SteppingService(
         model.ContinueTimestampTicks = Environment.TickCount64;
         model.ConfigDone = true;
         model.CachedStackTraceResult = null;
+        model.CachedThreadsResult = null;
         _wrapper.ClearVariables(model.Wrapper);
         if (model.CorWrapper != null)
             _corDebug.ClearManagedVariables(model.CorWrapper);

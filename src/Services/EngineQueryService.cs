@@ -177,9 +177,15 @@ internal sealed class EngineQueryService(
 
     public DapThread[] GetThreadsOnEngine(NativeDebuggerModel model)
     {
+        if (model.CachedThreadsResult != null)
+            return model.CachedThreadsResult;
+
         (uint EngineId, uint SystemId)[] threads = _wrapper.GetThreads(model.Wrapper);
         if (threads.Length == 0)
-            return [new DapThread { Id = 1, Name = "Main Thread" }];
+        {
+            model.CachedThreadsResult = [new DapThread { Id = 1, Name = "Main Thread" }];
+            return model.CachedThreadsResult;
+        }
 
         DapThread[] result = new DapThread[threads.Length];
         for (int i = 0; i < threads.Length; i++)
@@ -190,6 +196,7 @@ internal sealed class EngineQueryService(
                 Name = $"Thread {threads[i].SystemId} (dbg:{threads[i].EngineId})",
             };
         }
+        model.CachedThreadsResult = result;
         return result;
     }
 

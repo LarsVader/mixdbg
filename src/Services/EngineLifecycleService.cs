@@ -192,6 +192,7 @@ internal sealed class EngineLifecycleService(
                 {
                     _log.LogInfo(_logStore, "Step on sourceless/brace line — auto-stepping-out");
                     model.CachedStackTraceResult = null;
+                    model.CachedThreadsResult = null;
                     _stepping.ExecuteStepOutOnEngine(model);
                     return true;
                 }
