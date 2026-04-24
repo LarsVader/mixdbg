@@ -41,6 +41,8 @@ After code changes, check whether `docs/` files need updating — especially `do
 
 The `test/TestApp/` directory contains a mixed-mode WPF app (C# frontend → C++/CLI wrapper → native C++ library) used as the integration test target. Build with `make all` from `test/TestApp/`.
 
+**Do NOT add, remove, or reorder lines in `MainWindow.xaml.cs` above the click handler methods.** Integration tests hardcode line numbers for breakpoint and stepping assertions. If you must change the auto-test scheduling or other code before the handlers, ensure the net line count stays the same (e.g., replace a comment instead of adding one). Rebuild the TestApp (`make all`) after any change and verify PDB line numbers still match.
+
 ## nvim-dap Integration
 
 Adapter registered in `C:\Users\LarsVader\AppData\Local\nvim\lua\plugins\debug\nvim-dap.lua` as `mixdbg` (type: executable, hardcoded path to the built exe). A "Mixed C#/C++ (mixdbg)" config is in both `dap.configurations.cpp` and `dap.configurations.cs`.
