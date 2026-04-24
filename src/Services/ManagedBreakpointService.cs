@@ -282,8 +282,13 @@ internal sealed class ManagedBreakpointService(
                 (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result = FindMethodFromDiskPdb(filePath, line);
                 if (result != null)
                     tokens.Add((result.Value.AssemblyName, result.Value.MethodToken));
+                else
+                    _log.LogInfo(_logStore, $"  ResolveTokens: no PDB match for {filePath}:{line}");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _log.LogInfo(_logStore, $"  ResolveTokens: failed for {filePath}:{line}: {ex.Message}");
+            }
         }
         return tokens;
     }

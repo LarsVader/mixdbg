@@ -180,22 +180,31 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
         if (!File.Exists(pdbPath))
             return null;
 
-        try
+        // Retry on IOException — the PDB may be locked by a previous debuggee process.
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            FileStream stream = File.OpenRead(pdbPath);
-            MetadataReaderProvider provider = MetadataReaderProvider.FromPortablePdbStream(stream);
-            MetadataReader reader = provider.GetMetadataReader();
+            try
+            {
+                FileStream stream = File.OpenRead(pdbPath);
+                MetadataReaderProvider provider = MetadataReaderProvider.FromPortablePdbStream(stream);
+                MetadataReader reader = provider.GetMetadataReader();
 
-            _providers[assemblyPath] = provider;
-            _readers[assemblyPath] = reader;
-            return reader;
+                _providers[assemblyPath] = provider;
+                _readers[assemblyPath] = reader;
+                return reader;
+            }
+            catch (IOException) when (attempt < 2)
+            {
+                Thread.Sleep(200);
+            }
+            catch (Exception ex)
+            {
+                // Not a portable PDB, or corrupted — skip.
+                LastError = $"PDB load failed for {pdbPath}: {ex.GetType().Name}: {ex.Message}";
+                return null;
+            }
         }
-        catch (Exception ex)
-        {
-            // Not a portable PDB, or corrupted — skip.
-            LastError = $"PDB load failed for {pdbPath}: {ex.GetType().Name}: {ex.Message}";
-            return null;
-        }
+        return null;
     }
 
     private (PEReader Pe, MetadataReader Reader)? GetOrLoadPeReader(string assemblyPath)
@@ -206,19 +215,29 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
         if (!File.Exists(assemblyPath))
             return null;
 
-        try
+        // Retry on IOException — the DLL may be locked by a previous debuggee process.
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            FileStream stream = File.OpenRead(assemblyPath);
-            _peStreams.Add(stream);
-            PEReader pe = new(stream);
-            MetadataReader reader = pe.GetMetadataReader();
-            _peReaders[assemblyPath] = (pe, reader);
-            return (pe, reader);
+            try
+            {
+                FileStream stream = File.OpenRead(assemblyPath);
+                _peStreams.Add(stream);
+                PEReader pe = new(stream);
+                MetadataReader reader = pe.GetMetadataReader();
+                _peReaders[assemblyPath] = (pe, reader);
+                return (pe, reader);
+            }
+            catch (IOException) when (attempt < 2)
+            {
+                Thread.Sleep(200);
+            }
+            catch (Exception ex)
+            {
+                LastError = $"PE load failed for {assemblyPath}: {ex.GetType().Name}: {ex.Message}";
+                return null;
+            }
         }
-        catch
-        {
-            return null;
-        }
+        return null;
     }
 
     /// <summary>

@@ -19,11 +19,11 @@ public partial class MainWindow : Window
         Hide();
         int firstDelay = App.AutoTestSlow ? 15 : 3;
         if (App.AutoTestComplex)
-        {   // 15s initial delay: ICorDebug needs time to init + convert pending BPs.
+        {   // Delays: 5s init + 5s between steps = 25s to Complex (35s margin with 60s timeout).
             ScheduleActions(
-                (15, OnFibonacciClickAction), (8, OnCountPrimesClickAction),
-                (8, OnFactorialClickAction), (8, OnAsyncCalcClickAction),
-                (10, OnComplexClickAction), (8, Close));
+                (5, OnFibonacciClickAction), (5, OnCountPrimesClickAction),
+                (5, OnFactorialClickAction), (5, OnAsyncCalcClickAction),
+                (5, OnComplexClickAction), (5, Close));
         }
         else if (App.AutoTestDouble)
         {
