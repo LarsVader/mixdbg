@@ -387,6 +387,53 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
     }
 
     /// <summary>
+    /// Step over an "await Task.Delay(50)" line (141). The state machine yields
+    /// and MoveNext returns; the debugger must NOT stop in framework code
+    /// (ExecutionContext.RunInternal) but wait for the continuation to resume
+    /// MoveNext and land on line 143.
+    /// Reaches line 141 by stepping from the async entry BP (line 130).
+    /// </summary>
+    [Fact]
+    public async Task Async_WhenStepOverAwaitDelay_LandsOnNextUserLine()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // BP at OnAsyncCalcClick entry (line 130), then step forward to the await.
+        await WhenSettingBreakpoint(_bpFile, "MainWindow.xaml.cs", _asyncEntryLine);
+        await WhenLaunchingWithAutoTestComplex();
+        await WhenSendingConfigurationDone();
+
+        await WhenWaitingForStoppedEvent(timeout: 60);
+        ThenStoppedWithReason(0, "breakpoint");
+
+        // Step over: 130 → 133 (ResultText.Text = "Calculating async...")
+        await WhenSendingNext();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+
+        // Step over: 133 → 135 (await Task.Run)
+        await WhenSendingNext();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+
+        // Step over: 135 → 141 (await Task.Delay) — crosses the first await
+        await WhenSendingNext();
+        await WhenWaitingForStoppedEvent(timeout: 30);
+
+        // Step over the await Task.Delay — should land on line 143 (int sum = ...)
+        await WhenSendingNext();
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTrace();
+        ThenStackTraceHasSource(0, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(0, _asyncAfterAwaitLine);
+
+        await WhenSendingContinue();
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+        ThenNoLogErrors();
+    }
+
+    /// <summary>
     /// C# breakpoint AFTER await (line 143: int sum = ManagedCalculator.SumRange).
     /// This is the hardest async scenario — the continuation runs after the state
     /// machine resumes on the UI thread. The debugger must resolve BPs in the

@@ -186,6 +186,7 @@ public sealed class SteppingServiceTests : IDisposable
         GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
         GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
         GivenSequencePoints(@"C:\src\App.dll", 0x06000001, [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
+        _ = _wrapper.GetLineByOffset(_model.Wrapper, 0x3000).Returns(((uint)25, @"C:\src\Caller.cs"));
         GivenAddHardwareBreakpointSucceeds(0x3000, bpId: 50);
 
         WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
@@ -202,6 +203,7 @@ public sealed class SteppingServiceTests : IDisposable
     {
         GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
         GivenStackFramesForStep([new NativeStackFrame(StackOffset: 0, InstructionOffset:0x5010), new NativeStackFrame(StackOffset: 0, InstructionOffset:0x3000)]);
+        _ = _wrapper.GetLineByOffset(_model.Wrapper, 0x3000).Returns(((uint)25, @"C:\src\Caller.cs"));
         GivenAddHardwareBreakpointSucceeds(0x3000, bpId: 77);
 
         WhenExecutingStepOutOnEngine();
@@ -218,6 +220,105 @@ public sealed class SteppingServiceTests : IDisposable
         WhenExecutingStepOutOnEngine();
 
         ThenExecuteCommandWasCalledWith("gu");
+    }
+
+    // ── Async state machine step-over ─────────────────────────
+
+    [Fact]
+    public void ExecuteStepOnEngine_WhenAsyncMoveNext_DoesNotSetStepOutFallback()
+    {
+        // Async MoveNext: method name like "Namespace.Type+<Handler>d__5.MoveNext"
+        // Should set temp BP at next line but NOT set step-out fallback in caller.
+        GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
+        GivenStackFramesForStep([
+            new NativeStackFrame(StackOffset: 0x9000, InstructionOffset: 0x5010),
+            new NativeStackFrame(StackOffset: 0x9100, InstructionOffset: 0x3000)]);
+        GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
+        GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
+        GivenSequencePoints(@"C:\src\App.dll", 0x06000001,
+            [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
+        GivenMethodName(@"C:\src\App.dll", 0x06000001, "MyApp.MainWindow+<OnAsyncClick>d__5.MoveNext");
+        // Make BP succeed for both next-line and step-out addresses.
+        GivenAddHardwareBreakpointSucceeds(0x5020, bpId: 99);
+        _ = _wrapper.AddHardwareBreakpoint(_model.Wrapper, 0x3000, 1).Returns((50u, true));
+        _ = _wrapper.GetLineByOffset(_model.Wrapper, 0x3000).Returns(((uint)25, @"C:\src\App.cs"));
+
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
+
+        // Only 1 temp BP (next line), no step-out fallback.
+        Assert.NotNull(_model.ActiveManagedStep);
+        _ = Assert.Single(_model.ActiveManagedStep!.TempBreakpointIds);
+        Assert.Contains(99u, _model.ActiveManagedStep.TempBreakpointIds);
+    }
+
+    [Fact]
+    public void ExecuteStepOnEngine_WhenAsyncMoveNext_DoesNotRecordOriginStackPointer()
+    {
+        // Async MoveNext should not record origin SP (disables depth check).
+        GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
+        GivenStackFramesForStep([
+            new NativeStackFrame(StackOffset: 0x9000, InstructionOffset: 0x5010),
+            new NativeStackFrame(StackOffset: 0x9100, InstructionOffset: 0x3000)]);
+        GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
+        GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
+        GivenSequencePoints(@"C:\src\App.dll", 0x06000001,
+            [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
+        GivenMethodName(@"C:\src\App.dll", 0x06000001, "MyApp.MainWindow+<OnAsyncClick>d__5.MoveNext");
+        GivenAddHardwareBreakpointSucceeds(0x5020, bpId: 99);
+
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
+
+        Assert.Equal(0UL, _model.ActiveManagedStep!.OriginStackPointer);
+    }
+
+    [Fact]
+    public void ExecuteStepOnEngine_WhenNonAsyncMoveNext_SetsStepOutFallback()
+    {
+        // Regular method (not async MoveNext): should still set step-out fallback.
+        GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
+        GivenStackFramesForStep([
+            new NativeStackFrame(StackOffset: 0x9000, InstructionOffset: 0x5010),
+            new NativeStackFrame(StackOffset: 0x9100, InstructionOffset: 0x3000)]);
+        GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
+        GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
+        GivenSequencePoints(@"C:\src\App.dll", 0x06000001,
+            [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
+        GivenMethodName(@"C:\src\App.dll", 0x06000001, "MyApp.MainWindow.OnClick");
+        // BP for next line + BP for step-out fallback
+        GivenAddHardwareBreakpointSucceeds(0x5020, bpId: 99);
+        _ = _wrapper.AddHardwareBreakpoint(_model.Wrapper, 0x3000, 1).Returns((50u, true));
+        _ = _wrapper.GetLineByOffset(_model.Wrapper, 0x3000).Returns(((uint)25, @"C:\src\App.cs"));
+
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
+
+        Assert.NotNull(_model.ActiveManagedStep);
+        Assert.True(_model.ActiveManagedStep!.TempBreakpointIds.Count >= 2);
+    }
+
+    // ── FindStepOutTarget sourceless fallback ──────────────────
+
+    [Fact]
+    public void ExecuteStepOnEngine_WhenManagedEndOfMethod_AllCallersSourceless_DoesNotSetBp()
+    {
+        // End of method (no next sequence point), all caller frames are sourceless
+        // (framework infrastructure). Should NOT set any BP.
+        GivenManagedMethodInJitMap(0x5000, tokenHex: "06000001", assemblyName: "App");
+        GivenStackFramesForStep([
+            new NativeStackFrame(StackOffset: 0x9000, InstructionOffset: 0x5020),
+            new NativeStackFrame(StackOffset: 0x9100, InstructionOffset: 0x3000),
+            new NativeStackFrame(StackOffset: 0x9200, InstructionOffset: 0x4000)]);
+        GivenAssemblyPathForMethod("App", @"C:\src\App.dll");
+        GivenILToNativeMapping(0x06000001, "App", codeStart: 0x5000, [(0, 0), (10, 0x10), (20, 0x20)]);
+        GivenSequencePoints(@"C:\src\App.dll", 0x06000001,
+            [(0, @"C:\src\App.cs", 10), (10, @"C:\src\App.cs", 11), (20, @"C:\src\App.cs", 12)]);
+        // No source info for any caller frame (framework code).
+        _ = _wrapper.GetLineByOffset(_model.Wrapper, 0x3000).Returns(((uint, string)?)null);
+        _ = _wrapper.GetLineByOffset(_model.Wrapper, 0x4000).Returns(((uint, string)?)null);
+
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
+
+        // No BP should have been set — native step-over fallback.
+        _ = _wrapper.DidNotReceive().AddHardwareBreakpoint(_model.Wrapper, Arg.Any<ulong>(), Arg.Any<uint>());
     }
 
     // ── Managed step cancel on continue ─────────────────────
@@ -267,6 +368,9 @@ public sealed class SteppingServiceTests : IDisposable
 
     private void GivenAddHardwareBreakpointSucceeds(ulong address, uint bpId) =>
         _ = _wrapper.AddHardwareBreakpoint(_model.Wrapper, address, 1).Returns((bpId, true));
+
+    private void GivenMethodName(string assemblyPath, int methodToken, string name) =>
+        _ = _pdbMapper.GetMethodName(assemblyPath, methodToken).Returns(name);
 
     private void GivenActiveManagedStep(uint[] bpIds)
     {

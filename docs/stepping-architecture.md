@@ -87,7 +87,8 @@ After a native step, `CheckStepLanding` compares the current RSP (`frames[0].Sta
 **Step-Over** (`TryManagedStepOver`):
 - Uses PDB sequence points to find next IL offsets > current.
 - Sets temp BPs at the first 2 distinct next source lines' native addresses. This covers conditional branches (e.g. `if/else`) where the first sequence point may be skipped.
-- Also sets a step-out fallback BP in the caller (handles early returns like `return true;` mid-method).
+- Also sets a step-out fallback BP in the caller (handles early returns like `return true;` mid-method). **Exception**: async state machine `MoveNext` methods skip both the step-out fallback and the origin stack pointer recording. `await` causes MoveNext to return normally (yielding), which would trigger the step-out BP in framework infrastructure (e.g. `ExecutionContext.RunInternal`). The continuation resumes MoveNext on a potentially different stack/thread, making RSP depth comparison invalid.
+- `FindStepOutTarget` returns `null` (no fallback BP) when all caller frames lack source info.
 - Total HW BPs: up to 2 (next lines) + 1 (step-out) = 3, fitting within the 4 DR register limit alongside user BPs.
 - Falls back to step-out if no next sequence point (end of method).
 

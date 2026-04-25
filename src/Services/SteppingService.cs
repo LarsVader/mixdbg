@@ -182,7 +182,9 @@ internal sealed class SteppingService(
             return address;
         }
 
-        return frames[1].InstructionOffset;
+        // No frame with source info found — return null to avoid setting a BP in
+        // sourceless framework code (e.g. async infrastructure, thread pool).
+        return null;
     }
 
     /// <summary>
@@ -242,14 +244,23 @@ internal sealed class SteppingService(
 
                 if (anyBpSet)
                 {
+                    bool isAsync = IsAsyncStateMachine(assemblyPath, method.MethodToken);
+
                     // Record stack pointer for recursive call detection.
+                    // Skip for async MoveNext — the continuation resumes on a different
+                    // stack, so depth comparison is meaningless and would suppress the
+                    // correct temp BP.
                     NativeStackFrame[] callerFrames = _wrapper.GetStackTrace(model.Wrapper, 5);
-                    if (callerFrames.Length > 0)
+                    if (!isAsync && callerFrames.Length > 0)
                         model.ActiveManagedStep!.OriginStackPointer = callerFrames[0].StackOffset;
 
                     // Also set a step-out BP in the caller to handle early returns
                     // (e.g. "return true;" mid-method won't reach any next sequence point).
-                    if (callerFrames.Length >= 2)
+                    // Skip for async MoveNext — MoveNext returns normally when an await
+                    // yields, which would trigger the step-out BP in framework
+                    // infrastructure (ExecutionContext.RunInternal) instead of the real
+                    // continuation at the next source line.
+                    if (!isAsync && callerFrames.Length >= 2)
                     {
                         ulong? stepOutAddr = FindStepOutTarget(model, callerFrames);
                         if (stepOutAddr != null)
@@ -678,6 +689,23 @@ internal sealed class SteppingService(
         // Clear the Stepping flag — managed step completion is detected via ActiveManagedStep.
         model.Stepping = false;
         return true;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> if the method is an async (or iterator) state machine's
+    /// <c>MoveNext</c> method. These are compiler-generated types with names like
+    /// <c>Namespace.Type+&lt;Handler&gt;d__5.MoveNext</c>.
+    /// </summary>
+    private bool IsAsyncStateMachine(string assemblyPath, int methodToken)
+    {
+        string? name = _pdbMapper.GetMethodName(assemblyPath, methodToken);
+        if (name == null)
+            return false;
+
+        // Compiler-generated state machines: method is "MoveNext" and the
+        // containing type has angle brackets (e.g. "<OnAsyncClick>d__5").
+        return name.EndsWith(".MoveNext", StringComparison.Ordinal)
+            && name.Contains('<');
     }
 
     /// <summary>

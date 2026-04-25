@@ -197,7 +197,7 @@ Stepping across C#, C++/CLI, and native C++ boundaries. Native frames use dbgeng
 
 See [stepping-architecture.md](stepping-architecture.md) for the full stepping and breakpoint interaction reference.
 
-**Step-over**: PDB sequence points → next IL offset → temp HW BP at native address. Step-out fallback BP in caller handles early returns. Native step-over auto-re-steps on same line, auto-steps-out on closing braces or sourceless lines.
+**Step-over**: PDB sequence points → next IL offset → temp HW BP at native address. Step-out fallback BP in caller handles early returns (skipped for async MoveNext — `await` yields cause MoveNext to return, which would fire the fallback in framework code). Native step-over auto-re-steps on same line, auto-steps-out on closing braces or sourceless lines.
 
 **Step-into**: Parses IL bytecode for `call`/`callvirt` target. Three paths: JitMethodMap hit (temp BP), profiler WATCH (one-shot plan site), or native `GetOffsetByName`. Fallback: step-over behavior.
 
