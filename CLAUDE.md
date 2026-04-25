@@ -107,6 +107,7 @@ src/
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
     NativeDebuggerModel.cs       # Engine state: DbgEngWrapperModel + CorDebugWrapperModel refs, threads, flags, breakpoint tracking, ManagedStepState + ActiveManagedStep + ManagedStepIntoCompleted
+    StopReason.cs                # StopReason enum (Breakpoint, Step, Pause) + ToDapString() extension
   Services/
     Interfaces/
       IDapServer.cs              # Stateless DAP transport — all methods take DapServerModel
@@ -117,6 +118,7 @@ src/
       IBreakpointService.cs      # Stateless breakpoint management — set, remove, hit handling
       IEngineQueryService.cs     # Stateless engine queries — stack trace, scopes, variables, threads
       ISteppingService.cs        # Stateless stepping/execution control — continue, step over/into/out
+      IStepResolutionService.cs  # Stateless step resolution — DetermineStopReason (StopReason enum), CheckStepLanding, CompleteManagedStep
       ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
       IManagedDebugger.cs        # Stateless managed debugging — runtime lifecycle, frame resolution
       IManagedBreakpointService.cs # Stateless managed breakpoint setting/removal — PDB resolution, hardware BPs
@@ -124,10 +126,11 @@ src/
       IProfilerPipeService.cs    # Profiler pipe setup and reader thread
     DapServerService.cs          # IDapServer: Content-Length framed JSON-RPC transport
     DapDispatcherService.cs      # IDapDispatcher: command routing via DI-resolved handler services
-    EngineLifecycleService.cs     # IEngineLifecycleService: engine thread, event loop, process lifecycle
+    EngineLifecycleService.cs     # IEngineLifecycleService: engine thread, event loop, process lifecycle, delegates to IStepResolutionService for stop resolution
     BreakpointService.cs         # IBreakpointService: native/managed/deferred breakpoint management, hit callbacks
     EngineQueryService.cs        # IEngineQueryService: stack trace, scopes, variables, threads
     SteppingService.cs           # ISteppingService: continue, step over/into/out, managed step temp BPs
+    StepResolutionService.cs     # IStepResolutionService: stop reason resolution, step landing checks, managed step completion
     ManagedDebuggerService.cs    # IManagedDebugger: runtime lifecycle, stack frame resolution
     ManagedBreakpointService.cs  # IManagedBreakpointService: managed BP setting/removal, PDB resolution, hardware BPs
     ManagedBreakpointResolverService.cs # IManagedBreakpointResolver: deferred BP resolution, JIT notifications, ENTER hooks

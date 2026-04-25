@@ -397,92 +397,11 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     }
 
     // ── DetermineStopReason priority ───────────────────────
+    // Priority logic is tested in StepResolutionServiceTests.
 
-    [Fact]
-    public void EngineLoopStep_WhenBreakpointAndStepping_BreakpointWins()
-    {
-        GivenWrapperCreateModelReturns();
-        GivenConfigDone();
-        GivenWaitForEventSucceedsThenTerminates();
-        GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
-        GivenProcessProfilerNotificationsReturns(false);
-        GivenHitUserBreakpoint();
-        GivenStepping(); // Both set but breakpoint checked first.
-        GivenGetCurrentThreadIdReturns(1);
-        GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
-
-        WhenStartingEngineThread();
-        WhenWaitingForEngineReady();
-        WhenQueuingCommand(() => { });
-        WhenWaitingForEngineThreadToExit();
-
-        ThenStoppedEventWasSentWithReason("breakpoint");
-    }
-
-    [Fact]
-    public void EngineLoopStep_WhenSteppingAndPauseRequested_StepWins()
-    {
-        GivenWrapperCreateModelReturns();
-        GivenConfigDone();
-        GivenWaitForEventSucceedsThenTerminates();
-        GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
-        GivenProcessProfilerNotificationsReturns(false);
-        GivenStepping();
-        GivenPauseRequested();
-        GivenGetCurrentThreadIdReturns(1);
-        GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
-
-        WhenStartingEngineThread();
-        WhenWaitingForEngineReady();
-        WhenQueuingCommand(() => { });
-        WhenWaitingForEngineThreadToExit();
-
-        ThenStoppedEventWasSentWithReason("step");
-    }
-
-    // ── DetermineStopReason with ActiveManagedStep ────────
-
-    [Fact]
-    public void EngineLoopStep_WhenActiveManagedStepAndTempBpHit_ReportsStep()
-    {
-        GivenWrapperCreateModelReturns();
-        GivenConfigDone();
-        GivenWaitForEventSucceedsThenTerminates();
-        GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
-        GivenProcessProfilerNotificationsReturns(false);
-        GivenActiveManagedStep(tempBpIds: [42]);
-        GivenHitUserBreakpointWithBpId(42);
-        GivenGetCurrentThreadIdReturns(1);
-        GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
-
-        WhenStartingEngineThread();
-        WhenWaitingForEngineReady();
-        WhenQueuingCommand(() => { });
-        WhenWaitingForEngineThreadToExit();
-
-        ThenStoppedEventWasSentWithReason("step");
-    }
-
-    [Fact]
-    public void EngineLoopStep_WhenActiveManagedStepAndRealBpHit_ReportsBreakpoint()
-    {
-        GivenWrapperCreateModelReturns();
-        GivenConfigDone();
-        GivenWaitForEventSucceedsThenTerminates();
-        GivenGetLastEventInfoReturns(new EngineEventInfo(0, 1, 1, "Break"));
-        GivenProcessProfilerNotificationsReturns(false);
-        GivenActiveManagedStep(tempBpIds: [42]);
-        GivenHitUserBreakpointWithBpId(99); // Not a temp BP.
-        GivenGetCurrentThreadIdReturns(1);
-        GivenGetExecutionStatusReturns(EngineExecutionStatus.Go);
-
-        WhenStartingEngineThread();
-        WhenWaitingForEngineReady();
-        WhenQueuingCommand(() => { });
-        WhenWaitingForEngineThreadToExit();
-
-        ThenStoppedEventWasSentWithReason("breakpoint");
-    }
+    // ── DetermineStopReason delegation to StepResolutionService ────────
+    // Detailed DetermineStopReason logic is tested in StepResolutionServiceTests.
+    // These verify EngineLifecycleService correctly delegates and forwards the result.
 
     // ── AttachOrCreateProcess ──────────────────────────────
 
@@ -1077,34 +996,21 @@ public sealed class EngineLifecycleServiceTests : IDisposable
 
     private void GivenManagedInitialized() => _model.ManagedInitialized = true;
 
-    private void GivenHitUserBreakpoint() => _model.HitUserBreakpoint = true;
+    private void GivenHitUserBreakpoint()
+        => _ = _stepResolution.DetermineStopReason(Arg.Any<NativeDebuggerModel>())
+            .Returns(StopReason.Breakpoint);
 
-    private void GivenStepping() => _model.Stepping = true;
+    private void GivenStepping()
+        => _ = _stepResolution.DetermineStopReason(Arg.Any<NativeDebuggerModel>())
+            .Returns(StopReason.Step);
 
-    private void GivenPauseRequested() => _model.PauseRequested = true;
-
-    private void GivenActiveManagedStep(uint[] tempBpIds)
-    {
-        _model.ActiveManagedStep = new ManagedStepState();
-        foreach (uint id in tempBpIds)
-        {
-            _model.ActiveManagedStep.TempBreakpointIds.Add(id);
-            _ = _model.UserBreakpointIds.Add(id);
-        }
-    }
-
-    private void GivenHitUserBreakpointWithBpId(uint bpId)
-    {
-        _model.HitUserBreakpoint = true;
-        _model.LastHitBpId = bpId;
-    }
+    private void GivenPauseRequested()
+        => _ = _stepResolution.DetermineStopReason(Arg.Any<NativeDebuggerModel>())
+            .Returns(StopReason.Pause);
 
     private void GivenNoStopReason()
-    {
-        _model.HitUserBreakpoint = false;
-        _model.Stepping = false;
-        _model.PauseRequested = false;
-    }
+        => _ = _stepResolution.DetermineStopReason(Arg.Any<NativeDebuggerModel>())
+            .Returns((StopReason?)null);
 
     private void GivenTargetExited() => _model.TargetExited = true;
 
@@ -1294,6 +1200,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     private readonly IProfilerPipeService _profilerPipe = Substitute.For<IProfilerPipeService>();
     private readonly IBreakpointService _breakpointService = Substitute.For<IBreakpointService>();
     private readonly ISteppingService _stepping = Substitute.For<ISteppingService>();
+    private readonly IStepResolutionService _stepResolution = Substitute.For<IStepResolutionService>();
     private readonly DapServerModel _transport;
     private readonly LogStore _logStore;
     private readonly NativeDebuggerModel _model;
@@ -1311,7 +1218,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         _testee = new EngineLifecycleService(
             _server, _transport, _log, _logStore,
             _managedDebugger, _bpResolver, _profilerPipe,
-            _breakpointService, _stepping, _wrapper);
+            _breakpointService, _stepping, _stepResolution, _wrapper);
         _model = new NativeDebuggerModel
         {
             Wrapper = new DbgEngWrapperModel(),

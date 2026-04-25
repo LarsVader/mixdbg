@@ -20,6 +20,7 @@ public static class ServiceCollectionExtensions
         _ = services.AddSingleton<IBreakpointService, BreakpointService>();
         _ = services.AddSingleton<IEngineQueryService, EngineQueryService>();
         _ = services.AddSingleton<ISteppingService, SteppingService>();
+        _ = services.AddSingleton<IStepResolutionService, StepResolutionService>();
         _ = services.AddSingleton<IManagedBreakpointService, ManagedBreakpointService>();
         _ = services.AddSingleton<IManagedBreakpointResolver, ManagedBreakpointResolverService>();
         _ = services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();

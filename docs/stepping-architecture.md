@@ -13,8 +13,8 @@ Full picture of how managed breakpoints and stepping interact in MixDbg (post-M4
 Every time `WaitForEvent` returns (target stopped), the loop processes in this order:
 
 1. **ProcessProfilerNotifications** (line ~170) — drains the ENTER/LEAVE/JIT queue. ENTER installs HW BPs (count 0→1) and ACKs. LEAVE removes HW BPs (count→0). JIT matches deferred BPs. Returns true if stop was bookkeeping-only → **auto-continue Go**.
-2. **DetermineStopReason** (line ~176) — checks `ActiveManagedStep`, `HitUserBreakpoint`, `Stepping`, `PauseRequested`. For managed step temp BPs, compares RSP to `OriginStackPointer` (depth check).
-3. **CheckStepLanding** (line ~183) — for native steps: depth check (RSP < origin → re-step), same-line (re-step), closing brace / sourceless (auto-step-out).
+2. **DetermineStopReason** (`StepResolutionService`) — checks `ActiveManagedStep`, `HitUserBreakpoint`, `Stepping`, `PauseRequested`. For managed step temp BPs, compares RSP to `OriginStackPointer` (depth check). Returns a `StopReason` enum (Step, Breakpoint, Pause) or null for auto-continue.
+3. **CheckStepLanding** (`StepResolutionService`) — for native steps: depth check (RSP < origin → re-step), same-line (re-step), closing brace / sourceless (auto-step-out).
 4. **Clear StepOriginStackPointer** (line ~201) — after a step actually stops for the user.
 5. **System stop** (line ~206) — if no reason, drain commands and **auto-continue Go**.
 
@@ -137,7 +137,8 @@ After a native step, in order:
 
 ## File Reference
 
-- `src/Services/EngineLifecycleService.cs` — event loop, DetermineStopReason, CompleteManagedStep, CheckStepLanding, RemoveStepIntoOneShotSites, ProcessCommandsUntilResume
+- `src/Services/EngineLifecycleService.cs` — event loop, ProcessCommandsUntilResume
+- `src/Services/StepResolutionService.cs` — DetermineStopReason (returns StopReason enum), CheckStepLanding, CompleteManagedStep, RemoveStepIntoOneShotSites
 - `src/Services/SteppingService.cs` — ExecuteContinueOnEngine, ExecuteStepOnEngine, TryManagedStepOver, TryManagedStepInto, TrySetStepIntoBpViaProfiler, SetManagedStepBreakpoint, CancelActiveManagedStep, ExecuteStepOutOnEngine, FindStepOutTarget
 - `src/Services/ManagedBreakpointService.cs` — SetManagedBreakpoints, BindResolvedMethod, SetManagedCodeBreakpoint, ClearManagedBreakpointsForFile
 - `src/Services/ManagedBreakpointResolverService.cs` — ProcessProfilerNotifications, FoldJitIntoPlans

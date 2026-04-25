@@ -19,6 +19,7 @@ internal sealed class EngineLifecycleService(
     IProfilerPipeService _profilerPipe,
     IBreakpointService _breakpointService,
     ISteppingService _stepping,
+    IStepResolutionService _stepResolution,
     IDbgEngWrapper _wrapper) : IEngineLifecycleService
 {
     public NativeDebuggerModel CreateModel()
@@ -172,14 +173,14 @@ internal sealed class EngineLifecycleService(
             _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
             return true;
         }
-        if (DetermineStopReason(model) is string reason)
+        if (_stepResolution.DetermineStopReason(model) is StopReason reason)
         {
-            // After a native step, if the IP has no useful source (e.g. closing brace,
-            // same line, sourceless JIT thunk), auto-continue instead of stopping.
-            if (reason == "step" && model.ActiveManagedStep == null
+            // After a native step, if the instruction pointer has no useful source
+            // (e.g. closing brace, same line, sourceless JIT thunk), auto-continue.
+            if (reason == StopReason.Step && model.ActiveManagedStep == null
                 && model.StepOriginLocation != null)
             {
-                StepAutoAction action = CheckStepLanding(model);
+                StepAutoAction action = _stepResolution.CheckStepLanding(model);
                 if (action == StepAutoAction.ReStep)
                 {
                     _log.LogInfo(_logStore, "Step on same line — re-stepping");
@@ -219,271 +220,19 @@ internal sealed class EngineLifecycleService(
         _log.LogVerbose(_logStore, $"State: configDone={model.ConfigDone} hitUserBp={model.HitUserBreakpoint} stepping={model.Stepping} pause={model.PauseRequested}");
     }
 
-    private void SendStopDapResponseAndProcessCommands(NativeDebuggerModel model, DbgEngWrapperModel dbgEngWrapperModel, string reason)
+    private void SendStopDapResponseAndProcessCommands(NativeDebuggerModel model, DbgEngWrapperModel dbgEngWrapperModel, StopReason reason)
     {
         uint threadId = _wrapper.GetCurrentThreadId(dbgEngWrapperModel);
-        _log.LogInfo(_logStore, $"User stop: reason={reason} threadId={threadId}");
+        string dapReason = reason.ToDapString();
+        _log.LogInfo(_logStore, $"User stop: reason={dapReason} threadId={threadId}");
         _server.SendEvent(_transport, "stopped", new StoppedEventBody
         {
-            Reason = reason,
+            Reason = dapReason,
             ThreadId = (int)threadId,
             AllThreadsStopped = true,
         });
         ProcessCommandsUntilResume(model);
     }
-
-    private string? DetermineStopReason(NativeDebuggerModel model)
-    {
-        // Check for active managed step (temp BP approach for step-over/out).
-        if (model.ActiveManagedStep != null)
-        {
-            if (model.HitUserBreakpoint)
-            {
-                bool isTempBp = model.ActiveManagedStep.TempBreakpointIds.Contains(model.LastHitBpId);
-
-                // Temp BP fired inside a recursive call (deeper stack than step origin).
-                // Suppress the hit — the step should complete at the original depth.
-                if (isTempBp && model.ActiveManagedStep.OriginStackPointer > 0)
-                {
-                    NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 1);
-                    if (frames.Length > 0 && frames[0].StackOffset < model.ActiveManagedStep.OriginStackPointer)
-                    {
-                        _log.LogInfo(_logStore,
-                            $"Managed step temp BP suppressed: RSP 0x{frames[0].StackOffset:X} < origin 0x{model.ActiveManagedStep.OriginStackPointer:X}");
-                        model.HitUserBreakpoint = false;
-                        return null;
-                    }
-                }
-                else if (isTempBp)
-                {
-                    _log.LogInfo(_logStore,
-                        $"DetermineStop: temp BP id={model.LastHitBpId} originDepth=0 (depth check skipped)");
-                }
-                else
-                {
-                    _log.LogInfo(_logStore,
-                        $"DetermineStop: non-temp BP id={model.LastHitBpId} during active step");
-                }
-
-                // Also check for step-into one-shot BP: an HW BP installed by the
-                // profiler ENTER handler for a step-into plan site (IsStepIntoOneShot).
-                bool isStepIntoEnterBp = !isTempBp && IsStepIntoOneShotHit(model);
-                model.HitUserBreakpoint = false;
-
-                // Remove any step-into one-shot sites from their plans.
-                RemoveStepIntoOneShotSites(model);
-                CompleteManagedStep(model);
-
-                if (isTempBp || isStepIntoEnterBp)
-                    return "step";
-
-                // Real user BP hit during managed step — cancel step, report breakpoint.
-                return "breakpoint";
-            }
-
-            // Non-BP stop during managed step (e.g. exception) — cancel step.
-            if (model.Stepping || model.PauseRequested)
-            {
-                CompleteManagedStep(model);
-                // Fall through to normal handling below.
-            }
-        }
-
-        string? reason = null;
-        if (model.HitUserBreakpoint)
-        {
-            // A method-lifetime HW BP fired during a native step-over into a recursive
-            // call — the stack is deeper than when the step started. Suppress the hit
-            // and re-issue the step so dbgeng continues stepping at the correct depth.
-            if (model.Stepping && model.StepOriginStackPointer > 0)
-            {
-                NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 1);
-                if (frames.Length > 0 && frames[0].StackOffset < model.StepOriginStackPointer)
-                {
-                    _log.LogInfo(_logStore,
-                        $"Native step BP suppressed: RSP 0x{frames[0].StackOffset:X} < origin 0x{model.StepOriginStackPointer:X}");
-                    model.HitUserBreakpoint = false;
-                    _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.StepOver);
-                    return null;
-                }
-            }
-            model.HitUserBreakpoint = false;
-            reason = "breakpoint";
-        }
-        else if (model.Stepping)
-        {
-            model.Stepping = false;
-            reason = "step";
-        }
-        else if (model.PauseRequested)
-        {
-            model.PauseRequested = false;
-            reason = "pause";
-        }
-
-        return reason;
-    }
-
-    /// <summary>
-    /// Returns true if any method plan has an un-consumed step-into one-shot site
-    /// whose address equals <see cref="NativeDebuggerModel.ManagedBreakpointAddresses"/>
-    /// — i.e. the HW BP that just fired was a step-into BP installed on ENTER.
-    /// </summary>
-    private static bool IsStepIntoOneShotHit(NativeDebuggerModel model)
-    {
-        foreach (ManagedMethodBreakpointPlan plan in model.ManagedBpPlans.Values)
-        {
-            if (plan.Sites.Exists(s => s.IsStepIntoOneShot))
-                return true;
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Removes one-shot step-into sites from their plans, including their installed
-    /// HW BPs so they don't fire during subsequent step-over operations.
-    /// </summary>
-    private void RemoveStepIntoOneShotSites(NativeDebuggerModel model)
-    {
-        List<(int Token, string Assembly)> emptyKeys = [];
-        foreach (KeyValuePair<(int Token, string Assembly), ManagedMethodBreakpointPlan> kv in model.ManagedBpPlans)
-        {
-            List<MethodBreakpointSite> oneShotSites = kv.Value.Sites.FindAll(s => s.IsStepIntoOneShot);
-            if (oneShotSites.Count > 0)
-            {
-                // Remove the HW BPs that were installed for these one-shot sites.
-                _ = model.ActiveMethodBreakpoints.TryGetValue(kv.Key, out ActiveMethodBreakpoint? active);
-                foreach (MethodBreakpointSite site in oneShotSites)
-                {
-                    string siteKey = $"{site.FilePath}:{site.Line}";
-                    if (model.BreakpointIds.TryGetValue(siteKey, out uint bpId))
-                    {
-                        _ = _wrapper.RemoveBreakpoint(model.Wrapper, bpId);
-                        _ = model.UserBreakpointIds.Remove(bpId);
-                        _ = model.ManagedBreakpointIds.Remove(bpId);
-                        _ = model.BreakpointIds.Remove(siteKey);
-                        _ = active?.InstalledBpIds.Remove(bpId);
-                    }
-                    // Clean up address tracking via JIT mapping. Keep ManagedBreakpointSources
-                    // because the user may request a stack trace after the step completes.
-                    if (model.JitMethodMappings.TryGetValue(kv.Key, out JitMethodMapping? mapping))
-                    {
-                        ulong addr = mapping.GetNativeAddress(site.ILOffset);
-                        _ = model.ManagedBreakpointAddresses.Remove(addr);
-                        _ = (active?.InstalledAddresses.Remove(addr));
-                    }
-                }
-                _ = kv.Value.Sites.RemoveAll(s => s.IsStepIntoOneShot);
-            }
-            if (kv.Value.Sites.Count == 0)
-                emptyKeys.Add(kv.Key);
-        }
-        foreach ((int Token, string Assembly) k in emptyKeys)
-            _ = model.ManagedBpPlans.Remove(k);
-    }
-
-    /// <summary>
-    /// Completes a managed step by removing temp breakpoints and clearing state.
-    /// </summary>
-    private void CompleteManagedStep(NativeDebuggerModel model)
-    {
-        if (model.ActiveManagedStep == null)
-            return;
-
-        foreach (uint bpId in model.ActiveManagedStep.TempBreakpointIds)
-        {
-            _ = _wrapper.RemoveBreakpoint(model.Wrapper, bpId);
-            _ = model.UserBreakpointIds.Remove(bpId);
-        }
-
-        _log.LogInfo(_logStore,
-            $"Managed step complete: removed {model.ActiveManagedStep.TempBreakpointIds.Count} temp BPs");
-        model.ActiveManagedStep = null;
-        model.StepOriginLocation = null;
-    }
-
-    /// <summary>
-    /// Checks whether the current IP is on a source line that has no useful code —
-    /// e.g. a closing brace, a sourceless JIT thunk, or a frame with no source at all.
-    /// Used to auto-step-out after a native step lands on a trivial line.
-    /// </summary>
-    /// <summary>
-    /// After a native step completes, checks whether the current IP is on a useful
-    /// source line. Returns <see cref="StepAutoAction.None"/> if normal,
-    /// <see cref="StepAutoAction.ReStep"/> if on the same line (no progress),
-    /// or <see cref="StepAutoAction.StepOut"/> if on a closing brace or sourceless frame.
-    /// </summary>
-    private StepAutoAction CheckStepLanding(NativeDebuggerModel model)
-    {
-        NativeStackFrame[] frames = _wrapper.GetStackTrace(model.Wrapper, 1);
-        if (frames.Length == 0)
-            return StepAutoAction.None;
-
-        // Step-over must never land deeper. If RSP is lower than origin, the native
-        // step entered a called function — re-step to continue past it.
-        if (model.StepOriginStackPointer != 0
-            && frames[0].StackOffset < model.StepOriginStackPointer)
-        {
-            _log.LogInfo(_logStore,
-                $"CheckStepLanding: deeper stack (RSP 0x{frames[0].StackOffset:X} < origin 0x{model.StepOriginStackPointer:X}) → ReStep");
-            return StepAutoAction.ReStep;
-        }
-
-        ulong ip = frames[0].InstructionOffset;
-        (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(model.Wrapper, ip);
-
-        // No source at all — sourceless (JIT thunk, etc.).
-        if (lineInfo == null || lineInfo.Value.Line == 0)
-        {
-            _log.LogVerbose(_logStore, $"CheckStepLanding: ip=0x{ip:X} no source → StepOut");
-            return StepAutoAction.StepOut;
-        }
-
-        string file = lineInfo.Value.File;
-        int line = (int)lineInfo.Value.Line;
-
-        // Same source line as before the step — no progress (e.g. multi-instruction
-        // statement like "return a + b;"). Re-step to continue advancing.
-        if (model.StepOriginLocation is var (origFile, origLine)
-            && origLine == line
-            && string.Equals(origFile, file, StringComparison.OrdinalIgnoreCase))
-        {
-            _log.LogVerbose(_logStore, $"CheckStepLanding: same line {line} → ReStep");
-            return StepAutoAction.ReStep;
-        }
-
-        // Check if this is a closing brace — no meaningful code, step out.
-        try
-        {
-            if (!model.SourceFileCache.TryGetValue(file, out string[]? lines))
-            {
-                if (File.Exists(file))
-                {
-                    lines = File.ReadAllLines(file);
-                    model.SourceFileCache[file] = lines;
-                }
-            }
-
-            if (lines != null)
-            {
-                int lineIndex = line - 1;
-                if (lineIndex >= 0 && lineIndex < lines.Length)
-                {
-                    string trimmed = lines[lineIndex].Trim();
-                    if (trimmed == "}" || trimmed == "};")
-                    {
-                        _log.LogVerbose(_logStore, $"CheckStepLanding: closing brace at {file}:{line} → ReStep");
-                        return StepAutoAction.ReStep;
-                    }
-                }
-            }
-        }
-        catch { }
-
-        return StepAutoAction.None;
-    }
-
-    private enum StepAutoAction { None, ReStep, StepOut }
 
     private void AttachOrCreateProcess(NativeDebuggerModel model)
     {
@@ -564,22 +313,23 @@ internal sealed class EngineLifecycleService(
             if (model.ManagedStepIntoCompleted)
             {
                 model.ManagedStepIntoCompleted = false;
-                string reason;
+                StopReason reason;
                 if (model.HitUserBreakpoint)
                 {
                     model.HitUserBreakpoint = false;
-                    reason = "breakpoint";
+                    reason = StopReason.Breakpoint;
                 }
                 else
                 {
                     model.Stepping = false;
-                    reason = "step";
+                    reason = StopReason.Step;
                 }
                 uint threadId = _wrapper.GetCurrentThreadId(model.Wrapper);
-                _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: step-into done, reason={reason} threadId={threadId}");
+                string dapReason = reason.ToDapString();
+                _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: step-into done, reason={dapReason} threadId={threadId}");
                 _server.SendEvent(_transport, "stopped", new StoppedEventBody
                 {
-                    Reason = reason,
+                    Reason = dapReason,
                     ThreadId = (int)threadId,
                     AllThreadsStopped = true,
                 });
@@ -598,7 +348,7 @@ internal sealed class EngineLifecycleService(
                 _log.LogInfo(_logStore, $"ProcessCommandsUntilResume: step-out (gu) done, threadId={threadId}");
                 _server.SendEvent(_transport, "stopped", new StoppedEventBody
                 {
-                    Reason = "step",
+                    Reason = StopReason.Step.ToDapString(),
                     ThreadId = (int)threadId,
                     AllThreadsStopped = true,
                 });
