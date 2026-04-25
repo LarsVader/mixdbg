@@ -39,12 +39,25 @@ internal sealed class ManagedBreakpointResolverService(
         {
             try
             {
-                // Use the DAC (XCLRDataProcess) to find the real JIT native entry point.
-                ulong nativeAddress = _corDebug.ResolveNativeEntryViaXclrData(model.CorWrapper, deferred.MethodToken, deferred.AssemblyName);
-                if (nativeAddress == 0)
+                // Use the DAC (XCLRDataProcess) to find the JIT native entry point.
+                ulong entryAddress = _corDebug.ResolveNativeEntryViaXclrData(model.CorWrapper, deferred.MethodToken, deferred.AssemblyName);
+                if (entryAddress == 0)
                     continue;
 
-                _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{nativeAddress:X}");
+                // If IL-to-native mapping is available, resolve the exact native address
+                // for the target IL offset instead of using the method entry point.
+                ulong nativeAddress = entryAddress;
+                (int Token, string Assembly) mapKey = (deferred.MethodToken, deferred.AssemblyName!);
+                if (deferred.ILOffset > 0 &&
+                    model.JitMethodMappings.TryGetValue(mapKey, out JitMethodMapping? mapping))
+                {
+                    nativeAddress = mapping.GetNativeAddress(deferred.ILOffset);
+                    _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{entryAddress:X} -> IL 0x{deferred.ILOffset:X} at 0x{nativeAddress:X}");
+                }
+                else
+                {
+                    _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{entryAddress:X} (no IL map, using entry)");
+                }
 
                 uint? hwBpId = _bpService.SetManagedCodeBreakpoint(model, nativeAddress, deferred.FilePath, deferred.Line);
                 if (hwBpId != null)

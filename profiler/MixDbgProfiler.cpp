@@ -251,8 +251,14 @@ void MixDbgProfiler::CmdReaderLoop() {
                     LeaveCriticalSection(&m_watchLock);
 
                     // Ensure enter/leave hooks are set up (may be first watch token
-                    // if no pre-launch BPs existed).
-                    if (!m_hooksActive && m_pInfo && g_pProfiler) {
+                    // if no pre-launch BPs existed — e.g. late-loaded assemblies).
+                    if (!m_hooksActive && m_pInfo) {
+                        // First dynamic watch: set up global profiler pointer and
+                        // FunctionIDMapper so the CLR consults us for every new JIT.
+                        if (!g_pProfiler) {
+                            g_pProfiler = this;
+                            m_pInfo->SetFunctionIDMapper((void*)&MixDbgFunctionIDMapper);
+                        }
                         HRESULT hr = m_pInfo->SetEnterLeaveFunctionHooks(
                             (void*)FunctionEnterNaked, (void*)FunctionLeaveNaked, (void*)FunctionTailcallNaked);
                         if (SUCCEEDED(hr)) {

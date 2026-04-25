@@ -209,8 +209,11 @@ internal sealed class ProfilerPipeService(
                 }
                 if (line.StartsWith("JIT:"))
                 {
-                    ParseJitNotification(model, line[4..]);
+                    // Set flag before parsing — ParseJitNotification may call
+                    // RequestInterrupt which wakes the engine thread. The engine
+                    // must see ProfilerHooksActive=true to skip the DAC fallback.
                     model.ProfilerHooksActive = true;
+                    ParseJitNotification(model, line[4..]);
                     _ = Interlocked.Increment(ref model.ProfilerLinesProcessed);
                     continue;
                 }

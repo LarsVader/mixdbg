@@ -162,10 +162,9 @@ internal sealed class EngineLifecycleService(
         if (model.ClrLoaded && !model.ManagedInitialized)
             _managedDebugger.TryInitializeManaged(model);
 
-        // Process JIT notifications and resolve deferred managed breakpoints.
-        _bpResolver.ProcessPendingManagedBreakpoints(model);
-
-        // Drain profiler notifications (ENTER installs HW BPs, LEAVE removes them).
+        // Drain profiler notifications first (ENTER installs HW BPs at exact IL
+        // offsets, LEAVE removes them). Must run before DAC fallback so the proper
+        // JIT→plan→ENTER path takes precedence over entry-point-only resolution.
         // Returns true only when this was a bookkeeping-only stop — auto-resume.
         if (_bpResolver.ProcessProfilerNotifications(model))
         {
@@ -173,6 +172,10 @@ internal sealed class EngineLifecycleService(
             _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
             return true;
         }
+
+        // DAC fallback for deferred BPs not yet resolved by profiler notifications.
+        _bpResolver.ProcessPendingManagedBreakpoints(model);
+
         StopReason reason = _stepResolution.DetermineStopReason(model);
         if (reason != StopReason.Continue)
         {
