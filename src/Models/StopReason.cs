@@ -7,6 +7,9 @@ namespace MixDbg.Models;
 /// </summary>
 public enum StopReason
 {
+    /// <summary>No user-visible stop — auto-continue execution.</summary>
+    Continue,
+
     /// <summary>A user breakpoint was hit.</summary>
     Breakpoint,
 

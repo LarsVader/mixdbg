@@ -173,7 +173,8 @@ internal sealed class EngineLifecycleService(
             _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
             return true;
         }
-        if (_stepResolution.DetermineStopReason(model) is StopReason reason)
+        StopReason reason = _stepResolution.DetermineStopReason(model);
+        if (reason != StopReason.Continue)
         {
             // After a native step, if the instruction pointer has no useful source
             // (e.g. closing brace, same line, sourceless JIT thunk), auto-continue.
@@ -206,9 +207,13 @@ internal sealed class EngineLifecycleService(
         }
 
         DrainPendingCommands(model);
-        _log.LogVerbose(_logStore, "System stop — auto-continuing");
+        // If Stepping is still set, a BP was suppressed at depth — re-step instead of Go.
+        EngineExecutionStatus resumeStatus = model.Stepping
+            ? EngineExecutionStatus.StepOver
+            : EngineExecutionStatus.Go;
+        _log.LogVerbose(_logStore, $"System stop — auto-continuing with {resumeStatus}");
         model.Stopped.Reset();
-        _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.Go);
+        _wrapper.SetExecutionStatus(dbgEngWrapperModel, resumeStatus);
         return true;
     }
 

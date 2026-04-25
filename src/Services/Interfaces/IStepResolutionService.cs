@@ -15,10 +15,10 @@ public interface IStepResolutionService
     /// <see cref="NativeDebuggerModel.HitUserBreakpoint"/>,
     /// <see cref="NativeDebuggerModel.Stepping"/>,
     /// <see cref="NativeDebuggerModel.PauseRequested"/>) and returns the reason
-    /// the debugger should report to DAP, or <c>null</c> if this is a system
-    /// stop that should be auto-continued.
+    /// the debugger should report to DAP, or <see cref="StopReason.Continue"/>
+    /// if this is a system stop that should be auto-continued.
     /// </summary>
-    StopReason? DetermineStopReason(NativeDebuggerModel model);
+    StopReason DetermineStopReason(NativeDebuggerModel model);
 
     /// <summary>
     /// After a native step completes, checks whether the current instruction pointer is on a useful

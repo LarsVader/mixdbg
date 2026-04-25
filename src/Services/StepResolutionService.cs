@@ -15,13 +15,17 @@ internal sealed class StepResolutionService(
     IDbgEngWrapper _wrapper) : IStepResolutionService
 {
     /// <inheritdoc />
-    public StopReason? DetermineStopReason(NativeDebuggerModel model)
+    public StopReason DetermineStopReason(NativeDebuggerModel model)
     {
         if (model.ActiveManagedStep != null)
         {
-            (bool handled, StopReason? result) = ResolveManagedStep(model);
-            if (handled)
-                return result;
+            bool hadBpHit = model.HitUserBreakpoint;
+            StopReason managedResult = ResolveManagedStep(model);
+            // If the managed step path consumed the BP hit (suppressed at depth),
+            // return Continue directly — don't fall through to simple stop resolution
+            // which would misread the still-set Stepping flag.
+            if (managedResult != StopReason.Continue || hadBpHit)
+                return managedResult;
         }
 
         return ResolveSimpleStopReason(model);
@@ -68,41 +72,41 @@ internal sealed class StepResolutionService(
             $"Managed step complete: removed {model.ActiveManagedStep.TempBreakpointIds.Count} temp BPs");
         model.ActiveManagedStep = null;
         model.StepOriginLocation = null;
+        // Clear stale LastHitBpId so the next step's LastContinuedBpId doesn't match
+        // a recycled dbgeng BP ID and falsely suppress it.
+        model.LastHitBpId = uint.MaxValue;
     }
 
     /// <summary>
     /// Resolves the stop reason when an active managed step is in progress.
-    /// Returns <c>(true, reason)</c> if fully handled (including suppression where reason is null),
-    /// or <c>(false, null)</c> to fall through to simple stop-reason handling.
+    /// Returns the resolved <see cref="StopReason"/>, or <see cref="StopReason.Continue"/>
+    /// to fall through to simple stop-reason handling.
     /// </summary>
-    private (bool Handled, StopReason? Result) ResolveManagedStep(NativeDebuggerModel model)
+    private StopReason ResolveManagedStep(NativeDebuggerModel model)
     {
         if (model.HitUserBreakpoint)
-        {
-            StopReason? result = ResolveManagedStepBreakpointHit(model);
-            return (true, result);
-        }
+            return ResolveManagedStepBreakpointHit(model);
 
         // Non-BP stop during managed step (e.g. exception) — cancel step, fall through.
         if (model.Stepping || model.PauseRequested)
             CompleteManagedStep(model);
 
-        return (false, null);
+        return StopReason.Continue;
     }
 
     /// <summary>
     /// Handles a breakpoint hit during an active managed step. Determines whether the
     /// hit is a temp BP (step completion), a step-into one-shot, or a real user BP.
-    /// Returns <c>null</c> when the temp BP fires at a recursive depth and should be suppressed.
+    /// Returns <see cref="StopReason.Continue"/> when the temp BP fires at a recursive depth and should be suppressed.
     /// </summary>
-    private StopReason? ResolveManagedStepBreakpointHit(NativeDebuggerModel model)
+    private StopReason ResolveManagedStepBreakpointHit(NativeDebuggerModel model)
     {
         bool isTempBp = model.ActiveManagedStep!.TempBreakpointIds.Contains(model.LastHitBpId);
 
         if (isTempBp && ShouldSuppressTempBpAtDepth(model))
         {
             model.HitUserBreakpoint = false;
-            return null;
+            return StopReason.Continue;
         }
 
         LogManagedStepBpHit(model, isTempBp);
@@ -149,7 +153,7 @@ internal sealed class StepResolutionService(
     /// Resolves a simple (non-managed-step) stop reason from model flags.
     /// Priority: breakpoint > step > pause > null (auto-continue).
     /// </summary>
-    private StopReason? ResolveSimpleStopReason(NativeDebuggerModel model)
+    private StopReason ResolveSimpleStopReason(NativeDebuggerModel model)
     {
         if (model.HitUserBreakpoint)
             return ResolveBreakpointDuringStep(model);
@@ -166,14 +170,14 @@ internal sealed class StepResolutionService(
             return StopReason.Pause;
         }
 
-        return null;
+        return StopReason.Continue;
     }
 
     /// <summary>
     /// Handles a user breakpoint hit, with special suppression logic when a native
     /// step-over lands inside a recursive call (deeper stack than step origin).
     /// </summary>
-    private StopReason? ResolveBreakpointDuringStep(NativeDebuggerModel model)
+    private StopReason ResolveBreakpointDuringStep(NativeDebuggerModel model)
     {
         if (model.Stepping && model.StepOriginStackPointer > 0)
         {
@@ -183,12 +187,13 @@ internal sealed class StepResolutionService(
                 _log.LogInfo(_logStore,
                     $"Native step BP suppressed: RSP 0x{frames[0].StackOffset:X} < origin 0x{model.StepOriginStackPointer:X}");
                 model.HitUserBreakpoint = false;
-                _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.StepOver);
-                return null;
+                // Stepping stays true — caller uses it to re-step instead of Go.
+                return StopReason.Continue;
             }
         }
 
         model.HitUserBreakpoint = false;
+        model.Stepping = false;
         return StopReason.Breakpoint;
     }
 
@@ -247,15 +252,22 @@ internal sealed class StepResolutionService(
     }
 
     /// <summary>
-    /// Returns true if any method plan has an un-consumed step-into one-shot site,
-    /// i.e. the hardware breakpoint that just fired was a step-into breakpoint installed on ENTER.
+    /// Returns true if the breakpoint that just fired (<see cref="NativeDebuggerModel.LastHitBpId"/>)
+    /// matches an installed one-shot step-into site. Only checks sites whose installed hardware
+    /// breakpoint ID equals the last hit ID, preventing misclassification of unrelated user BPs.
     /// </summary>
     private static bool IsStepIntoOneShotHit(NativeDebuggerModel model)
     {
         foreach (ManagedMethodBreakpointPlan plan in model.ManagedBpPlans.Values)
         {
-            if (plan.Sites.Exists(s => s.IsStepIntoOneShot))
-                return true;
+            foreach (MethodBreakpointSite site in plan.Sites)
+            {
+                if (!site.IsStepIntoOneShot)
+                    continue;
+                string siteKey = $"{site.FilePath}:{site.Line}";
+                if (model.BreakpointIds.TryGetValue(siteKey, out uint bpId) && bpId == model.LastHitBpId)
+                    return true;
+            }
         }
         return false;
     }

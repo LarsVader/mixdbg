@@ -1010,7 +1010,7 @@ public sealed class EngineLifecycleServiceTests : IDisposable
 
     private void GivenNoStopReason()
         => _ = _stepResolution.DetermineStopReason(Arg.Any<NativeDebuggerModel>())
-            .Returns((StopReason?)null);
+            .Returns(StopReason.Continue);
 
     private void GivenTargetExited() => _model.TargetExited = true;
 

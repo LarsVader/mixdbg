@@ -45,7 +45,7 @@ public sealed class StepResolutionServiceTests
     {
         WhenDeterminingStopReason();
 
-        ThenStopReasonIsNull();
+        ThenStopReasonIsContinue();
     }
 
     // ── DetermineStopReason: priority ─────────────────────
@@ -97,6 +97,19 @@ public sealed class StepResolutionServiceTests
     }
 
     [Fact]
+    public void DetermineStopReason_WhenRealBpHitButOneShotExistsForDifferentMethod_ReturnsBreakpoint()
+    {
+        GivenActiveManagedStep(tempBpIds: [42]);
+        GivenHitUserBreakpointWithBpId(99); // Real user BP, not temp.
+        // A one-shot site exists for a different method — should NOT match.
+        GivenOneShotSiteForDifferentMethod(installedBpId: 77);
+
+        WhenDeterminingStopReason();
+
+        ThenStopReasonIs(StopReason.Breakpoint);
+    }
+
+    [Fact]
     public void DetermineStopReason_WhenTempBpAtDeeperStack_SuppressesAndReturnsNull()
     {
         GivenActiveManagedStep(tempBpIds: [42], originStackPointer: 0x1000);
@@ -105,7 +118,7 @@ public sealed class StepResolutionServiceTests
 
         WhenDeterminingStopReason();
 
-        ThenStopReasonIsNull();
+        ThenStopReasonIsContinue();
         ThenHitUserBreakpointIsCleared();
     }
 
@@ -145,9 +158,10 @@ public sealed class StepResolutionServiceTests
 
         WhenDeterminingStopReason();
 
-        ThenStopReasonIsNull();
+        ThenStopReasonIsContinue();
         ThenHitUserBreakpointIsCleared();
-        ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus.StepOver);
+        // Stepping stays true so the caller knows to re-step instead of Go.
+        Assert.True(_model.Stepping);
     }
 
     // ── DetermineStopReason: clears flags ─────────────────
@@ -170,6 +184,18 @@ public sealed class StepResolutionServiceTests
         WhenDeterminingStopReason();
 
         ThenPauseRequestedIsCleared();
+    }
+
+    [Fact]
+    public void DetermineStopReason_WhenBpHitDuringStep_ClearsStepping()
+    {
+        GivenHitUserBreakpoint();
+        GivenStepping();
+
+        WhenDeterminingStopReason();
+
+        ThenStopReasonIs(StopReason.Breakpoint);
+        ThenSteppingIsCleared();
     }
 
     [Fact]
@@ -297,6 +323,25 @@ public sealed class StepResolutionServiceTests
         }
     }
 
+    private void GivenOneShotSiteForDifferentMethod(uint installedBpId)
+    {
+        ManagedMethodBreakpointPlan plan = new()
+        {
+            MethodToken = 0x06000099,
+            AssemblyName = "OtherAssembly",
+        };
+        plan.Sites.Add(new MethodBreakpointSite
+        {
+            BpId = 1,
+            ILOffset = 0,
+            FilePath = "other.cs",
+            Line = 10,
+            IsStepIntoOneShot = true,
+        });
+        _model.ManagedBpPlans[(0x06000099, "OtherAssembly")] = plan;
+        _model.BreakpointIds["other.cs:10"] = installedBpId;
+    }
+
     private void GivenStepOriginStackPointer(ulong rsp) => _model.StepOriginStackPointer = rsp;
 
     private void GivenStepOriginLocation(string file, int line) => _model.StepOriginLocation = (file, line);
@@ -333,7 +378,7 @@ public sealed class StepResolutionServiceTests
 
     private void ThenStopReasonIs(StopReason expected) => Assert.Equal(expected, _stopReasonResult);
 
-    private void ThenStopReasonIsNull() => Assert.Null(_stopReasonResult);
+    private void ThenStopReasonIsContinue() => Assert.Equal(StopReason.Continue, _stopReasonResult);
 
     private void ThenStepAutoActionIs(StepAutoAction expected) => Assert.Equal(expected, _stepAutoActionResult);
 
@@ -366,7 +411,7 @@ public sealed class StepResolutionServiceTests
     private readonly NativeDebuggerModel _model;
     private readonly StepResolutionService _testee;
 
-    private StopReason? _stopReasonResult;
+    private StopReason _stopReasonResult;
     private StepAutoAction _stepAutoActionResult;
 
     public StepResolutionServiceTests()
