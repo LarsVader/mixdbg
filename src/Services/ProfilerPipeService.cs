@@ -204,34 +204,41 @@ internal sealed class ProfilerPipeService(
                 if (line.StartsWith("READY:"))
                 {
                     _log.LogInfo(_logStore, $"ProfilerReader: profiler ready ({line[6..]})");
+                    _ = Interlocked.Increment(ref model.ProfilerLinesProcessed);
                     continue;
                 }
                 if (line.StartsWith("JIT:"))
                 {
                     ParseJitNotification(model, line[4..]);
                     model.ProfilerHooksActive = true;
+                    _ = Interlocked.Increment(ref model.ProfilerLinesProcessed);
                     continue;
                 }
                 if (line.StartsWith("ENTER:"))
                 {
                     ParseEnterNotification(model, line[6..].Split(':'));
+                    _ = Interlocked.Increment(ref model.ProfilerLinesProcessed);
                     continue;
                 }
                 if (line.StartsWith("LEAVE:"))
                 {
                     ParseLeaveOrTailcallNotification(model, line[6..].Split(':'), isTailcall: false);
+                    _ = Interlocked.Increment(ref model.ProfilerLinesProcessed);
                     continue;
                 }
                 if (line.StartsWith("TAILCALL:"))
                 {
                     ParseLeaveOrTailcallNotification(model, line[9..].Split(':'), isTailcall: true);
+                    _ = Interlocked.Increment(ref model.ProfilerLinesProcessed);
                     continue;
                 }
 
                 // JIT notification (old format): TOKEN:ADDRESS:SIZE:ASSEMBLY
                 ParseOldFormatJitNotification(model, line.Split(':'));
+                _ = Interlocked.Increment(ref model.ProfilerLinesProcessed);
             }
         }
+        catch (ObjectDisposedException) { }
         catch (Exception ex) when (!model.Terminated)
         {
             _log.LogInfo(_logStore, $"ProfilerReader: error: {ex.Message}");

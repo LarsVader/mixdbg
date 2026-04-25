@@ -35,7 +35,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -66,7 +65,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -99,7 +97,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTraceForManyThreads(14);
         await WhenSendingContinue();
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -139,7 +136,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -191,7 +187,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -255,7 +250,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -320,7 +314,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
             await WhenSendingContinue();
         }
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -394,7 +387,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -467,7 +459,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
             await WhenSendingContinue();
         }
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -532,7 +523,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(hitIndex: 0, _nativeAddLine);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -611,7 +601,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -671,7 +660,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingVariablesIfScopeReturned();
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -711,7 +699,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await WhenRequestingStackTraceForMultipleThreads();
         await WhenSendingContinue();
 
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -898,7 +885,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(100);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
     }
 
@@ -934,7 +921,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(100);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
     }
 
@@ -950,8 +937,6 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         await SendDapRequest(_nextSeq, "disconnect", new { terminateDebuggee = true });
     }
 
-    private async Task WhenWaitingForSeconds(int seconds) => await Task.Delay(TimeSpan.FromSeconds(seconds));
-
     private async Task WhenWaitingForResponse(string command, int timeout)
     {
         DateTime deadline = DateTime.UtcNow.AddSeconds(timeout);
@@ -965,7 +950,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(100);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
     }
 
@@ -985,7 +970,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(200);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
         _stoppedReasons.Add(null);
     }
@@ -1011,7 +996,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(200);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
         _stackTraceSourcePaths.Add(null);
         _stackTraceLines.Add(0);
@@ -1032,7 +1017,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(200);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
     }
 
@@ -1141,6 +1126,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     private Task? _readTask;
     private readonly CancellationTokenSource _cts = new();
     private readonly StringBuilder _outputBuilder = new();
+    private readonly SemaphoreSlim _messageArrived = new(0);
     private readonly List<JsonObject> _responses = [];
     private readonly List<JsonObject> _events = [];
     private readonly List<string?> _stoppedReasons = [];
@@ -1162,6 +1148,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         }
         _process?.Dispose();
         _cts.Dispose();
+        _messageArrived.Dispose();
         // Don't delete — keep for post-failure inspection.
         // try { File.Delete(_sessionLogPath); } catch { }
     }
@@ -1210,9 +1197,15 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
 
                 string? msgType = obj["type"]?.GetValue<string>();
                 if (msgType == "response")
+                {
                     lock (_responses) { _responses.Add(obj); }
+                    _ = _messageArrived.Release();
+                }
                 else if (msgType == "event")
+                {
                     lock (_events) { _events.Add(obj); }
+                    _ = _messageArrived.Release();
+                }
             }
             catch { }
         }

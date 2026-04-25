@@ -43,7 +43,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStackTraceLineIsNot(1, _addLine);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -85,7 +84,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStackTraceHasSourceOneOf(0, "ManagedCalculator.h", "Calculator.cpp");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -130,7 +128,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(1, _nativeAddLine); // line 7: return a + b;
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -164,7 +161,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(1, 68);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -198,7 +194,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(1, 68);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -238,7 +233,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStackTraceHasSource(0, "MainWindow.xaml.cs");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -274,7 +268,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStoppedWithReason(2, "step");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -309,7 +302,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStoppedWithReason(2, "step");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -349,7 +341,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(1, 68);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -388,7 +379,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(1, 68);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -520,8 +510,6 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         await WhenWaitingForStackTraceResponse(timeout: 10);
     }
 
-    private static async Task WhenWaitingForSeconds(int seconds) => await Task.Delay(TimeSpan.FromSeconds(seconds));
-
     private async Task WhenWaitingForResponse(string command, int timeout)
     {
         DateTime deadline = DateTime.UtcNow.AddSeconds(timeout);
@@ -535,7 +523,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(100);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
     }
 
@@ -555,7 +543,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(200);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
         Assert.Fail($"Timed out after {timeout}s waiting for stopped event " +
             $"(#{_stoppedReasons.Count}). Log: {_sessionLogPath}");
@@ -582,7 +570,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(200);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
         Assert.Fail($"Timed out after {timeout}s waiting for stackTrace response " +
             $"(#{_stackTraceSourcePaths.Count}). Log: {_sessionLogPath}");
@@ -684,6 +672,7 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
     private readonly StringBuilder _outputBuilder = new();
     private readonly List<JsonObject> _responses = [];
     private readonly List<JsonObject> _events = [];
+    private readonly SemaphoreSlim _messageArrived = new(0);
     private readonly List<string?> _stoppedReasons = [];
     private readonly List<string?> _stackTraceSourcePaths = [];
     private readonly List<int> _stackTraceLines = [];
@@ -701,10 +690,11 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         }
         _process?.Dispose();
         _cts.Dispose();
+        _messageArrived.Dispose();
 
         // Allow the OS to fully release named pipes, profiler DLL handles, and debug
         // sessions before the next test launches a new MixDbg + WpfApp pair.
-        await Task.Delay(2000);
+        await Task.Delay(500);
     }
 
     private async Task SendDapRequest(int seq, string command, object args)
@@ -751,9 +741,15 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
 
                 string? msgType = obj["type"]?.GetValue<string>();
                 if (msgType == "response")
+                {
                     lock (_responses) { _responses.Add(obj); }
+                    _ = _messageArrived.Release();
+                }
                 else if (msgType == "event")
+                {
                     lock (_events) { _events.Add(obj); }
+                    _ = _messageArrived.Release();
+                }
             }
             catch { }
         }

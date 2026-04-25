@@ -472,8 +472,8 @@ internal sealed class EngineLifecycleService(
                     string trimmed = lines[lineIndex].Trim();
                     if (trimmed == "}" || trimmed == "};")
                     {
-                        _log.LogVerbose(_logStore, $"CheckStepLanding: closing brace at {file}:{line} → StepOut");
-                        return StepAutoAction.StepOut;
+                        _log.LogVerbose(_logStore, $"CheckStepLanding: closing brace at {file}:{line} → ReStep");
+                        return StepAutoAction.ReStep;
                     }
                 }
             }

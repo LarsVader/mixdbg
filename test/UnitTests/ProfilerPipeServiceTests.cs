@@ -499,10 +499,9 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         GivenProfilerReaderStarted();
 
         WhenClientClosesPipe();
-        WhenWaitingForProcessing();
+        ThenProfilerReaderThreadCompletes();
 
         ThenLogInfoWasCalled("pipe closed (EOF)");
-        ThenProfilerReaderThreadCompletes();
     }
 
     // ── ProfilerReaderLoop: IL map parsing edge cases ───────────
@@ -567,8 +566,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         GivenProfilerReaderStarted();
 
         _model.ProfilerPipeReader?.Dispose();
-        WhenWaitingForProcessing();
-
         ThenProfilerReaderThreadCompletes();
     }
 
@@ -664,6 +661,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
 
     private void WhenClientSendsLine(string line)
     {
+        _expectedLineCount++;
         _clientWriter!.WriteLine(line);
         _clientWriter.Flush();
     }
@@ -676,7 +674,16 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         _clientPipe = null;
     }
 
-    private static void WhenWaitingForProcessing() => Thread.Sleep(200);
+    private void WhenWaitingForProcessing(int expectedLines = -1)
+    {
+        if (expectedLines < 0)
+            expectedLines = _expectedLineCount;
+        bool ok = SpinWait.SpinUntil(
+            () => _model.ProfilerLinesProcessed >= expectedLines,
+            TimeSpan.FromSeconds(5));
+        Assert.True(ok, $"Profiler reader did not process {expectedLines} line(s) within 5 s " +
+                        $"(processed: {_model.ProfilerLinesProcessed})");
+    }
 
     #endregion
 
@@ -841,6 +848,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     private StreamWriter? _clientWriter;
     private string? _profilerDllPath;
     private bool _createdProfilerDll;
+    private int _expectedLineCount;
 
     public ProfilerPipeServiceTests()
     {
@@ -866,7 +874,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         _clientPipe = new NamedPipeClientStream(".", _pipeName!, PipeDirection.Out);
         _clientPipe.Connect(2000);
         _clientWriter = new StreamWriter(_clientPipe, Encoding.UTF8) { AutoFlush = true };
-        Thread.Sleep(100);
+        _ = SpinWait.SpinUntil(() => _model.ProfilerConnected, TimeSpan.FromSeconds(5));
     }
 
     private static void ClearEnvVars()

@@ -156,6 +156,12 @@ public sealed class NativeDebuggerModel : IDisposable
     internal volatile bool ProfilerHooksActive; // True when profiler uses ENTER: notifications (enter/leave hooks).
 
     /// <summary>
+    /// Incremented after the profiler reader processes each line. Tests can poll this
+    /// to avoid flaky <c>Thread.Sleep</c>-based synchronization.
+    /// </summary>
+    internal volatile int ProfilerLinesProcessed;
+
+    /// <summary>
     /// Maps (assembly:token) to the code start address and IL-to-native offset mapping
     /// from the profiler's JIT notification. Used by ENTER hooks to compute the exact
     /// native address for a breakpointed line.

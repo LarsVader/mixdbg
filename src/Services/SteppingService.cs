@@ -97,6 +97,7 @@ internal sealed class SteppingService(
             if (stepOutTarget != null && SetManagedStepBreakpoint(model, stepOutTarget.Value))
             {
                 _log.LogInfo(_logStore, $"Step-out: temp BP at 0x{stepOutTarget.Value:X}");
+                model.LastContinuedBpId = model.LastHitBpId;
                 _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
                 return;
             }
@@ -238,6 +239,7 @@ internal sealed class SteppingService(
                         }
                     }
 
+                    model.LastContinuedBpId = model.LastHitBpId;
                     _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
                     return true;
                 }
@@ -253,6 +255,7 @@ internal sealed class SteppingService(
             if (target != null && SetManagedStepBreakpoint(model, target.Value))
             {
                 _log.LogInfo(_logStore, $"Managed step-over (end of method): step-out to 0x{target.Value:X}");
+                model.LastContinuedBpId = model.LastHitBpId;
                 _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
                 return true;
             }
@@ -340,6 +343,7 @@ internal sealed class SteppingService(
             return false;
 
         // Go — whichever temp BP fires first wins.
+        model.LastContinuedBpId = model.LastHitBpId;
         _wrapper.SetExecutionStatus(model.Wrapper, EngineExecutionStatus.Go);
         return true;
     }

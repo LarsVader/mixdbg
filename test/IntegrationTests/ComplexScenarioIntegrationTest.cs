@@ -37,7 +37,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(0, _fibonacciLine);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -73,7 +72,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceHasSource(0, "Calculator.cpp");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -113,7 +111,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceHasSourceOneOf(0, "ManagedCalculator.h", "Calculator.cpp");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -177,7 +174,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(3, _fibonacciCallLine);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -209,7 +205,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(0, _countPrimesLine);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -250,7 +245,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStoppedWithReason(2, "breakpoint");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -290,7 +284,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(1, _factorialResultLine);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -323,7 +316,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceHasSourceOneOf(0, "ManagedCalculator.h", "Calculator.cpp");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -353,7 +345,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceHasSource(0, "MainWindow.xaml.cs");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -385,7 +376,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(0, _asyncAfterAwaitLine);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -415,7 +405,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceHasSource(0, "MainWindow.xaml.cs");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -452,7 +441,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStoppedWithReason(1, "breakpoint");
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -482,7 +470,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(0, _complexNestedCallLine);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -516,7 +503,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         ThenStackTraceStoppedAtLine(0, _complexLoopBodyLine);
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
         ThenNoLogErrors();
@@ -555,7 +541,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         await WhenRequestingVariablesIfScopeReturned();
 
         await WhenSendingContinue();
-        await WhenWaitingForSeconds(2);
         await WhenSendingDisconnect();
         await WhenWaitingForExit();
 
@@ -713,8 +698,6 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
         await WhenWaitingForVariablesResponse(timeout: 10);
     }
 
-    private static async Task WhenWaitingForSeconds(int seconds) => await Task.Delay(TimeSpan.FromSeconds(seconds));
-
     private async Task WhenWaitingForResponse(string command, int timeout)
     {
         DateTime deadline = DateTime.UtcNow.AddSeconds(timeout);
@@ -728,7 +711,7 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(100);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
     }
 
@@ -748,7 +731,7 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(200);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
         Assert.Fail($"Timed out after {timeout}s waiting for stopped event " +
             $"(#{_stoppedReasons.Count}). Log: {_sessionLogPath}");
@@ -775,7 +758,7 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(200);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
         Assert.Fail($"Timed out after {timeout}s waiting for stackTrace response " +
             $"(#{_stackTraceSourcePaths.Count}). Log: {_sessionLogPath}");
@@ -797,7 +780,7 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(100);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
     }
 
@@ -817,7 +800,7 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
                     return;
                 }
             }
-            await Task.Delay(100);
+            _ = await _messageArrived.WaitAsync(TimeSpan.FromMilliseconds(200));
         }
     }
 
@@ -943,6 +926,7 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
     private Task? _readTask;
     private readonly CancellationTokenSource _cts = new();
     private readonly StringBuilder _outputBuilder = new();
+    private readonly SemaphoreSlim _messageArrived = new(0);
     private readonly List<JsonObject> _responses = [];
     private readonly List<JsonObject> _events = [];
     private readonly List<string?> _stoppedReasons = [];
@@ -967,7 +951,8 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
 
         // Allow the OS to fully release named pipes, profiler DLL handles, and debug
         // sessions before the next test launches a new MixDbg + WpfApp pair.
-        await Task.Delay(2000);
+        await Task.Delay(500);
+        _messageArrived.Dispose();
     }
 
     private async Task SendDapRequest(int seq, string command, object args)
@@ -1014,9 +999,15 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
 
                 string? msgType = obj["type"]?.GetValue<string>();
                 if (msgType == "response")
+                {
                     lock (_responses) { _responses.Add(obj); }
+                    _ = _messageArrived.Release();
+                }
                 else if (msgType == "event")
+                {
                     lock (_events) { _events.Add(obj); }
+                    _ = _messageArrived.Release();
+                }
             }
             catch { }
         }
