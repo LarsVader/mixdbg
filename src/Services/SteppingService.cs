@@ -201,33 +201,54 @@ internal sealed class SteppingService(
 
         if (seqPoints.Length > 0)
         {
-            // Find the first sequence point with IL offset > current.
-            (int ILOffset, string File, int Line)? nextPoint = null;
+            // Determine the current source line so we skip sequence points on the same line.
+            int currentLine = 0;
             foreach ((int ILOffset, string File, int Line) sp in seqPoints)
             {
-                if (sp.ILOffset > currentIL)
+                if (sp.ILOffset <= currentIL)
+                    currentLine = sp.Line;
+            }
+
+            // Collect the first few DISTINCT next lines after the current IL offset.
+            // Branching code (if/else, switch) may skip the immediately-next sequence
+            // point, so we must cover multiple branch targets. Limit to 2 distinct lines
+            // to stay within hardware BP limits (4 DR registers: user BP + 2 temp + step-out).
+            const int maxDistinctLines = 2;
+            HashSet<int> seenLines = [];
+            List<(int ILOffset, string File, int Line)> nextPoints = [];
+            foreach ((int ILOffset, string File, int Line) sp in seqPoints)
+            {
+                if (sp.ILOffset > currentIL && sp.Line != currentLine && seenLines.Add(sp.Line))
                 {
-                    nextPoint = sp;
-                    break;
+                    nextPoints.Add(sp);
+                    if (seenLines.Count >= maxDistinctLines)
+                        break;
                 }
             }
 
-            if (nextPoint != null && model.JitMethodMappings.TryGetValue((method.MethodToken, method.AssemblyName), out JitMethodMapping? mapping))
+            if (nextPoints.Count > 0 && model.JitMethodMappings.TryGetValue((method.MethodToken, method.AssemblyName), out JitMethodMapping? mapping))
             {
-                // Next line exists — set BP at its native address.
-                ulong targetAddr = mapping.GetNativeAddress(nextPoint.Value.ILOffset);
-                if (SetManagedStepBreakpoint(model, targetAddr))
+                bool anyBpSet = false;
+                foreach ((int ILOffset, string File, int Line) np in nextPoints)
                 {
-                    _log.LogInfo(_logStore,
-                        $"Managed step-over: temp BP at 0x{targetAddr:X} (IL 0x{nextPoint.Value.ILOffset:X} -> {nextPoint.Value.File}:{nextPoint.Value.Line})");
+                    ulong targetAddr = mapping.GetNativeAddress(np.ILOffset);
+                    if (SetManagedStepBreakpoint(model, targetAddr))
+                    {
+                        _log.LogInfo(_logStore,
+                            $"Managed step-over: temp BP at 0x{targetAddr:X} (IL 0x{np.ILOffset:X} -> {np.File}:{np.Line})");
+                        anyBpSet = true;
+                    }
+                }
 
+                if (anyBpSet)
+                {
                     // Record stack pointer for recursive call detection.
                     NativeStackFrame[] callerFrames = _wrapper.GetStackTrace(model.Wrapper, 5);
                     if (callerFrames.Length > 0)
                         model.ActiveManagedStep!.OriginStackPointer = callerFrames[0].StackOffset;
 
                     // Also set a step-out BP in the caller to handle early returns
-                    // (e.g. "return true;" mid-method won't reach the next sequence point).
+                    // (e.g. "return true;" mid-method won't reach any next sequence point).
                     if (callerFrames.Length >= 2)
                     {
                         ulong? stepOutAddr = FindStepOutTarget(model, callerFrames);

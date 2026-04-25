@@ -351,6 +351,42 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
     }
 
     /// <summary>
+    /// Step over from async method entry (line 130) should land on the next user
+    /// code line (133), not on framework code like AsyncMethodBuilderCore.Start.
+    /// Async state machines rewrite the method into MoveNext — the managed step-over
+    /// must resolve the next sequence point within MoveNext correctly.
+    /// </summary>
+    [Fact]
+    public async Task Async_WhenStepOverFromEntry_LandsOnNextUserLine()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // BP at OnAsyncCalcClick line 130: if (!TryGetInputs(...))
+        await WhenSettingBreakpoint(_bpFile, "MainWindow.xaml.cs", _asyncEntryLine);
+        await WhenLaunchingWithAutoTestComplex();
+        await WhenSendingConfigurationDone();
+
+        await WhenWaitingForStoppedEvent(timeout: 60);
+        ThenStoppedWithReason(0, "breakpoint");
+
+        // Step over — should land on line 133 (ResultText.Text = "Calculating async...")
+        // because TryGetInputs returns true (inputs are "7" and "3").
+        await WhenSendingNext();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(1, "step");
+        ThenStackTraceHasSource(0, "MainWindow.xaml.cs");
+        ThenStackTraceStoppedAtLine(0, _asyncStepOverTargetLine);
+
+        await WhenSendingContinue();
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+        ThenNoLogErrors();
+    }
+
+    /// <summary>
     /// C# breakpoint AFTER await (line 143: int sum = ManagedCalculator.SumRange).
     /// This is the hardest async scenario — the continuation runs after the state
     /// machine resumes on the UI thread. The debugger must resolve BPs in the
@@ -907,6 +943,7 @@ public sealed class ComplexScenarioIntegrationTest : IAsyncLifetime
     private const int _factorialCallLine = 118;     // int result = ManagedCalculator.FactorialOrThrow(n);
     private const int _factorialResultLine = 119;   // ResultText.Text = $"{n}! = {result}";
     private const int _asyncEntryLine = 130;        // if (!TryGetInputs(...)) in OnAsyncCalcClick
+    private const int _asyncStepOverTargetLine = 133; // ResultText.Text = "Calculating async..." (next line after if)
     private const int _asyncLambdaBodyLine = 137;   // int fib = ManagedCalculator.Fibonacci(a); (inside Task.Run lambda)
     private const int _asyncAfterAwaitLine = 143;   // int sum = ManagedCalculator.SumRange(1, b); (after await)
     private const int _tryGetABodyLine = 177;        // if (int.TryParse(TextBoxA.Text, out a)) in TryGetA

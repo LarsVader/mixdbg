@@ -85,9 +85,10 @@ After a native step, `CheckStepLanding` compares the current RSP (`frames[0].Sta
 ## Step-Over vs Step-Into vs Step-Out
 
 **Step-Over** (`TryManagedStepOver`):
-- Uses PDB sequence points to find next IL offset > current.
-- Sets temp BP at next sequence point's native address.
+- Uses PDB sequence points to find next IL offsets > current.
+- Sets temp BPs at the first 2 distinct next source lines' native addresses. This covers conditional branches (e.g. `if/else`) where the first sequence point may be skipped.
 - Also sets a step-out fallback BP in the caller (handles early returns like `return true;` mid-method).
+- Total HW BPs: up to 2 (next lines) + 1 (step-out) = 3, fitting within the 4 DR register limit alongside user BPs.
 - Falls back to step-out if no next sequence point (end of method).
 
 **Step-Into** (`TryManagedStepInto`):
