@@ -339,6 +339,32 @@ public sealed class SteppingServiceTests : IDisposable
         Assert.DoesNotContain(11u, _model.UserBreakpointIds);
     }
 
+    // ── Native step-into vs step-over stack pointer ──────────
+
+    [Fact]
+    public void ExecuteStepOnEngine_WhenNativeStepOver_RecordsStackPointer()
+    {
+        GivenStackFramesForStep([new NativeStackFrame(StackOffset: 0x8000, InstructionOffset: 0x1000)]);
+        GivenNativeLineByOffset(0x1000, 10, @"C:\src\Calculator.cpp");
+
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
+
+        ThenStepOriginStackPointerIs(0x8000);
+        ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus.StepOver);
+    }
+
+    [Fact]
+    public void ExecuteStepOnEngine_WhenNativeStepInto_DoesNotRecordStackPointer()
+    {
+        GivenStackFramesForStep([new NativeStackFrame(StackOffset: 0x8000, InstructionOffset: 0x1000)]);
+        GivenNativeLineByOffset(0x1000, 10, @"C:\src\Calculator.cpp");
+
+        WhenExecutingStepOnEngine(EngineExecutionStatus.StepInto);
+
+        ThenStepOriginStackPointerIs(0);
+        ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus.StepInto);
+    }
+
     #region Given
 
     private void GivenManagedMethodInJitMap(ulong startAddr, string tokenHex, string assemblyName)
@@ -379,6 +405,9 @@ public sealed class SteppingServiceTests : IDisposable
             _model.ActiveManagedStep.TempBreakpointIds.Add(id);
     }
 
+    private void GivenNativeLineByOffset(ulong offset, int line, string file) =>
+        _ = _wrapper.GetLineByOffset(_model.Wrapper, offset).Returns(((uint)line, file));
+
     #endregion
 
     #region When
@@ -398,6 +427,8 @@ public sealed class SteppingServiceTests : IDisposable
     private void ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus status) => _wrapper.Received().SetExecutionStatus(_model.Wrapper, status);
 
     private void ThenExecuteCommandWasCalledWith(string command) => _ = _wrapper.Received(1).ExecuteCommand(_model.Wrapper, command);
+
+    private void ThenStepOriginStackPointerIs(ulong expected) => Assert.Equal(expected, _model.StepOriginStackPointer);
 
     #endregion
 

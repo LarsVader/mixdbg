@@ -76,7 +76,13 @@ internal sealed class SteppingService(
             model.StepOriginLocation = lineInfo != null
                 ? (lineInfo.Value.File, (int)lineInfo.Value.Line)
                 : null;
-            model.StepOriginStackPointer = nativeFrames[0].StackOffset;
+            // Only record stack depth for step-over. For step-into, a deeper stack
+            // (lower RSP) is expected — entering the callee. Without this, the
+            // CheckStepLanding depth check would auto-re-step past the callee entry,
+            // turning step-into into step-over.
+            model.StepOriginStackPointer = stepKind == EngineExecutionStatus.StepInto
+                ? 0
+                : nativeFrames[0].StackOffset;
         }
         _wrapper.SetExecutionStatus(model.Wrapper, stepKind);
     }
