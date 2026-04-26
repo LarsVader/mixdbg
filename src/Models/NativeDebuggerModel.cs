@@ -205,6 +205,30 @@ public sealed class NativeDebuggerModel : IDisposable
     internal (string File, int Line)? StepOriginLocation;
 
     /// <summary>
+    /// The step kind (StepOver or StepInto) that started the current native step.
+    /// Used by the re-step logic to preserve the original intent when auto-stepping
+    /// past same-line or closing-brace stops.
+    /// </summary>
+    internal EngineExecutionStatus StepOriginKind;
+
+    /// <summary>
+    /// Set when a step-into has entered the callee (past origin line). Re-steps through
+    /// sourceless prologue instructions use this to distinguish "step-into in callee
+    /// prologue" (re-step) from "step-over on sourceless code" (step out).
+    /// Must persist across multiple <c>CheckStepLanding</c> calls because the callee
+    /// prologue may span several sourceless instructions (push rbp, sub rsp, etc.)
+    /// that each trigger a separate re-step.
+    /// </summary>
+    internal bool StepIntoEnteredCallee;
+
+    /// <summary>
+    /// Number of auto-re-steps issued during the current step operation. Reset when a
+    /// step completes. Used as a safety valve to prevent infinite re-step loops when
+    /// stepping into fully sourceless code.
+    /// </summary>
+    internal int StepReStepCount;
+
+    /// <summary>
     /// Stack pointer (RSP) of frame[0] when a step started. A recursive call has a
     /// lower stack pointer (stack grows downward on x86-64). Zero means no check.
     /// </summary>

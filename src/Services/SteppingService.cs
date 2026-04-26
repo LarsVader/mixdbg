@@ -76,6 +76,9 @@ internal sealed class SteppingService(
             model.StepOriginLocation = lineInfo != null
                 ? (lineInfo.Value.File, (int)lineInfo.Value.Line)
                 : null;
+            model.StepOriginKind = stepKind;
+            model.StepReStepCount = 0;
+            model.StepIntoEnteredCallee = false;
             // Only record stack depth for step-over. For step-into, a deeper stack
             // (lower RSP) is expected — entering the callee. Without this, the
             // CheckStepLanding depth check would auto-re-step past the callee entry,
@@ -732,5 +735,10 @@ internal sealed class SteppingService(
         _log.LogInfo(_logStore,
             $"Cancelled managed step: removed {model.ActiveManagedStep.TempBreakpointIds.Count} temp BPs");
         model.ActiveManagedStep = null;
+        model.StepOriginLocation = null;
+        model.StepOriginStackPointer = 0;
+        model.StepOriginKind = default;
+        model.StepReStepCount = 0;
+        model.StepIntoEnteredCallee = false;
     }
 }

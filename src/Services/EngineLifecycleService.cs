@@ -187,15 +187,25 @@ internal sealed class EngineLifecycleService(
                 StepAutoAction action = _stepResolution.CheckStepLanding(model);
                 if (action == StepAutoAction.ReStep)
                 {
-                    _log.LogInfo(_logStore, "Step on same line — re-stepping");
-                    model.Stepping = true;
-                    model.Stopped.Reset();
-                    _wrapper.SetExecutionStatus(dbgEngWrapperModel, EngineExecutionStatus.StepOver);
-                    return true;
+                    model.StepReStepCount++;
+                    if (model.StepReStepCount > 100)
+                    {
+                        // Safety valve: stop here rather than looping forever through
+                        // sourceless code. Fall through to send a stopped event.
+                        _log.LogWarning(_logStore, "Re-step limit exceeded — stopping");
+                    }
+                    else
+                    {
+                        _log.LogInfo(_logStore, "Step landing not useful — re-stepping");
+                        model.Stepping = true;
+                        model.Stopped.Reset();
+                        _wrapper.SetExecutionStatus(dbgEngWrapperModel, model.StepOriginKind);
+                        return true;
+                    }
                 }
                 if (action == StepAutoAction.StepOut)
                 {
-                    _log.LogInfo(_logStore, "Step on sourceless/brace line — auto-stepping-out");
+                    _log.LogInfo(_logStore, "Step on sourceless line — auto-stepping-out");
                     model.CachedStackTraceResult = null;
                     model.CachedThreadsResult = null;
                     _stepping.ExecuteStepOutOnEngine(model);
@@ -205,6 +215,9 @@ internal sealed class EngineLifecycleService(
 
             model.StepOriginLocation = null;
             model.StepOriginStackPointer = 0;
+            model.StepOriginKind = default;
+            model.StepReStepCount = 0;
+            model.StepIntoEnteredCallee = false;
             SendStopDapResponseAndProcessCommands(model, dbgEngWrapperModel, reason);
             return true;
         }
@@ -212,7 +225,9 @@ internal sealed class EngineLifecycleService(
         DrainPendingCommands(model);
         // If Stepping is still set, a BP was suppressed at depth — re-step instead of Go.
         EngineExecutionStatus resumeStatus = model.Stepping
-            ? EngineExecutionStatus.StepOver
+            ? (model.StepOriginKind is EngineExecutionStatus.StepOver or EngineExecutionStatus.StepInto
+                ? model.StepOriginKind
+                : EngineExecutionStatus.StepOver)
             : EngineExecutionStatus.Go;
         _log.LogVerbose(_logStore, $"System stop — auto-continuing with {resumeStatus}");
         model.Stopped.Reset();

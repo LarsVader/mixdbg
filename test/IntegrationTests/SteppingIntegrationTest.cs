@@ -384,6 +384,41 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
+    [Fact]
+    public async Task NativeStepInto_WhenAtNativeCallSite_EntersCalledFunction()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Native BP at Calculator.cpp line 29 (accumulator = AccumulateSum(...)).
+        // SumRange is called during OnAsyncCalcClick in --auto-test-complex.
+        await WhenSettingBreakpoint(_nativeBpFile, "Calculator.cpp", _nativeSumRangeCallLine);
+        await WhenLaunchingWithAutoTestComplex();
+        await WhenSendingConfigurationDone();
+
+        // Hit the native breakpoint at line 29.
+        await WhenWaitingForStoppedEvent(timeout: 60);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(0, "breakpoint");
+        ThenStackTraceHasSource(0, "Calculator.cpp");
+        ThenStackTraceStoppedAtLine(0, _nativeSumRangeCallLine);
+
+        // Step into — should enter AccumulateSum at line 37 (if (current > end)),
+        // NOT step over to line 30.
+        await WhenSendingStepIn();
+        await WhenWaitingForStoppedEvent(timeout: 15);
+        await WhenRequestingStackTrace();
+        ThenStoppedWithReason(1, "step");
+        ThenStackTraceHasSource(1, "Calculator.cpp");
+        ThenStackTraceStoppedAtLine(1, _nativeAccumulateSumFirstLine);
+
+        await WhenSendingContinue();
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+        ThenNoLogErrors();
+    }
+
     #region Given
 
     private void GivenMixDbgAndWpfAppExist()
@@ -452,13 +487,17 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
         await WhenWaitingForResponse("setBreakpoints", timeout: 5);
     }
 
-    private async Task WhenLaunchingWithAutoTest()
+    private Task WhenLaunchingWithAutoTest() => WhenLaunchingWithAutoTestMode("--auto-test");
+
+    private Task WhenLaunchingWithAutoTestComplex() => WhenLaunchingWithAutoTestMode("--auto-test-complex");
+
+    private async Task WhenLaunchingWithAutoTestMode(string mode)
     {
         await SendDapRequest(3, "launch", new
         {
             program = _wpfAppPath.Replace("/", "\\"),
             cwd = Path.GetDirectoryName(_wpfAppPath)!.Replace("/", "\\"),
-            args = new[] { "--auto-test" },
+            args = new[] { mode },
         });
         await WhenWaitingForResponse("launch", timeout: 10);
     }
@@ -662,6 +701,8 @@ public sealed class SteppingIntegrationTest : IAsyncLifetime
     private const int _addBodyLine = 67;       // int result = ManagedCalculator.Add(a, b);
     private const int _cliWrapperAddLine = 14;  // return NativeLib::Calculator::Add(a, b);
     private const int _nativeAddLine = 7;       // return a + b;
+    private const int _nativeSumRangeCallLine = 29;  // accumulator = AccumulateSum(start, end, accumulator);
+    private const int _nativeAccumulateSumFirstLine = 37;  // if (current > end)
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-step-test-{Guid.NewGuid():N}.log");

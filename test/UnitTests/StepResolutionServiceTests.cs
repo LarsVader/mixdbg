@@ -290,6 +290,119 @@ public sealed class StepResolutionServiceTests
         ThenStepAutoActionIs(StepAutoAction.None);
     }
 
+    // ── Step-into: sourceless prologue re-step ────────────
+
+    [Fact]
+    public void CheckStepLanding_WhenStepIntoAndNoSourcePastOrigin_ReturnsReStep()
+    {
+        GivenStepOriginLocation("test.cpp", 29);
+        GivenStepOriginKind(EngineExecutionStatus.StepInto);
+        GivenStackTraceReturns(instructionOffset: 0x6000);
+        GivenLineByOffsetReturnsNull();
+
+        WhenCheckingStepLanding();
+
+        ThenStepAutoActionIs(StepAutoAction.ReStep);
+    }
+
+    [Fact]
+    public void CheckStepLanding_WhenStepIntoAndHiddenSeqPointPastOrigin_ReturnsReStep()
+    {
+        GivenStepOriginLocation("test.cpp", 29);
+        GivenStepOriginKind(EngineExecutionStatus.StepInto);
+        GivenSourceFileCache("test.cpp", ["line1", "line2"]);  // 2 lines in file
+        GivenStackTraceReturns(instructionOffset: 0x6000);
+        GivenLineByOffsetReturns(15732480, "test.cpp");  // Hidden seq point (beyond file)
+
+        WhenCheckingStepLanding();
+
+        ThenStepAutoActionIs(StepAutoAction.ReStep);
+    }
+
+    [Fact]
+    public void CheckStepLanding_WhenStepIntoPastOrigin_SwitchesToStepOver()
+    {
+        GivenStepOriginLocation("test.cpp", 29);
+        GivenStepOriginKind(EngineExecutionStatus.StepInto);
+        GivenSourceFileCache("test.cpp", ["// line 1", "{"]); // line 2 = opening brace
+        GivenStackTraceReturns(instructionOffset: 0x6000);
+        GivenLineByOffsetReturns(2, "test.cpp");  // Opening brace — different line than origin.
+
+        WhenCheckingStepLanding();
+
+        ThenStepAutoActionIs(StepAutoAction.ReStep);
+        Assert.Equal(EngineExecutionStatus.StepOver, _model.StepOriginKind);
+    }
+
+    [Fact]
+    public void CheckStepLanding_WhenStepIntoOnOriginLine_KeepsStepInto()
+    {
+        GivenStepOriginLocation("test.cpp", 29);
+        GivenStepOriginKind(EngineExecutionStatus.StepInto);
+        GivenStackTraceReturns(instructionOffset: 0x6000);
+        GivenLineByOffsetReturns(29, "test.cpp");
+
+        WhenCheckingStepLanding();
+
+        ThenStepAutoActionIs(StepAutoAction.ReStep);
+        Assert.Equal(EngineExecutionStatus.StepInto, _model.StepOriginKind);
+    }
+
+    [Fact]
+    public void CheckStepLanding_WhenStepIntoLandsOnRealStatementInCallee_ReturnsNone()
+    {
+        GivenStepOriginLocation("caller.cpp", 29);
+        GivenStepOriginKind(EngineExecutionStatus.StepInto);
+        GivenSourceFileCache("callee.cpp", ["int x = 0;", "return x;"]);
+        GivenStackTraceReturns(instructionOffset: 0x7000);
+        GivenLineByOffsetReturns(1, "callee.cpp");  // Real statement in callee
+
+        WhenCheckingStepLanding();
+
+        ThenStepAutoActionIs(StepAutoAction.None);
+        // Should have switched to StepOver since we're past origin
+        Assert.Equal(EngineExecutionStatus.StepOver, _model.StepOriginKind);
+    }
+
+    [Fact]
+    public void CheckStepLanding_WhenStepOverAndOpeningBrace_ReturnsReStep()
+    {
+        GivenStepOriginLocation("test.cpp", 10);
+        GivenStepOriginKind(EngineExecutionStatus.StepOver);
+        GivenSourceFileCache("test.cpp", ["if (x)", "{"]);  // line 2 = opening brace
+        GivenStackTraceReturns(instructionOffset: 0x6000);
+        GivenLineByOffsetReturns(2, "test.cpp");
+
+        WhenCheckingStepLanding();
+
+        ThenStepAutoActionIs(StepAutoAction.ReStep);
+    }
+
+    [Fact]
+    public void CheckStepLanding_WhenHiddenSeqPointWithoutOrigin_ReturnsStepOut()
+    {
+        GivenSourceFileCache("test.cpp", ["line1", "line2"]);  // 2 lines in file
+        GivenStackTraceReturns(instructionOffset: 0x6000);
+        GivenLineByOffsetReturns(15732480, "test.cpp");  // Beyond file length
+
+        WhenCheckingStepLanding();
+
+        ThenStepAutoActionIs(StepAutoAction.StepOut);
+    }
+
+    [Fact]
+    public void CheckStepLanding_WhenStepOverAndNoSourcePastOrigin_ReturnsStepOut()
+    {
+        GivenStepOriginLocation("test.cpp", 10);
+        GivenStepOriginKind(EngineExecutionStatus.StepOver);
+        GivenStackTraceReturns(instructionOffset: 0x6000);
+        GivenLineByOffsetReturnsNull();
+
+        WhenCheckingStepLanding();
+
+        ThenStepAutoActionIs(StepAutoAction.StepOut);
+    }
+
     // ── StopReason.ToDapString ────────────────────────────
 
     [Theory]
@@ -345,6 +458,10 @@ public sealed class StepResolutionServiceTests
     private void GivenStepOriginStackPointer(ulong rsp) => _model.StepOriginStackPointer = rsp;
 
     private void GivenStepOriginLocation(string file, int line) => _model.StepOriginLocation = (file, line);
+
+    private void GivenStepOriginKind(EngineExecutionStatus kind) => _model.StepOriginKind = kind;
+
+    private void GivenSourceFileCache(string file, string[] lines) => _model.SourceFileCache[file] = lines;
 
     private void GivenStackTraceReturns(ulong stackOffset = 0x2000, ulong instructionOffset = 0x5000)
         => _ = _wrapper.GetStackTrace(_model.Wrapper, 1)

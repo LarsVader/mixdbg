@@ -44,14 +44,49 @@ internal sealed class StepResolutionService(
         ulong ip = frames[0].InstructionOffset;
         (uint Line, string File)? lineInfo = _wrapper.GetLineByOffset(model.Wrapper, ip);
 
-        if (lineInfo is not { } info || info.Line == 0)
+        // Check if we've left the origin line (entered the callee). "Past origin"
+        // requires the origin to be set — otherwise we're in a step without origin
+        // tracking and should use the default behavior.
+        bool onOriginLine = lineInfo is { } li
+            && IsSameLineAsOrigin(model, li.File, (int)li.Line);
+        bool pastOriginLine = model.StepOriginLocation != null && !onOriginLine;
+
+        // Once past the origin, switch step-into to step-over so re-steps through
+        // the callee's prologue skip over compiler-generated calls (JMC checks,
+        // security cookies). Persist the "entered callee" flag so subsequent re-steps
+        // through sourceless prologue instructions still use ReStep (not StepOut).
+        //
+        // Note: pastOriginLine is true for any sourceless instruction when the origin
+        // is set, even if it's a trampoline before the callee entry. On x86-64, call
+        // instructions land directly at the callee's first instruction, so a sourceless
+        // trampoline at the same stack level is practically nonexistent. Even if the
+        // switch happened prematurely, step-over would still advance through the
+        // trampoline to the callee. No stack-level guard is needed here.
+        if (pastOriginLine && model.StepOriginKind == EngineExecutionStatus.StepInto)
         {
+            model.StepOriginKind = EngineExecutionStatus.StepOver;
+            model.StepIntoEnteredCallee = true;
+        }
+
+        if (lineInfo is not { } info || info.Line == 0
+            || IsLineBeyondFile(model, info.File, (int)info.Line))
+        {
+            // Step-into callee prologue → re-step through sourceless instructions.
+            // Step-over on sourceless code → step out to the caller.
+            if (model.StepIntoEnteredCallee)
+            {
+                _log.LogVerbose(_logStore, $"CheckStepLanding: ip=0x{ip:X} no source (in callee) → ReStep");
+                return StepAutoAction.ReStep;
+            }
             _log.LogVerbose(_logStore, $"CheckStepLanding: ip=0x{ip:X} no source → StepOut");
             return StepAutoAction.StepOut;
         }
 
-        return IsSameLineAsOrigin(model, info.File, (int)info.Line)
+        return onOriginLine
             || IsClosingBrace(model, info.File, (int)info.Line)
+            // Skip opening braces for both step-into (callee prologue) and step-over
+            // (Allman brace style) — landing on a bare '{' is never a useful stop point.
+            || IsOpeningBrace(model, info.File, (int)info.Line)
             ? StepAutoAction.ReStep
             : StepAutoAction.None;
     }
@@ -72,6 +107,10 @@ internal sealed class StepResolutionService(
             $"Managed step complete: removed {model.ActiveManagedStep.TempBreakpointIds.Count} temp BPs");
         model.ActiveManagedStep = null;
         model.StepOriginLocation = null;
+        model.StepOriginStackPointer = 0;
+        model.StepOriginKind = default;
+        model.StepReStepCount = 0;
+        model.StepIntoEnteredCallee = false;
         // Clear stale LastHitBpId so the next step's LastContinuedBpId doesn't match
         // a recycled dbgeng BP ID and falsely suppress it.
         model.LastHitBpId = uint.MaxValue;
@@ -224,22 +263,9 @@ internal sealed class StepResolutionService(
 
     private bool IsClosingBrace(NativeDebuggerModel model, string file, int line)
     {
-        if (!model.SourceFileCache.TryGetValue(file, out string[]? lines))
-        {
-            try
-            {
-                if (File.Exists(file))
-                {
-                    lines = File.ReadAllLines(file);
-                    model.SourceFileCache[file] = lines;
-                }
-            }
-            catch { }
-        }
-
+        string[] lines = GetCachedFileLines(model, file);
         int lineIndex = line - 1;
-        if (lines == null
-                || lineIndex < 0
+        if (lineIndex < 0
                 || lineIndex >= lines.Length
                 || lines[lineIndex].Trim() is not string trimmed
                 || trimmed != "}" && trimmed != "};")
@@ -249,6 +275,66 @@ internal sealed class StepResolutionService(
 
         _log.LogVerbose(_logStore, $"CheckStepLanding: closing brace at {file}:{line} → ReStep");
         return true;
+    }
+
+    /// <summary>
+    /// Returns true when dbgeng reports a line number that exceeds the file's actual
+    /// line count. This happens for compiler-generated hidden sequence points (e.g.
+    /// line 0xF00000+). Treat these as sourceless — re-step past them.
+    /// </summary>
+    private bool IsLineBeyondFile(NativeDebuggerModel model, string file, int line)
+    {
+        // MSVC hidden sequence points use line numbers like 0xF00000+.
+        // Catch these even when the source file can't be read from disk.
+        if (line > 0xF00000)
+            return true;
+
+        string[] lines = GetCachedFileLines(model, file);
+        return lines.Length > 0 && line > lines.Length;
+    }
+
+    private bool IsOpeningBrace(NativeDebuggerModel model, string file, int line)
+    {
+        string[] lines = GetCachedFileLines(model, file);
+        int lineIndex = line - 1;
+        if (lineIndex < 0
+                || lineIndex >= lines.Length
+                || lines[lineIndex].Trim() is not string trimmed
+                || trimmed != "{")
+        {
+            return false;
+        }
+
+        _log.LogVerbose(_logStore, $"CheckStepLanding: opening brace at {file}:{line} → ReStep");
+        return true;
+    }
+
+    /// <summary>
+    /// Reads a source file's lines from <see cref="NativeDebuggerModel.SourceFileCache"/>,
+    /// loading from disk on first access.
+    /// </summary>
+    private static string[] GetCachedFileLines(NativeDebuggerModel model, string file)
+    {
+        if (model.SourceFileCache.TryGetValue(file, out string[]? lines))
+            return lines;
+
+        try
+        {
+            if (File.Exists(file))
+            {
+                lines = File.ReadAllLines(file);
+                model.SourceFileCache[file] = lines;
+                return lines;
+            }
+        }
+        catch { }
+
+        // Cache missing/unreadable files as empty to avoid repeated filesystem checks
+        // during re-step sequences (up to 100 iterations). Callers handle empty arrays
+        // correctly: IsClosingBrace/IsOpeningBrace return false (lineIndex >= Length),
+        // and IsLineBeyondFile skips empty arrays (Length: > 0 guard).
+        model.SourceFileCache[file] = [];
+        return [];
     }
 
     /// <summary>

@@ -23,8 +23,12 @@ public interface IStepResolutionService
     /// <summary>
     /// After a native step completes, checks whether the current instruction pointer is on a useful
     /// source line. Returns <see cref="StepAutoAction.None"/> if normal,
-    /// <see cref="StepAutoAction.ReStep"/> if on the same line (no progress),
-    /// or <see cref="StepAutoAction.StepOut"/> if on a sourceless frame.
+    /// <see cref="StepAutoAction.ReStep"/> if on the same line, an opening/closing brace,
+    /// a hidden sequence point (line beyond file length), or a sourceless prologue instruction
+    /// when past the step origin (entered callee),
+    /// or <see cref="StepAutoAction.StepOut"/> if on a sourceless frame at the origin level.
+    /// For step-into, switches <see cref="NativeDebuggerModel.StepOriginKind"/> from StepInto
+    /// to StepOver once past the origin line to skip compiler-generated prologue calls.
     /// </summary>
     StepAutoAction CheckStepLanding(NativeDebuggerModel model);
 

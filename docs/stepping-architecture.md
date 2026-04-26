@@ -14,7 +14,7 @@ Every time `WaitForEvent` returns (target stopped), the loop processes in this o
 
 1. **ProcessProfilerNotifications** (line ~170) — drains the ENTER/LEAVE/JIT queue. ENTER installs HW BPs (count 0→1) and ACKs. LEAVE removes HW BPs (count→0). JIT matches deferred BPs. Returns true if stop was bookkeeping-only → **auto-continue Go**.
 2. **DetermineStopReason** (`StepResolutionService`) — checks `ActiveManagedStep`, `HitUserBreakpoint`, `Stepping`, `PauseRequested`. For managed step temp BPs, compares RSP to `OriginStackPointer` (depth check). Returns a `StopReason` enum (Step, Breakpoint, Pause) or null for auto-continue.
-3. **CheckStepLanding** (`StepResolutionService`) — for native steps: depth check (RSP < origin → re-step), same-line (re-step), closing brace / sourceless (auto-step-out).
+3. **CheckStepLanding** (`StepResolutionService`) — for native steps: depth check (RSP < origin → re-step), same-line (re-step), opening/closing brace (re-step), sourceless/hidden line (re-step if past origin for step-into, else step-out). Switches `StepOriginKind` from StepInto to StepOver once past the origin line to skip JMC checks.
 4. **Clear StepOriginStackPointer** (line ~201) — after a step actually stops for the user.
 5. **System stop** (line ~206) — if no reason, drain commands and **auto-continue Go**.
 
@@ -29,8 +29,8 @@ Every way execution can restart:
 | `ExecuteStepOutOnEngine` | StepOut handler | No | |
 | ENTER auto-continue | Event loop | No | Bookkeeping stop after BP install |
 | System stop auto-continue | Event loop | No | |
-| Step re-step | CheckStepLanding | No | Same line or deeper stack |
-| Auto step-out | CheckStepLanding | No | Brace or sourceless |
+| Step re-step | CheckStepLanding | No | Same line, deeper stack, brace, or prologue (step-into) |
+| Auto step-out | CheckStepLanding | No | Sourceless (when not past origin) |
 
 ## Method-Lifetime Managed Breakpoints (M4V3)
 
@@ -73,6 +73,16 @@ When stepping into a C++/CLI method:
 ## Native Step Depth Check
 
 After a native step, `CheckStepLanding` compares the current RSP (`frames[0].StackOffset`) against `StepOriginStackPointer`. On x86-64 the stack grows downward, so lower RSP = deeper stack. If RSP < origin, the native step entered a called function → re-step to continue past it. This check runs **before** any line comparisons, preventing step-over from landing in recursive calls or called functions at different source lines.
+
+For step-into, `StepOriginStackPointer` is set to 0 (bypassing the depth check — entering a callee IS the goal).
+
+## Native Step-Into Prologue Handling
+
+`StepOriginKind` tracks the original step kind (StepInto or StepOver). When re-stepping:
+- **On the origin line**: re-step with the original kind (StepInto enters the call).
+- **Past the origin line** (entered callee): switch `StepOriginKind` to StepOver. This prevents stepping into compiler-generated calls in the function prologue (MSVC JMC checks `__CheckForDebuggerJustMyCode`, security cookies, etc.).
+
+`CheckStepLanding` also skips opening braces (`{`), hidden sequence points (line numbers beyond file length, e.g., 0xF00000+), and sourceless instructions when past the origin, ensuring the step lands on the first real statement.
 
 ## Re-fire Suppression (`LastContinuedBpId`)
 

@@ -350,6 +350,7 @@ public sealed class SteppingServiceTests : IDisposable
         WhenExecutingStepOnEngine(EngineExecutionStatus.StepOver);
 
         ThenStepOriginStackPointerIs(0x8000);
+        ThenStepOriginKindIs(EngineExecutionStatus.StepOver);
         ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus.StepOver);
     }
 
@@ -362,6 +363,7 @@ public sealed class SteppingServiceTests : IDisposable
         WhenExecutingStepOnEngine(EngineExecutionStatus.StepInto);
 
         ThenStepOriginStackPointerIs(0);
+        ThenStepOriginKindIs(EngineExecutionStatus.StepInto);
         ThenSetExecutionStatusWasCalledWith(EngineExecutionStatus.StepInto);
     }
 
@@ -429,6 +431,8 @@ public sealed class SteppingServiceTests : IDisposable
     private void ThenExecuteCommandWasCalledWith(string command) => _ = _wrapper.Received(1).ExecuteCommand(_model.Wrapper, command);
 
     private void ThenStepOriginStackPointerIs(ulong expected) => Assert.Equal(expected, _model.StepOriginStackPointer);
+
+    private void ThenStepOriginKindIs(EngineExecutionStatus expected) => Assert.Equal(expected, _model.StepOriginKind);
 
     #endregion
 
