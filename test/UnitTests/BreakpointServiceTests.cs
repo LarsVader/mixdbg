@@ -278,6 +278,81 @@ public sealed class BreakpointServiceTests : IDisposable
         ThenLastHitBpIdIs(42);
     }
 
+    // ── C++/CLI fallback ─────────────────────────────────────
+
+    [Fact]
+    public void SetBreakpoints_WhenCppFileClassifiedAsNative_AndCliResolutionSucceeds_ReturnsManagedBp()
+    {
+        GivenBreakpointRequest(@"C:\src\Wrapper.cpp", [25]);
+        GivenSourceFileIsNative(@"C:\src\Wrapper.cpp");
+        GivenManagedInitialized();
+        GivenCliResolutionSucceeds(@"C:\src\Wrapper.cpp", 25);
+
+        WhenSettingBreakpointsOnEngine();
+
+        ThenBreakpointResultCountIs(1);
+        ThenBreakpointAtIndexIsVerified(0, true);
+    }
+
+    [Fact]
+    public void SetBreakpoints_WhenCppFileClassifiedAsNative_AndCliResolutionFails_FallsBackToNative()
+    {
+        GivenBreakpointRequest(@"C:\src\Wrapper.cpp", [25]);
+        GivenSourceFileIsNative(@"C:\src\Wrapper.cpp");
+        GivenManagedInitialized();
+        GivenCliResolutionFails(@"C:\src\Wrapper.cpp", 25);
+        GivenGetOffsetByLineFails(@"C:\src\Wrapper.cpp", 25);
+        GivenAddDeferredBreakpointSucceeds(0);
+
+        WhenSettingBreakpointsOnEngine();
+
+        ThenBreakpointResultCountIs(1);
+        ThenBreakpointAtIndexIsVerified(0, true);
+    }
+
+    [Fact]
+    public void SetBreakpoints_WhenCppFileMultiLine_AndSecondLineFails_ReturnsPartiallyVerified()
+    {
+        GivenBreakpointRequest(@"C:\src\Wrapper.cpp", [25, 30]);
+        GivenSourceFileIsNative(@"C:\src\Wrapper.cpp");
+        GivenManagedInitialized();
+        GivenCliResolutionSucceeds(@"C:\src\Wrapper.cpp", 25);
+        GivenCliResolutionFails(@"C:\src\Wrapper.cpp", 30);
+
+        WhenSettingBreakpointsOnEngine();
+
+        ThenBreakpointResultCountIs(2);
+        ThenBreakpointAtIndexIsVerified(0, true);
+        ThenBreakpointAtIndexIsVerified(1, false);
+    }
+
+    [Fact]
+    public void SetBreakpoints_WhenCppFileClassifiedAsNative_AndManagedNotInitialized_SkipsFallback()
+    {
+        GivenBreakpointRequest(@"C:\src\Wrapper.cpp", [25]);
+        GivenSourceFileIsNative(@"C:\src\Wrapper.cpp");
+        GivenGetOffsetByLineFails(@"C:\src\Wrapper.cpp", 25);
+        GivenAddDeferredBreakpointSucceeds(0);
+
+        WhenSettingBreakpointsOnEngine();
+
+        ThenCliResolutionWasNotAttempted();
+    }
+
+    [Fact]
+    public void SetBreakpoints_WhenCsFileClassifiedAsManaged_SkipsFallback()
+    {
+        GivenBreakpointRequest(@"C:\src\Program.cs", [10]);
+        GivenSourceFileIsManaged(@"C:\src\Program.cs");
+        GivenManagedInitialized();
+        GivenManagedBreakpointServiceReturns(@"C:\src\Program.cs",
+            [new Breakpoint { Id = 1, Verified = true, Line = 10 }]);
+
+        WhenSettingBreakpointsOnEngine();
+
+        ThenCliResolutionWasNotAttempted();
+    }
+
     #region Given
 
     private void GivenSourceFileIsNative(string path) => _ = _sourceFiles.IsNativeFile(path).Returns(true);
@@ -350,6 +425,12 @@ public sealed class BreakpointServiceTests : IDisposable
     private void GivenManagedBreakpointServiceReturns(string filePath, Breakpoint[] results) => _ = _managedBp.SetManagedBreakpoints(_model, filePath, Arg.Any<SourceBreakpoint[]>())
             .Returns(results);
 
+    private void GivenCliResolutionSucceeds(string filePath, int line) => _ = _managedBp.TryResolveCliBreakpoint(_model, filePath, line, Arg.Any<int>())
+            .Returns(ci => new Breakpoint { Id = (int)ci[3], Verified = true, Line = line });
+
+    private void GivenCliResolutionFails(string filePath, int line) => _ = _managedBp.TryResolveCliBreakpoint(_model, filePath, line, Arg.Any<int>())
+            .Returns((Breakpoint?)null);
+
     #endregion
 
     #region When
@@ -395,6 +476,9 @@ public sealed class BreakpointServiceTests : IDisposable
     private void ThenLastHitBpIdIs(uint expected) => Assert.Equal(expected, _model.LastHitBpId);
 
     private void ThenLastContinuedBpIdIs(uint expected) => Assert.Equal(expected, _model.LastContinuedBpId);
+
+    private void ThenCliResolutionWasNotAttempted() => _managedBp.DidNotReceive().TryResolveCliBreakpoint(
+            _model, Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>());
 
     #endregion
 

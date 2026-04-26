@@ -61,8 +61,23 @@ internal interface IDebugSymbols
         out uint Index,
         out ulong Base);
 
-    // Slots 13-28
-    void _VtblGap5_16();
+    // Slot 13
+    [PreserveSig]
+    int GetModuleNames(
+        uint Index,
+        ulong Base,
+        IntPtr ImageNameBuffer,
+        uint ImageNameBufferSize,
+        out uint ImageNameSize,
+        IntPtr ModuleNameBuffer,
+        uint ModuleNameBufferSize,
+        out uint ModuleNameSize,
+        IntPtr LoadedImageNameBuffer,
+        uint LoadedImageNameBufferSize,
+        out uint LoadedImageNameSize);
+
+    // Slots 14-28
+    void _VtblGap5_15();
 
     // Slot 29
     [PreserveSig]

@@ -88,21 +88,21 @@ internal sealed class ManagedBreakpointService(
     /// <summary>
     /// Resolves a C++/CLI method token via dbgeng's Windows PDB support.
     /// Uses GetOffsetByLine to get the IL section address, computes RVA, then
-    /// looks up the method token from PE metadata.
+    /// looks up the method token from PE metadata. Tries dbgeng module info
+    /// first (works for any project layout), falls back to vcxproj scanning.
     /// </summary>
     private (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod)? ResolveMethodFromCliFile(
         NativeDebuggerModel model, string filePath, int line)
     {
-        if (!_sourceFiles.IsCliFile(filePath))
+        // Try for any C++ file — don't require vcxproj detection (fragile in large projects).
+        if (!ISourceFileService.IsCppExtension(filePath))
             return null;
 
-        _log.LogInfo(_logStore, $"  C++/CLI file detected: {filePath}");
         (ulong ilAddr, bool cliResolved) = _dbgEng.GetOffsetByLine(model.Wrapper, (uint)line, filePath);
         if (!cliResolved || ilAddr == 0)
-        {
-            _log.LogInfo(_logStore, $"  C++/CLI: GetOffsetByLine({line}) failed");
             return null;
-        }
+
+        _log.LogInfo(_logStore, $"  C++/CLI: GetOffsetByLine({line}) -> 0x{ilAddr:X}");
 
         ulong? moduleBase = _dbgEng.GetModuleByOffset(model.Wrapper, ilAddr);
         if (moduleBase == null || moduleBase.Value == 0)
@@ -112,8 +112,20 @@ internal sealed class ManagedBreakpointService(
         }
 
         int rva = (int)(ilAddr - moduleBase.Value);
-        string? assemblyName = ResolveCliAssemblyName(filePath);
-        string? dllPath = FindCliAssemblyDll(filePath, assemblyName);
+
+        // Primary path: get module image path directly from dbgeng.
+        string? dllPath = _dbgEng.GetModuleImagePath(model.Wrapper, moduleBase.Value);
+        string? assemblyName = dllPath != null
+            ? Path.GetFileNameWithoutExtension(dllPath)
+            : null;
+
+        // Fallback: vcxproj scanning (works when dbgeng module info unavailable).
+        if (dllPath == null)
+        {
+            assemblyName = ResolveCliAssemblyName(filePath);
+            dllPath = FindCliAssemblyDll(filePath, assemblyName);
+        }
+
         _log.LogInfo(_logStore, $"  C++/CLI: ilAddr=0x{ilAddr:X} base=0x{moduleBase.Value:X} rva=0x{rva:X} asm={assemblyName} dll={dllPath}");
 
         if (dllPath == null)
@@ -271,6 +283,27 @@ internal sealed class ManagedBreakpointService(
         return bpId;
     }
 
+    /// <inheritdoc />
+    public Breakpoint? TryResolveCliBreakpoint(NativeDebuggerModel model, string filePath, int line, int bpId)
+    {
+        (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod)? resolved =
+            ResolveMethodFromCliFile(model, filePath, line);
+
+        return resolved != null && BindResolvedMethod(model, filePath, line, bpId, resolved.Value)
+            ? new Breakpoint
+            {
+                Id = bpId,
+                Verified = true,
+                Line = line,
+                Source = new Source
+                {
+                    Name = Path.GetFileName(filePath),
+                    Path = filePath,
+                },
+            }
+            : null;
+    }
+
     public List<(string Assembly, int Token)> ResolveTokensFromBreakpoints(
         IEnumerable<(string FilePath, int Line)> breakpoints)
     {
@@ -343,7 +376,8 @@ internal sealed class ManagedBreakpointService(
         };
     }
 
-    private void ClearManagedBreakpointsForFile(NativeDebuggerModel model, string filePath)
+    /// <inheritdoc />
+    public void ClearManagedBreakpointsForFile(NativeDebuggerModel model, string filePath)
     {
         HashSet<int> clearedBpIds = [];
         if (model.ManagedFileBreakpointIds.TryGetValue(filePath, out List<int>? existingIds))

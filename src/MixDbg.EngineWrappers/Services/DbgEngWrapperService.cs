@@ -134,6 +134,27 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         return hr >= 0 ? moduleBase : null;
     }
 
+    /// <inheritdoc />
+    public string? GetModuleImagePath(DbgEngWrapperModel model, ulong moduleBase)
+    {
+        IntPtr buf = Marshal.AllocHGlobal(520);
+        try
+        {
+            int hr = model.Symbols.GetModuleNames(
+                uint.MaxValue, moduleBase,
+                buf, 520, out uint imageSize,
+                IntPtr.Zero, 0, out _,
+                IntPtr.Zero, 0, out _);
+            return hr >= 0 && imageSize > 0
+                ? Marshal.PtrToStringAnsi(buf)
+                : null;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buf);
+        }
+    }
+
     // ── Execution ──
 
     public WaitForEventResult WaitForEvent(DbgEngWrapperModel model)

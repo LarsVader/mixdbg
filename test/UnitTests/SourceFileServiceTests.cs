@@ -247,6 +247,32 @@ public sealed class SourceFileServiceTests : IDisposable
         ThenResultIsFalse();
     }
 
+    // ── Boundary check order (sln + vcxproj in same dir) ────
+
+    [Fact]
+    public void IsCliFile_WhenVcxprojAndSlnInSameDirectory_ReturnsTrue()
+    {
+        GivenAFileWithName("Wrapper.cpp");
+        GivenACppCliVcxproj();
+        GivenASlnFile();
+
+        WhenCheckingIsCliFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsNativeFile_WhenVcxprojAndSlnInSameDirectory_ReturnsFalse()
+    {
+        GivenAFileWithName("Wrapper.cpp");
+        GivenACppCliVcxproj();
+        GivenASlnFile();
+
+        WhenCheckingIsNativeFile();
+
+        ThenResultIsFalse();
+    }
+
     #region Given
 
     private void GivenAFileWithName(string fileName)
@@ -262,6 +288,9 @@ public sealed class SourceFileServiceTests : IDisposable
     private void GivenANativeVcxproj() => File.WriteAllText(
             Path.Combine(_tempDir, "project.vcxproj"),
             "<Project><PropertyGroup><RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary></PropertyGroup></Project>");
+
+    private void GivenASlnFile() => File.WriteAllText(
+            Path.Combine(_tempDir, "Project.sln"), "");
 
     #endregion
 

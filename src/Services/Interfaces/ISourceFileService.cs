@@ -25,4 +25,14 @@ public interface ISourceFileService
     /// native PDB support (GetOffsetByLine) without portable PDB parsing.
     /// </summary>
     bool IsCliFile(string path);
+
+    /// <summary>
+    /// Returns true for C/C++ file extensions: .cpp, .c, .cc, .cxx, .h, .hpp.
+    /// Does not check for CLRSupport — just the extension.
+    /// </summary>
+    static bool IsCppExtension(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext is ".cpp" or ".c" or ".cc" or ".cxx" or ".h" or ".hpp";
+    }
 }

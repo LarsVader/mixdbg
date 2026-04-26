@@ -31,6 +31,19 @@ internal sealed class BreakpointService(
         if (managedResult != null)
             return managedResult;
 
+        // For .cpp files classified as native: try C++/CLI resolution via dbgeng's Windows PDB.
+        // HasClrSupport may fail in large projects where vcxproj is far from source.
+        if (model.ManagedInitialized && ISourceFileService.IsCppExtension(filePath))
+        {
+            Breakpoint[]? cliResults = TryCliBreakpointFallback(model, filePath, requested);
+            if (cliResults != null)
+            {
+                // Remove stale native BPs (e.g. from before managed init when `bu` was used).
+                RemoveExistingBreakpoints(model, filePath);
+                return cliResults;
+            }
+        }
+
         RemoveExistingBreakpoints(model, filePath);
 
         Breakpoint[] results = new Breakpoint[requested.Length];
@@ -70,6 +83,42 @@ internal sealed class BreakpointService(
             Source = CreateSource(filePath),
             Message = "Pending — managed debugger not yet initialized",
         })];
+    }
+
+    /// <summary>
+    /// Attempts C++/CLI breakpoint resolution for .cpp files that were classified as native.
+    /// Probes the first line to check if dbgeng can resolve it as C++/CLI. If yes, resolves
+    /// all lines. Returns <c>null</c> to fall through to native if the file isn't C++/CLI.
+    /// </summary>
+    private Breakpoint[]? TryCliBreakpointFallback(
+        NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
+    {
+        if (requested.Length == 0)
+            return null;
+
+        // Probe the first line to check if this is C++/CLI (binds the BP on success).
+        _managedBp.ClearManagedBreakpointsForFile(model, filePath);
+        Breakpoint? probe = _managedBp.TryResolveCliBreakpoint(model, filePath, requested[0].Line, ++model.NextBpId);
+        if (probe == null)
+            return null;
+
+        _log.LogInfo(_logStore, $"  C++/CLI fallback resolving {requested.Length} BPs for {filePath}");
+        Breakpoint[] results = new Breakpoint[requested.Length];
+        results[0] = probe;
+
+        for (int i = 1; i < requested.Length; i++)
+        {
+            Breakpoint? cli = _managedBp.TryResolveCliBreakpoint(model, filePath, requested[i].Line, ++model.NextBpId);
+            results[i] = cli ?? new Breakpoint
+            {
+                Id = model.NextBpId,
+                Verified = false,
+                Line = requested[i].Line,
+                Source = CreateSource(filePath),
+                Message = "C++/CLI: failed to resolve line",
+            };
+        }
+        return results;
     }
 
     /// <summary>

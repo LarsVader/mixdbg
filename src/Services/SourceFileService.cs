@@ -13,12 +13,8 @@ public sealed class SourceFileService : ISourceFileService
 
     public bool IsNativeFile(string path)
     {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext is not ".cpp" and not ".c" and not ".cc" and not ".cxx"
-            and not ".h" and not ".hpp")
-        {
+        if (!ISourceFileService.IsCppExtension(path))
             return false;
-        }
 
         // C++/CLI projects compile to IL — not debuggable via dbgeng.
         return !HasClrSupport(Path.GetDirectoryName(path));
@@ -26,23 +22,18 @@ public sealed class SourceFileService : ISourceFileService
 
     public bool IsManagedFile(string path)
     {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
-
         // C# files are always managed.
-        if (ext == ".cs")
+        if (Path.GetExtension(path).Equals(".cs", StringComparison.OrdinalIgnoreCase))
             return true;
 
         // C++/CLI files: .cpp/.c/.h/.hpp in a project with <CLRSupport>.
-        return ext is ".cpp" or ".c" or ".cc" or ".cxx" or ".h" or ".hpp"
+        return ISourceFileService.IsCppExtension(path)
             && HasClrSupport(Path.GetDirectoryName(path));
     }
 
     public bool IsCliFile(string path)
-    {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
-        return ext is ".cpp" or ".c" or ".cc" or ".cxx" or ".h" or ".hpp"
+        => ISourceFileService.IsCppExtension(path)
             && HasClrSupport(Path.GetDirectoryName(path));
-    }
 
     /// <summary>
     /// Checks whether the directory (or a parent up to 5 levels) contains a
@@ -70,13 +61,8 @@ public sealed class SourceFileService : ISourceFileService
 
             try
             {
-                // Stop at solution or repo root — don't cross project boundaries.
-                if (Directory.GetFiles(current, "*.sln").Length > 0
-                    || Directory.Exists(Path.Combine(current, ".git")))
-                {
-                    break;
-                }
-
+                // Check for vcxproj BEFORE sln/git boundaries — a directory may
+                // contain both a .sln and a .vcxproj (common in large projects).
                 string[] vcxprojs = Directory.GetFiles(current, "*.vcxproj");
                 if (vcxprojs.Length > 0)
                 {
@@ -91,6 +77,13 @@ public sealed class SourceFileService : ISourceFileService
                             break;
                         }
                     }
+                    break;
+                }
+
+                // Stop at solution or repo root — don't cross project boundaries.
+                if (Directory.GetFiles(current, "*.sln").Length > 0
+                    || Directory.Exists(Path.Combine(current, ".git")))
+                {
                     break;
                 }
             }

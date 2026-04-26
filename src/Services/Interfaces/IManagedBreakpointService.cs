@@ -33,6 +33,20 @@ public interface IManagedBreakpointService
     uint? SetManagedCodeBreakpoint(NativeDebuggerModel model, ulong address, string filePath, int line);
 
     /// <summary>
+    /// Removes all managed breakpoints (hardware BPs, plans, deferred entries) for the
+    /// given source file. Called before re-setting breakpoints for a file.
+    /// </summary>
+    void ClearManagedBreakpointsForFile(NativeDebuggerModel model, string filePath);
+
+    /// <summary>
+    /// Attempts C++/CLI breakpoint resolution for a <c>.cpp</c> file that was classified
+    /// as native by <see cref="ISourceFileService"/>. Uses dbgeng's Windows PDB to resolve
+    /// the method token directly. Returns a <see cref="Breakpoint"/> result if successful,
+    /// or <c>null</c> if the file is not C++/CLI or resolution fails.
+    /// </summary>
+    Breakpoint? TryResolveCliBreakpoint(NativeDebuggerModel model, string filePath, int line, int bpId);
+
+    /// <summary>
     /// Resolves exact (assembly, token) pairs from breakpoint file:line hints by
     /// searching for PDB files on disk. Used to tell the CLR profiler which exact
     /// methods to block on during JIT (zero overhead for all other JITs).

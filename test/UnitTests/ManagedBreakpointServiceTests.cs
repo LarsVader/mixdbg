@@ -195,12 +195,13 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     }
 
     [Fact]
-    public void TryBindBreakpoint_WhenCliFileResolves_StoresDeferred()
+    public void TryBindBreakpoint_WhenCliFileResolves_ViaVcxproj_StoresDeferred()
     {
         GivenNoLoadedModules();
         GivenCliProjectExists(); // Sets up temp vcxproj, _cliSourcePath, _cliDllPath
         GivenGetOffsetByLineSucceeds(_cliSourcePath!, 25, 0x7000);
         GivenGetModuleByOffsetReturns(0x7000, 0x1000);
+        GivenGetModuleImagePathReturns(0x1000, null); // dbgeng path unavailable, falls back to vcxproj
         GivenFindTokenByRvaReturns(_cliDllPath!, (int)(0x7000 - 0x1000), 0x06000099);
 
         bool result = WhenTryingToBindBreakpoint(_cliSourcePath!, 25, bpId: 400);
@@ -208,6 +209,24 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         Assert.True(result);
         ThenDeferredBreakpointCountIs(1);
         ThenDeferredBreakpointIsCliMethod(0, true);
+    }
+
+    [Fact]
+    public void TryBindBreakpoint_WhenCliFileResolves_ViaDbgEngModuleInfo_StoresDeferred()
+    {
+        GivenCliSourceFileOnDisk();
+        GivenNoLoadedModules();
+        GivenGetOffsetByLineSucceeds(_cliSourcePath!, 25, 0x7000);
+        GivenGetModuleByOffsetReturns(0x7000, 0x1000);
+        GivenGetModuleImagePathReturns(0x1000, @"C:\out\CliWrapper.dll");
+        GivenFindTokenByRvaReturns(@"C:\out\CliWrapper.dll", (int)(0x7000 - 0x1000), 0x06000088);
+
+        WhenBindingBreakpoint(_cliSourcePath!, 25, bpId: 401);
+
+        ThenBindSucceeded();
+        ThenDeferredBreakpointCountIs(1);
+        ThenDeferredBreakpointIsCliMethod(0, true);
+        ThenDeferredBreakpointHasAssembly(0, "CliWrapper");
     }
 
     [Fact]
@@ -260,7 +279,6 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     {
         string src = GivenSourceFileOnDisk("Wrapper.cpp");
         GivenNoLoadedModules();
-        GivenSourceFileIsCli(src);
         GivenGetOffsetByLineFails(src, 25);
 
         bool result = WhenTryingToBindBreakpoint(src, 25, bpId: 600);
@@ -273,7 +291,6 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     {
         string src = GivenSourceFileOnDisk("Wrapper.cpp");
         GivenNoLoadedModules();
-        GivenSourceFileIsCli(src);
         GivenGetOffsetByLineSucceeds(src, 25, 0x7000);
         GivenGetModuleByOffsetReturns(0x7000, null);
 
@@ -553,13 +570,13 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     [Fact]
     public void TryBindBreakpoint_WhenCliFile_ButNoVcxprojForDll_ReturnsFalse()
     {
-        // Source is in a temp dir with no vcxproj, so assemblyName resolves to null,
-        // which means FindCliAssemblyDll returns null.
+        // Source is in a temp dir with no vcxproj and GetModuleImagePath returns null,
+        // so both resolution paths fail.
         string src = GivenSourceFileOnDisk("Wrapper.cpp");
         GivenNoLoadedModules();
-        GivenSourceFileIsCli(src);
         GivenGetOffsetByLineSucceeds(src, 25, 0x7000);
         GivenGetModuleByOffsetReturns(0x7000, 0x1000);
+        GivenGetModuleImagePathReturns(0x1000, null);
 
         bool result = WhenTryingToBindBreakpoint(src, 25, bpId: 950);
 
@@ -575,6 +592,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         GivenCliProjectWithSiblingDll(); // Sets _cliSourcePath, _cliDllPath
         GivenGetOffsetByLineSucceeds(_cliSourcePath!, 25, 0x7000);
         GivenGetModuleByOffsetReturns(0x7000, 0x1000);
+        GivenGetModuleImagePathReturns(0x1000, null); // dbgeng path unavailable, falls back to vcxproj
         GivenFindTokenByRvaReturns(_cliDllPath!, (int)(0x7000 - 0x1000), 0x06000077);
 
         bool result = WhenTryingToBindBreakpoint(_cliSourcePath!, 25, bpId: 960);
@@ -628,6 +646,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         GivenCliProjectExists();
         GivenGetOffsetByLineSucceeds(_cliSourcePath!, 25, 0x7000);
         GivenGetModuleByOffsetReturns(0x7000, 0x1000);
+        GivenGetModuleImagePathReturns(0x1000, null);
         _ = _pdbMapper.FindTokenByRva(_cliDllPath!, (int)(0x7000 - 0x1000))
             .Returns((int?)null);
 
@@ -709,11 +728,11 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     private void GivenGetModuleByOffsetReturns(ulong offset, ulong? moduleBase)
         => _dbgEng.GetModuleByOffset(_model.Wrapper, offset).Returns(moduleBase);
 
+    private void GivenGetModuleImagePathReturns(ulong moduleBase, string? imagePath)
+        => _dbgEng.GetModuleImagePath(_model.Wrapper, moduleBase).Returns(imagePath);
+
     private void GivenFindTokenByRvaReturns(string dllPath, int rva, int token)
         => _pdbMapper.FindTokenByRva(dllPath, rva).Returns(token);
-
-    private void GivenSourceFileIsCli(string path)
-        => _sourceFiles.IsCliFile(path).Returns(true);
 
     private void GivenSourceFileIsNotCli(string path)
         => _sourceFiles.IsCliFile(path).Returns(false);
@@ -749,6 +768,14 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         _model.DeferredManagedBreakpoints.Add(
             new DeferredManagedBreakpoint(filePath, line, token, 0, bpId, "SomeAssembly"));
         _model.RebuildDeferredBreakpointIndex();
+    }
+
+    private void GivenCliSourceFileOnDisk()
+    {
+        string dir = Path.Combine(_tempDir, $"cliSrc_{_nextDiskFileId++}");
+        _ = Directory.CreateDirectory(dir);
+        _cliSourcePath = Path.Combine(dir, "Wrapper.cpp");
+        File.WriteAllText(_cliSourcePath, "// fake source");
     }
 
     private void GivenCliProjectExists()
@@ -883,6 +910,9 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     private bool WhenTryingToBindBreakpoint(string filePath, int line, int bpId)
         => _testee.TryBindBreakpoint(_model, filePath, line, bpId);
 
+    private void WhenBindingBreakpoint(string filePath, int line, int bpId)
+        => _bindResult = _testee.TryBindBreakpoint(_model, filePath, line, bpId);
+
     private uint? WhenSettingManagedCodeBreakpoint(ulong address, string filePath, int line)
         => _testee.SetManagedCodeBreakpoint(_model, address, filePath, line);
 
@@ -988,6 +1018,12 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     private void ThenDeferredBreakpointIsCliMethod(int index, bool expected)
         => Assert.Equal(expected, _model.DeferredManagedBreakpoints[index].IsCliMethod);
 
+    private void ThenDeferredBreakpointHasAssembly(int index, string expected)
+        => Assert.Equal(expected, _model.DeferredManagedBreakpoints[index].AssemblyName);
+
+    private void ThenBindSucceeded()
+        => Assert.True(_bindResult);
+
     #endregion
 
     #region Misc
@@ -1003,6 +1039,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     private readonly string _tempDir;
 
     private Breakpoint[]? _results;
+    private bool? _bindResult;
     private string? _cliDllPath;
     private string? _cliSourcePath;
     private string? _diskSourceFile;

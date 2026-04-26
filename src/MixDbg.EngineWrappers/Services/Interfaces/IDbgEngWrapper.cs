@@ -56,6 +56,9 @@ public interface IDbgEngWrapper
     /// <summary>Gets the module base address containing a native address.</summary>
     ulong? GetModuleByOffset(DbgEngWrapperModel model, ulong offset);
 
+    /// <summary>Gets the full image path (e.g. DLL path) for a module given its base address.</summary>
+    string? GetModuleImagePath(DbgEngWrapperModel model, ulong moduleBase);
+
     // ── Execution ──
 
     /// <summary>Blocks until the target stops or an error occurs.</summary>
