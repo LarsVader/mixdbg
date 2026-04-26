@@ -457,40 +457,66 @@ HRESULT STDMETHODCALLTYPE MixDbgProfiler::JITCompilationFinished(
     char asmUtf8[256] = {};
     ExtractAssemblyName(modulePath, asmUtf8, sizeof(asmUtf8));
 
-    char line[4096]; // Large enough for IL-to-native mapping entries.
+    char lineStack[4096];
+    char* line = lineStack;
+    size_t lineCap = sizeof(lineStack);
     int lineLen;
 
     if (m_hooksActive) {
         // With enter/leave hooks: send prefixed JIT notification.
         // For watched methods, include IL-to-native mapping so MixDbg can set
         // hardware BPs at exact source lines (not just method entry).
-        lineLen = sprintf_s(line, sizeof(line), "JIT:%08X:%016llX:%08X:%s",
+        lineLen = sprintf_s(line, lineCap, "JIT:%08X:%016llX:%08X:%s",
             (unsigned int)token, (unsigned long long)(UINT_PTR)codeStart,
             (unsigned int)codeSize, asmUtf8);
 
         if (lineLen > 0) {
             // Append IL-to-native mapping for exact-line BP resolution: :IL0=N0,IL1=N1,...
-            ILNativeMap maps[128];
+            // Two-pass: query count first, then allocate appropriately.
             ULONG32 mapCount = 0;
-            if (SUCCEEDED(m_pInfo->GetILToNativeMapping(functionId, 128, &mapCount, maps)) && mapCount > 0) {
-                lineLen += sprintf_s(line + lineLen, sizeof(line) - lineLen, ":");
-                for (ULONG32 i = 0; i < mapCount && i < 128; i++) {
-                    if ((int)maps[i].ilOffset < 0) continue; // skip prolog/epilog markers
-                    if (lineLen > 1 && line[lineLen-1] != ':')
-                        lineLen += sprintf_s(line + lineLen, sizeof(line) - lineLen, ",");
-                    lineLen += sprintf_s(line + lineLen, sizeof(line) - lineLen,
-                        "%X=%X", maps[i].ilOffset, maps[i].nativeStartOffset);
+            m_pInfo->GetILToNativeMapping(functionId, 0, &mapCount, nullptr);
+            if (mapCount > 0) {
+                ILNativeMap* maps = (mapCount <= 128)
+                    ? (ILNativeMap*)_alloca(mapCount * sizeof(ILNativeMap))
+                    : (ILNativeMap*)malloc(mapCount * sizeof(ILNativeMap));
+                bool heapMaps = (mapCount > 128);
+                if (maps && SUCCEEDED(m_pInfo->GetILToNativeMapping(functionId, mapCount, &mapCount, maps))) {
+                    // Estimate buffer: header + 20 chars per entry (worst: "XXXXXXXX=XXXXXXXX,") + newline.
+                    size_t needed = (size_t)lineLen + 2 + (size_t)mapCount * 20 + 2;
+                    if (needed <= sizeof(lineStack)) {
+                        line = lineStack;
+                    } else {
+                        line = (char*)malloc(needed);
+                        if (!line) { line = lineStack; goto skip_mapping; } // OOM: send JIT without mapping
+                    }
+                    if (line != lineStack) {
+                        memcpy(line, lineStack, lineLen);
+                        lineCap = needed;
+                    }
+                    lineLen += sprintf_s(line + lineLen, lineCap - lineLen, ":");
+                    for (ULONG32 i = 0; i < mapCount; i++) {
+                        if ((int)maps[i].ilOffset < 0) continue; // skip prolog/epilog markers
+                        if (lineLen > 1 && line[lineLen-1] != ':')
+                            lineLen += sprintf_s(line + lineLen, lineCap - lineLen, ",");
+                        lineLen += sprintf_s(line + lineLen, lineCap - lineLen,
+                            "%X=%X", maps[i].ilOffset, maps[i].nativeStartOffset);
+                    }
+                skip_mapping:;
                 }
+                if (heapMaps) free(maps);
             }
         }
 
         if (lineLen > 0) {
-            lineLen += sprintf_s(line + lineLen, sizeof(line) - lineLen, "\n");
+            lineLen += sprintf_s(line + lineLen, lineCap - lineLen, "\n");
             WriteToPipe(line, lineLen);
+            if (line != lineStack) free(line);
+            line = lineStack;
+            lineCap = sizeof(lineStack);
         }
     } else {
         // Without hooks: use old format with blocking for watched methods.
-        lineLen = sprintf_s(line, sizeof(line), "%08X:%016llX:%08X:%s\n",
+        lineLen = sprintf_s(line, lineCap, "%08X:%016llX:%08X:%s\n",
             (unsigned int)token, (unsigned long long)(UINT_PTR)codeStart,
             (unsigned int)codeSize, asmUtf8);
         if (lineLen > 0) {

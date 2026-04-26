@@ -9,6 +9,8 @@
 #include <unknwn.h>
 #include <objbase.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <malloc.h>
 #include <string.h>
 
 // LPCBYTE is from the profiling API headers which we don't include.

@@ -67,17 +67,28 @@ public:
 
     // Returns the native offset for the first IL instruction (method body start).
     ULONG32 GetMethodBodyOffset(FunctionID funcId) {
-        ILNativeMap maps[64];
+        // Two-pass: query count, then allocate appropriately.
         ULONG32 count = 0;
-        if (FAILED(GetILToNativeMapping(funcId, 64, &count, maps)) || count == 0) return 0;
-        for (ULONG32 i = 0; i < count && i < 64; i++) {
-            if (maps[i].ilOffset == 0)
-                return maps[i].nativeStartOffset;
+        GetILToNativeMapping(funcId, 0, &count, nullptr);
+        if (count == 0) return 0;
+        ILNativeMap mapsStack[128];
+        ILNativeMap* maps = (count <= 128)
+            ? mapsStack
+            : (ILNativeMap*)malloc(count * sizeof(ILNativeMap));
+        if (!maps) return 0;
+        if (FAILED(GetILToNativeMapping(funcId, count, &count, maps)) || count == 0) {
+            if (maps != mapsStack) free(maps);
+            return 0;
         }
-        for (ULONG32 i = 0; i < count && i < 64; i++) {
-            if ((int)maps[i].ilOffset >= 0)
-                return maps[i].nativeStartOffset;
+        ULONG32 result = 0;
+        for (ULONG32 i = 0; i < count; i++) {
+            if (maps[i].ilOffset == 0) { result = maps[i].nativeStartOffset; goto done; }
         }
-        return 0;
+        for (ULONG32 i = 0; i < count; i++) {
+            if ((int)maps[i].ilOffset >= 0) { result = maps[i].nativeStartOffset; goto done; }
+        }
+    done:
+        if (maps != mapsStack) free(maps);
+        return result;
     }
 };
