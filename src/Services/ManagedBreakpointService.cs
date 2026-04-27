@@ -100,7 +100,10 @@ internal sealed class ManagedBreakpointService(
 
         (ulong ilAddr, bool cliResolved) = _dbgEng.GetOffsetByLine(model.Wrapper, (uint)line, filePath);
         if (!cliResolved || ilAddr == 0)
+        {
+            _log.LogInfo(_logStore, $"  C++/CLI: GetOffsetByLine({line}, {filePath}) -> not resolved (module not loaded in dbgeng?)");
             return null;
+        }
 
         _log.LogInfo(_logStore, $"  C++/CLI: GetOffsetByLine({line}) -> 0x{ilAddr:X}");
 

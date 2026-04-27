@@ -6,6 +6,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NativeLib", "NativeLib\Nati
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CliWrapper", "CliWrapper\CliWrapper.vcxproj", "{B2C3D4E5-2222-3333-4444-555566667777}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LateCliWrapper", "LateCliWrapper\LateCliWrapper.vcxproj", "{D4E5F6A7-4444-5555-6666-777788889999}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WpfApp", "WpfApp\WpfApp.csproj", "{C3D4E5F6-3333-4444-5555-666677778888}"
 EndProject
 Global
@@ -22,6 +24,10 @@ Global
 		{B2C3D4E5-2222-3333-4444-555566667777}.Debug|x64.Build.0 = Debug|x64
 		{B2C3D4E5-2222-3333-4444-555566667777}.Release|x64.ActiveCfg = Release|x64
 		{B2C3D4E5-2222-3333-4444-555566667777}.Release|x64.Build.0 = Release|x64
+		{D4E5F6A7-4444-5555-6666-777788889999}.Debug|x64.ActiveCfg = Debug|x64
+		{D4E5F6A7-4444-5555-6666-777788889999}.Debug|x64.Build.0 = Debug|x64
+		{D4E5F6A7-4444-5555-6666-777788889999}.Release|x64.ActiveCfg = Release|x64
+		{D4E5F6A7-4444-5555-6666-777788889999}.Release|x64.Build.0 = Release|x64
 		{C3D4E5F6-3333-4444-5555-666677778888}.Debug|x64.ActiveCfg = Debug|x64
 		{C3D4E5F6-3333-4444-5555-666677778888}.Debug|x64.Build.0 = Debug|x64
 		{C3D4E5F6-3333-4444-5555-666677778888}.Release|x64.ActiveCfg = Release|x64

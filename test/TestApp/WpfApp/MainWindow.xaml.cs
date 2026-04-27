@@ -11,42 +11,42 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         if (App.AutoTest)
-            Loaded += OnAutoTest;
+            Loaded += AutoTestHelper.CreateHandler(this);
     }
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
 
-    private void OnAutoTest(object sender, RoutedEventArgs e)
-    {
-        Hide();
-        int firstDelay = App.AutoTestSlow ? 15 : 3;
-        if (App.AutoTestComplex)
-        {   // Delays: 5s init + 5s between steps = 25s to Complex (35s margin with 60s timeout).
-            ScheduleActions(
-                (5, OnFibonacciClickAction), (5, OnCountPrimesClickAction),
-                (5, OnFactorialClickAction), (5, OnAsyncCalcClickAction),
-                (5, OnComplexClickAction), (5, Close));
-        }
-        else if (App.AutoTestDouble)
-        {
-            ScheduleActions(
-                (firstDelay, OnAddClickAction), (15, OnAddClickAction),
-                (15, OnMultiplyClickAction), (15, OnMultiplyClickAction), (5, Close));
-        }
-        else
-        {
-            ScheduleActions(
-                (firstDelay, OnAddClickAction), (8, OnMultiplyClickAction), (3, Close));
-        }
-    }
+    internal void OnAddClickAction() => OnAddClick(this, new RoutedEventArgs());
+    internal void OnMultiplyClickAction() => OnMultiplyClick(this, new RoutedEventArgs());
+    internal void OnFibonacciClickAction() => OnFibonacciClick(this, new RoutedEventArgs());
+    internal void OnCountPrimesClickAction() => OnCountPrimesClick(this, new RoutedEventArgs());
+    internal void OnFactorialClickAction() => OnFactorialClick(this, new RoutedEventArgs());
+    internal void OnAsyncCalcClickAction() => OnAsyncCalcClick(this, new RoutedEventArgs());
+    internal void OnComplexClickAction() => OnComplexClick(this, new RoutedEventArgs());
 
-    private void OnAddClickAction() => OnAddClick(this, new RoutedEventArgs());
-    private void OnMultiplyClickAction() => OnMultiplyClick(this, new RoutedEventArgs());
-    private void OnFibonacciClickAction() => OnFibonacciClick(this, new RoutedEventArgs());
-    private void OnCountPrimesClickAction() => OnCountPrimesClick(this, new RoutedEventArgs());
-    private void OnFactorialClickAction() => OnFactorialClick(this, new RoutedEventArgs());
-    private void OnAsyncCalcClickAction() => OnAsyncCalcClick(this, new RoutedEventArgs());
-    private void OnComplexClickAction() => OnComplexClick(this, new RoutedEventArgs());
-
-    private static void ScheduleActions(params (int DelaySec, Action Action)[] steps)
+    internal static void ScheduleActions(params (int DelaySec, Action Action)[] steps)
     {
         if (steps.Length == 0) return;
         DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(steps[0].DelaySec) };
@@ -185,5 +185,16 @@ public partial class MainWindow : Window
     public System.Windows.Input.ICommand TestCommand
     {
         get; set;
+    }
+
+    // ── Late-loaded C++/CLI (LateCliWrapper loads on first click) ──
+
+    private void OnLateSquareClick(object sender, RoutedEventArgs e)
+    {
+        if (TryGetA(out int a))
+        {
+            int result = AutoTestHelper.CallLateSquare(a);
+            ResultText.Text = $"{a}² = {result}";
+        }
     }
 }

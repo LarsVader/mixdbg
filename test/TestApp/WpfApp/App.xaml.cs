@@ -9,13 +9,15 @@ public partial class App : Application
     internal static bool AutoTestSlow { get; private set; }
     internal static bool AutoTestDouble { get; private set; }
     internal static bool AutoTestComplex { get; private set; }
+    internal static bool AutoTestLate { get; private set; }
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        AutoTest = e.Args.Contains("--auto-test") || e.Args.Contains("--auto-test-slow") || e.Args.Contains("--auto-test-double") || e.Args.Contains("--auto-test-complex");
+        AutoTest = e.Args.Contains("--auto-test") || e.Args.Contains("--auto-test-slow") || e.Args.Contains("--auto-test-double") || e.Args.Contains("--auto-test-complex") || e.Args.Contains("--auto-test-late");
         AutoTestSlow = e.Args.Contains("--auto-test-slow");
         AutoTestDouble = e.Args.Contains("--auto-test-double");
         AutoTestComplex = e.Args.Contains("--auto-test-complex");
+        AutoTestLate = e.Args.Contains("--auto-test-late");
         base.OnStartup(e);
     }
 }

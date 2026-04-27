@@ -21,6 +21,9 @@ internal sealed class BreakpointService(
 {
     public Breakpoint[] SetBreakpointsOnEngine(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
     {
+        // Normalize path: DAP clients may send mixed slashes (C:/git/repo\src/file.cpp).
+        // dbgeng's GetOffsetByLine matches against PDB paths which use backslashes.
+        filePath = Path.GetFullPath(filePath);
         _log.LogInfo(_logStore, $"SetBreakpointsOnEngine: file={filePath} count={requested.Length}");
         foreach (SourceBreakpoint r in requested)
             _log.LogInfo(_logStore, $"  requested: line={r.Line}");

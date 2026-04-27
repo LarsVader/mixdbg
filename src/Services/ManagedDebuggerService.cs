@@ -82,10 +82,12 @@ internal sealed class ManagedDebuggerService(
             }
             model.PendingManagedBreakpoints.Clear();
 
-            // Re-evaluate .cpp deferred (bu) breakpoints now that CLR is initialized.
-            // These were set as native breakpoints before CLR loaded because HasClrSupport
-            // may have failed. The CLI fallback in SetBreakpointsOnEngine can now resolve them.
-            ReEvaluateDeferredCppBreakpoints(model);
+            // C++/CLI DLLs often load before coreclr (they're native DLLs pulled in by
+            // the OS loader). The OnLoadModule retry skipped them because ManagedInitialized
+            // was false at that point. Now that we're initialized, retry any BPs that landed
+            // in PendingILBreakpoints — their modules are already in dbgeng.
+            if (model.PendingILBreakpoints.Count > 0)
+                _bpResolver.TryBindManagedBreakpointsOnModuleLoad(model);
 
             _log.LogInfo(_logStore, "Managed debugging initialized (ICorDebug V4)");
 
@@ -94,56 +96,6 @@ internal sealed class ManagedDebuggerService(
             // and don't starve the WPF UI thread like the 2s SetInterrupt polling does.
             if (model.DeferredManagedBreakpoints.Count > 0 && model.ProfilerPipe == null)
                 _bpResolver.StartDeferredBreakpointPoller(model);
-        }
-    }
-
-    /// <summary>
-    /// Re-evaluates .cpp/.h breakpoints that were set as native deferred (bu) breakpoints
-    /// before CLR was initialized. Tries C++/CLI resolution via dbgeng's Windows PDB.
-    /// Only replaces the native bu BP if CLI resolution succeeds — native files are left
-    /// untouched.
-    /// </summary>
-    private void ReEvaluateDeferredCppBreakpoints(NativeDebuggerModel model)
-    {
-        // Collect C++ entries from BreakpointIds. Snapshot keys to avoid modification during iteration.
-        List<(string FilePath, int Line, string Key, uint BpId)> candidates = [];
-        foreach (string key in model.BreakpointIds.Keys.ToList())
-        {
-            int lastColon = key.LastIndexOf(':');
-            if (lastColon <= 0)
-                continue;
-            string filePath = key[..lastColon];
-            if (!ISourceFileService.IsCppExtension(filePath))
-                continue;
-            if (!int.TryParse(key[(lastColon + 1)..], out int line))
-                continue;
-            candidates.Add((filePath, line, key, model.BreakpointIds[key]));
-        }
-
-        if (candidates.Count == 0)
-            return;
-
-        _log.LogInfo(_logStore, $"Re-evaluating {candidates.Count} C++ BP(s) after CLR init");
-        foreach ((string filePath, int line, string key, uint oldBpId) in candidates)
-        {
-            Breakpoint? cliBp = _bpService.TryResolveCliBreakpoint(model, filePath, line, (int)oldBpId);
-            if (cliBp == null)
-            {
-                _log.LogInfo(_logStore, $"  {filePath}:{line} — not C++/CLI, keeping native bu");
-                continue;
-            }
-
-            // CLI resolution succeeded — remove the old native bu BP.
-            _ = _dbgEng.RemoveBreakpoint(model.Wrapper, oldBpId);
-            _ = model.UserBreakpointIds.Remove(oldBpId);
-            _ = model.BreakpointIds.Remove(key);
-            _log.LogInfo(_logStore, $"  {filePath}:{line} — resolved as C++/CLI, replaced bu #{oldBpId}");
-
-            _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
-            {
-                Reason = "changed",
-                Breakpoint = cliBp,
-            });
         }
     }
 

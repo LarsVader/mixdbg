@@ -416,6 +416,8 @@ internal sealed class EngineLifecycleService(
 
     private void OnLoadModule(NativeDebuggerModel model, string? mod, string? img, ulong baseOffset)
     {
+        _log.LogInfo(_logStore, $"Module loaded: {mod ?? "(null)"} img={img ?? "(null)"} base=0x{baseOffset:X}");
+
         if (!model.ClrLoaded && mod != null &&
                 mod.Equals("coreclr", StringComparison.OrdinalIgnoreCase))
         {

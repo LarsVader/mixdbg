@@ -711,6 +711,41 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
+    // ── Late-loaded C++/CLI assembly ─────────────────────────
+
+    [Fact]
+    public async Task LateCliBreakpoint_WhenSetBeforeLaunch_StopsWhenModuleLoads()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set BP on LateCalculator::Square (LateCliWrapper — not loaded at startup).
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _lateCliBpFile, name = "LateCalculator.h" },
+            breakpoints = new[] { new { line = _lateSquareLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // --auto-test-late: clicks Add (loads CliWrapper), then calls LateCalculator.Square
+        // (loads LateCliWrapper on demand).
+        await WhenLaunchingWithAutoTestLate();
+        await WhenSendingConfigurationDone();
+
+        // Should stop at LateCalculator::Square when LateCliWrapper loads.
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "LateCalculator.h");
+        ThenNoLogErrors();
+    }
+
     #region Given
 
     private void GivenMixDbgAndWpfAppExist()
@@ -807,6 +842,17 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
             program = _wpfAppPath.Replace("/", "\\"),
             cwd = Path.GetDirectoryName(_wpfAppPath)!.Replace("/", "\\"),
             args = new[] { "--auto-test-slow" },
+        });
+        await WhenWaitingForResponse("launch", timeout: 10);
+    }
+
+    private async Task WhenLaunchingWithAutoTestLate()
+    {
+        await SendDapRequest(3, "launch", new
+        {
+            program = _wpfAppPath.Replace("/", "\\"),
+            cwd = Path.GetDirectoryName(_wpfAppPath)!.Replace("/", "\\"),
+            args = new[] { "--auto-test-late" },
         });
         await WhenWaitingForResponse("launch", timeout: 10);
     }
@@ -1108,6 +1154,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         _repoRoot, "test", "TestApp", "CliWrapper", "ManagedCalculator.h");
     private static readonly string _nativeBpFile = Path.Combine(
         _repoRoot, "test", "TestApp", "NativeLib", "Calculator.cpp");
+    private static readonly string _lateCliBpFile = Path.Combine(
+        _repoRoot, "test", "TestApp", "LateCliWrapper", "LateCalculator.h");
     private const int _addLine = 65;
     private const int _multiplyLine = 74;
     private const int _addBodyLine = 67;       // int result = ManagedCalculator.Add(a, b);
@@ -1118,6 +1166,7 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
     private const int _nativeAddLine = 7;       // return a + b; (Calculator.cpp)
     private const int _nativeMultiplyLine = 12;  // return a * b; (Calculator.cpp)
     private const int _afterMultiplyNativeCallLine = 77; // ResultText.Text = $"{a} × {b} = {result}";
+    private const int _lateSquareLine = 12;              // return x * x; (LateCalculator.h)
 
     private readonly string _sessionLogPath = Path.Combine(
         Path.GetTempPath(), $"mixdbg-test-{Guid.NewGuid():N}.log");

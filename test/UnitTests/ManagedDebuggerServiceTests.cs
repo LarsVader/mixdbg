@@ -188,54 +188,6 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
     }
 
     [Fact]
-    public void TryInitializeManaged_WhenCppDeferredBPsExist_TriesCliResolution()
-    {
-        GivenRuntimeWillInitialize();
-        GivenExistingNativeCppBreakpoint(@"C:\src\Wrapper.cpp", line: 25, bpId: 3);
-        GivenCliResolutionSucceeds(@"C:\src\Wrapper.cpp", 25, bpId: 3);
-
-        WhenTryingInitializeManaged();
-
-        ThenCliResolutionWasAttempted(@"C:\src\Wrapper.cpp", 25);
-        ThenNativeBreakpointWasRemoved(3);
-        ThenBreakpointEventWasSent();
-    }
-
-    [Fact]
-    public void TryInitializeManaged_WhenCliResolutionFails_KeepsNativeBu()
-    {
-        GivenRuntimeWillInitialize();
-        GivenExistingNativeCppBreakpoint(@"C:\src\Native.cpp", line: 7, bpId: 5);
-        GivenCliResolutionFails(@"C:\src\Native.cpp", 7);
-
-        WhenTryingInitializeManaged();
-
-        ThenCliResolutionWasAttempted(@"C:\src\Native.cpp", 7);
-        ThenNativeBreakpointWasNotRemoved(5);
-    }
-
-    [Fact]
-    public void TryInitializeManaged_WhenCsBreakpointsExist_DoesNotReEvaluate()
-    {
-        GivenRuntimeWillInitialize();
-        GivenExistingBreakpointEntry(@"C:\src\Program.cs", line: 10, bpId: 1);
-
-        WhenTryingInitializeManaged();
-
-        ThenCliResolutionWasNotAttempted();
-    }
-
-    [Fact]
-    public void TryInitializeManaged_WhenNoBPsExist_DoesNotReEvaluate()
-    {
-        GivenRuntimeWillInitialize();
-
-        WhenTryingInitializeManaged();
-
-        ThenCliResolutionWasNotAttempted();
-    }
-
-    [Fact]
     public void TryInitializeManaged_WhenNoDeferredBPs_DoesNotStartPoller()
     {
         GivenRuntimeWillInitialize();
@@ -982,23 +934,6 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
         _model.RebuildDeferredBreakpointIndex();
     }
 
-    private void GivenExistingNativeCppBreakpoint(string filePath, int line, uint bpId)
-    {
-        _model.BreakpointIds[$"{filePath}:{line}"] = bpId;
-        _ = _model.UserBreakpointIds.Add(bpId);
-    }
-
-    private void GivenExistingBreakpointEntry(string filePath, int line, uint bpId)
-        => _model.BreakpointIds[$"{filePath}:{line}"] = bpId;
-
-    private void GivenCliResolutionSucceeds(string filePath, int line, int bpId)
-        => _bpService.TryResolveCliBreakpoint(_model, filePath, line, bpId)
-            .Returns(new Breakpoint { Id = bpId, Verified = true, Line = line });
-
-    private void GivenCliResolutionFails(string filePath, int line)
-        => _bpService.TryResolveCliBreakpoint(_model, filePath, line, Arg.Any<int>())
-            .Returns((Breakpoint?)null);
-
     private void GivenClrStackOutput(string output) => _clrStackOutput = output;
 
     private void GivenNoProfilerPipe() => _model.ProfilerPipe = null;
@@ -1113,19 +1048,6 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
 
     private void ThenPendingManagedBreakpointsAreCleared()
         => Assert.Empty(_model.PendingManagedBreakpoints);
-
-    private void ThenCliResolutionWasAttempted(string filePath, int line)
-        => _bpService.Received(1).TryResolveCliBreakpoint(_model, filePath, line, Arg.Any<int>());
-
-    private void ThenCliResolutionWasNotAttempted()
-        => _bpService.DidNotReceive().TryResolveCliBreakpoint(
-            Arg.Any<NativeDebuggerModel>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>());
-
-    private void ThenNativeBreakpointWasRemoved(uint bpId)
-        => _dbgEng.Received(1).RemoveBreakpoint(_model.Wrapper, bpId);
-
-    private void ThenNativeBreakpointWasNotRemoved(uint bpId)
-        => _dbgEng.DidNotReceive().RemoveBreakpoint(_model.Wrapper, bpId);
 
     private void ThenStartDeferredBreakpointPollerWasCalled()
         => _bpResolver.Received(1).StartDeferredBreakpointPoller(_model);
