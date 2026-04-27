@@ -55,7 +55,7 @@ public interface IManagedBreakpointService
 
     /// <summary>
     /// Resolves C++/CLI assembly names from breakpoint file:line hints. Returns
-    /// distinct assembly names for C++/CLI files that have CLRSupport in their vcxproj.
+    /// distinct assembly names for C++/CLI files that have CLR support in their vcxproj.
     /// Used to set <c>MIXDBG_WATCH_ASSEMBLIES</c> so the profiler hooks all methods
     /// from these assemblies (enabling first-click breakpoints).
     /// </summary>

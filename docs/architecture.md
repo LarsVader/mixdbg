@@ -99,7 +99,7 @@ Current settings: `Breakpoint` → BREAK, `CreateProcess` → BREAK, `ExitProces
 - At initial stop, `GetOffsetByLine` usually fails (module not loaded). Fallback: `bu` command (deferred breakpoint) — dbgeng resolves when module loads.
 - Breakpoint IDs: dbgeng assigns 0-based IDs. Pending responses use IDs starting at 1000 to avoid collision.
 - `UserBreakpointIds` HashSet tracks which dbgeng breakpoint IDs are user BPs (vs system breakpoints).
-- `ISourceFileService.IsNativeFile`: rejects `.cs` files AND `.cpp` files in C++/CLI projects (scans vcxproj for `<CLRSupport>`). For `.cpp` files where vcxproj detection fails (large projects, deep nesting), `BreakpointService` has a C++/CLI fallback that tries `ResolveMethodFromCliFile` via dbgeng's Windows PDB before falling back to native `bu`.
+- `ISourceFileService.IsNativeFile`: rejects `.cs` files AND `.cpp` files in C++/CLI projects (scans vcxproj for CLR indicators: `<CLRSupport>`, `<CLRImageType>`, `<CompileAsManaged>`, `/clr`). For `.cpp` files where vcxproj detection fails (large projects, deep nesting), `BreakpointService` has a C++/CLI fallback that tries `ResolveMethodFromCliFile` via dbgeng's Windows PDB before falling back to native `bu`. Additionally, when the CLR initializes, `ManagedDebuggerService.ReEvaluateDeferredCppBreakpoints` re-probes all `.cpp`/`.h` deferred `bu` breakpoints via the CLI fallback — if they resolve as C++/CLI, the native `bu` is replaced with a managed HW breakpoint.
 
 ## Managed Debugging
 

@@ -5,11 +5,23 @@ namespace MixDbg.Services;
 public sealed class SourceFileService : ISourceFileService
 {
     /// <summary>
-    /// Cache of directory path → whether a vcxproj with CLRSupport exists.
+    /// Cache of directory path → whether a vcxproj with CLR support exists.
     /// Vcxproj content never changes during a debug session, so this is safe
     /// to cache for the lifetime of the service (singleton).
     /// </summary>
     private readonly Dictionary<string, bool> _clrSupportCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Vcxproj properties and compiler flags that indicate CLR support.
+    /// Projects may use any of these instead of <c>&lt;CLRSupport&gt;</c>.
+    /// </summary>
+    private static readonly string[] ClrIndicators =
+    [
+        "<CLRSupport>",
+        "<CLRImageType>",
+        "<CompileAsManaged>",
+        "/clr",
+    ];
 
     public bool IsNativeFile(string path)
     {
@@ -26,7 +38,7 @@ public sealed class SourceFileService : ISourceFileService
         if (Path.GetExtension(path).Equals(".cs", StringComparison.OrdinalIgnoreCase))
             return true;
 
-        // C++/CLI files: .cpp/.c/.h/.hpp in a project with <CLRSupport>.
+        // C++/CLI files: .cpp/.c/.h/.hpp in a project with CLR support.
         return ISourceFileService.IsCppExtension(path)
             && HasClrSupport(Path.GetDirectoryName(path));
     }
@@ -37,7 +49,7 @@ public sealed class SourceFileService : ISourceFileService
 
     /// <summary>
     /// Checks whether the directory (or a parent up to 5 levels) contains a
-    /// vcxproj with CLRSupport. Results are cached per directory to avoid
+    /// vcxproj with CLR support indicators. Results are cached per directory to avoid
     /// repeated disk reads.
     /// </summary>
     private bool HasClrSupport(string? dir)
@@ -71,7 +83,7 @@ public sealed class SourceFileService : ISourceFileService
                     foreach (string vcx in vcxprojs)
                     {
                         string text = File.ReadAllText(vcx);
-                        if (text.Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                        if (ClrIndicators.Any(ind => text.Contains(ind, StringComparison.OrdinalIgnoreCase)))
                         {
                             result = true;
                             break;

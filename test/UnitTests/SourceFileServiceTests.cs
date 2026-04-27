@@ -211,6 +211,52 @@ public sealed class SourceFileServiceTests : IDisposable
         ThenResultIsFalse();
     }
 
+    // ── CLR detection variants ────────────────────────────────
+
+    [Fact]
+    public void IsCliFile_WhenVcxprojHasClrImageType_ReturnsTrue()
+    {
+        GivenVcxprojWithContent("<Project><PropertyGroup><CLRImageType>ForceIJWImage</CLRImageType></PropertyGroup></Project>");
+        GivenAFileWithName("wrapper.cpp");
+
+        WhenCheckingIsCliFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsCliFile_WhenVcxprojHasCompileAsManaged_ReturnsTrue()
+    {
+        GivenVcxprojWithContent("<Project><ItemDefinitionGroup><ClCompile><CompileAsManaged>true</CompileAsManaged></ClCompile></ItemDefinitionGroup></Project>");
+        GivenAFileWithName("wrapper.cpp");
+
+        WhenCheckingIsCliFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsCliFile_WhenVcxprojHasSlashClrFlag_ReturnsTrue()
+    {
+        GivenVcxprojWithContent("<Project><ItemDefinitionGroup><ClCompile><AdditionalOptions>/clr %(AdditionalOptions)</AdditionalOptions></ClCompile></ItemDefinitionGroup></Project>");
+        GivenAFileWithName("wrapper.cpp");
+
+        WhenCheckingIsCliFile();
+
+        ThenResultIsTrue();
+    }
+
+    [Fact]
+    public void IsNativeFile_WhenVcxprojHasClrImageType_ReturnsFalse()
+    {
+        GivenVcxprojWithContent("<Project><PropertyGroup><CLRImageType>ForceIJWImage</CLRImageType></PropertyGroup></Project>");
+        GivenAFileWithName("wrapper.cpp");
+
+        WhenCheckingIsNativeFile();
+
+        ThenResultIsFalse();
+    }
+
     // ── Catch blocks (IO errors) ─────────────────────────────
 
     [Fact]
@@ -284,6 +330,9 @@ public sealed class SourceFileServiceTests : IDisposable
     private void GivenACppCliVcxproj() => File.WriteAllText(
             Path.Combine(_tempDir, "project.vcxproj"),
             "<Project><PropertyGroup><CLRSupport>true</CLRSupport></PropertyGroup></Project>");
+
+    private void GivenVcxprojWithContent(string content) => File.WriteAllText(
+            Path.Combine(_tempDir, "project.vcxproj"), content);
 
     private void GivenANativeVcxproj() => File.WriteAllText(
             Path.Combine(_tempDir, "project.vcxproj"),
