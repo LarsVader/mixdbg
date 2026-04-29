@@ -121,13 +121,14 @@ Three mechanisms:
 `FunctionIDMapper` selectively enables hooks for watched methods. Two watch granularities:
 - **Exact token watches** (`MIXDBG_WATCH_TOKENS`): C# methods — resolved from portable PDBs at pre-launch time
 - **Assembly-level watches** (`MIXDBG_WATCH_ASSEMBLIES`): C++/CLI assemblies — all methods hooked because tokens can't be resolved before module load
+- **Mid-session watches** (`WATCH:Assembly:Token`): sent via command pipe when breakpoints are set after launch. All methods (C# and C++/CLI) send a WATCH when their token is resolved by `BindResolvedMethod`.
 
 Named pipe protocol:
 - `READY:\n` — profiler initialization complete
 - `JIT:TOKEN:ADDRESS:SIZE:ASSEMBLY[:IL-map]\n` — JIT compilation notification
-- `ENTER:TOKEN:BODYADDR:THREADID:ASSEMBLY\n` — method entry (blocks on `MIXDBG_ACK_EVENT`)
-- `LEAVE:TOKEN:THREADID:ASSEMBLY\n` — method exit (fire-and-forget)
-- `TAILCALL:TOKEN:THREADID:ASSEMBLY\n` — tail call exit (fire-and-forget)
+- `ENTER:TOKEN:BODYADDR:THREADID:ASSEMBLY\n` — method entry (blocks on `MIXDBG_ACK_EVENT`). HW BP address is clamped to `max(mapped, BodyAddress)` so it's not placed before where execution resumes after ACK.
+- `LEAVE:TOKEN:THREADID:ASSEMBLY\n` — method exit (fire-and-forget). If LEAVE arrives in the same notification batch as ENTER (tiny method), it's deferred to the next engine stop so the HW BP has a chance to fire.
+- `TAILCALL:TOKEN:THREADID:ASSEMBLY\n` — tail call exit (fire-and-forget, same deferral as LEAVE)
 - `WATCH:Assembly:TokenHex\n` — command pipe: enable hooks for a method mid-session
 
 Profiler CLSID: `{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}`. Uses `ICorProfilerInfo` vtable calls by slot index (no corprof.h header dependency).

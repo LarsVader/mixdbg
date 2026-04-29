@@ -237,6 +237,11 @@ internal sealed class ManagedBreakpointResolverService(
 
         List<Breakpoint> resolved = [];
         bool drained = false;
+        // Track methods that got HW BPs installed in this batch. Their LEAVE must
+        // be deferred — the method body hasn't executed yet (ENTER and LEAVE arrived
+        // in the same engine stop).
+        HashSet<(int, string)>? installedThisBatch = null;
+        List<ProfilerNotification>? deferred = null;
 
         while (model.ProfilerNotifications.TryDequeue(out ProfilerNotification? notification))
         {
@@ -248,16 +253,48 @@ internal sealed class ManagedBreakpointResolverService(
                     break;
 
                 case EnterNotification enter:
-                    HandleEnter(model, enter);
+                    if (HandleEnter(model, enter))
+                    {
+                        _ = (installedThisBatch ??= new(DeferredBreakpointKeyComparer.Instance))
+                            .Add((enter.MethodToken, enter.AssemblyName));
+                    }
                     break;
 
                 case LeaveNotification leave:
-                    HandleLeaveOrTailcall(model, leave.MethodToken, leave.AssemblyName);
+                    if (installedThisBatch?.Contains((leave.MethodToken, leave.AssemblyName)) == true)
+                    {
+                        _log.LogInfo(_logStore,
+                            $"  LEAVE deferred: token=0x{leave.MethodToken:X8} has BPs installed in same batch");
+                        (deferred ??= []).Add(leave);
+                    }
+                    else
+                    {
+                        HandleLeaveOrTailcall(model, leave.MethodToken, leave.AssemblyName);
+                    }
                     break;
 
                 case TailcallNotification tailcall:
-                    HandleLeaveOrTailcall(model, tailcall.MethodToken, tailcall.AssemblyName);
+                    if (installedThisBatch?.Contains((tailcall.MethodToken, tailcall.AssemblyName)) == true)
+                    {
+                        _log.LogInfo(_logStore,
+                            $"  TAILCALL deferred: token=0x{tailcall.MethodToken:X8} has BPs installed in same batch");
+                        (deferred ??= []).Add(tailcall);
+                    }
+                    else
+                    {
+                        HandleLeaveOrTailcall(model, tailcall.MethodToken, tailcall.AssemblyName);
+                    }
                     break;
+            }
+        }
+
+        // Re-enqueue deferred notifications after draining so they're processed on the
+        // next engine stop (after the method body has had a chance to execute and hit the BP).
+        if (deferred != null)
+        {
+            foreach (ProfilerNotification d in deferred)
+            {
+                model.ProfilerNotifications.Enqueue(d);
             }
         }
 
@@ -282,7 +319,8 @@ internal sealed class ManagedBreakpointResolverService(
     /// on nested entries, just increments the count. Always signals the ACK event so the
     /// profiler can resume the application thread.
     /// </summary>
-    private void HandleEnter(NativeDebuggerModel model, EnterNotification enter)
+    /// <returns>True if HW breakpoints were installed (first activation with a plan).</returns>
+    private bool HandleEnter(NativeDebuggerModel model, EnterNotification enter)
     {
         (int Token, string Assembly) key = (enter.MethodToken, enter.AssemblyName);
 
@@ -292,7 +330,7 @@ internal sealed class ManagedBreakpointResolverService(
             _log.LogVerbose(_logStore,
                 $"  ENTER: no plan for token=0x{enter.MethodToken:X8} asm={enter.AssemblyName} — ACK-only");
             _ = (model.ProfilerAckEvent?.Set());
-            return;
+            return false;
         }
 
         // Nested/recursive entry — count++ and ACK immediately (HW BP already installed).
@@ -302,7 +340,7 @@ internal sealed class ManagedBreakpointResolverService(
             _log.LogVerbose(_logStore,
                 $"  ENTER: nested activation for token=0x{enter.MethodToken:X8} (count={active.ActivationCount})");
             _ = (model.ProfilerAckEvent?.Set());
-            return;
+            return false;
         }
 
         // First activation — install HW BPs for every site in the plan.
@@ -315,6 +353,14 @@ internal sealed class ManagedBreakpointResolverService(
             ulong addr = mapping != null
                 ? mapping.GetNativeAddress(site.ILOffset)
                 : enter.BodyAddress;
+
+            // The ENTER hook blocks at BodyAddress. After ACK, execution resumes there.
+            // If the BP address is before BodyAddress, the BP would be skipped — use
+            // BodyAddress as a minimum so the BP fires on the first instruction executed.
+            if (addr < enter.BodyAddress)
+            {
+                addr = enter.BodyAddress;
+            }
 
             uint? bpId = _bpService.SetManagedCodeBreakpoint(model, addr, site.FilePath, site.Line);
             if (bpId == null)
@@ -330,6 +376,7 @@ internal sealed class ManagedBreakpointResolverService(
         }
 
         _ = (model.ProfilerAckEvent?.Set());
+        return active.InstalledBpIds.Count > 0;
     }
 
     /// <summary>

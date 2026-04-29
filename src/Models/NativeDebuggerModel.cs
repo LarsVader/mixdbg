@@ -316,7 +316,7 @@ internal record PendingManagedBreakpoint(string FilePath, int Line, int BpId);
 /// yet JIT-compiled). Resolved on CLR notification exceptions (0xe0444143) which
 /// fire during JIT compilation.
 /// </summary>
-internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodToken, int ILOffset, int BpId, string? AssemblyName, bool IsCliMethod = false);
+internal record DeferredManagedBreakpoint(string FilePath, int Line, int MethodToken, int ILOffset, int BpId, string? AssemblyName);
 
 /// <summary>
 /// Base type for notifications received from the CLR profiler DLL over the named pipe.

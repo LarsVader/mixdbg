@@ -208,7 +208,6 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
 
         Assert.True(result);
         ThenDeferredBreakpointCountIs(1);
-        ThenDeferredBreakpointIsCliMethod(0, true);
     }
 
     [Fact]
@@ -225,7 +224,6 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
 
         ThenBindSucceeded();
         ThenDeferredBreakpointCountIs(1);
-        ThenDeferredBreakpointIsCliMethod(0, true);
         ThenDeferredBreakpointHasAssembly(0, "CliWrapper");
     }
 
@@ -1015,8 +1013,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     private void ThenDeferredBreakpointHasILOffset(int index, int ilOffset)
         => Assert.Equal(ilOffset, _model.DeferredManagedBreakpoints[index].ILOffset);
 
-    private void ThenDeferredBreakpointIsCliMethod(int index, bool expected)
-        => Assert.Equal(expected, _model.DeferredManagedBreakpoints[index].IsCliMethod);
+
 
     private void ThenDeferredBreakpointHasAssembly(int index, string expected)
         => Assert.Equal(expected, _model.DeferredManagedBreakpoints[index].AssemblyName);
@@ -1030,7 +1027,7 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
 
     private readonly ILoggingService _log = Substitute.For<ILoggingService>();
     private readonly LogStore _logStore;
-    private readonly ISourceFileService _sourceFiles = Substitute.For<ISourceFileService>();
+    private readonly ISourceFileService _sourceFiles = CreateSourceFilesMock();
     private readonly IDbgEngWrapper _dbgEng = Substitute.For<IDbgEngWrapper>();
     private readonly ICorDebugWrapper _corDebug = Substitute.For<ICorDebugWrapper>();
     private readonly IPdbSourceMapper _pdbMapper = Substitute.For<IPdbSourceMapper>();
@@ -1068,6 +1065,16 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         _model.EngineReady.Dispose();
 
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
+    }
+
+    private static ISourceFileService CreateSourceFilesMock()
+    {
+        ISourceFileService mock = Substitute.For<ISourceFileService>();
+        // Delegate HasClrIndicator to the real implementation so tests that create
+        // vcxproj files with CLR indicators get correct results.
+        SourceFileService real = new();
+        _ = mock.HasClrIndicator(Arg.Any<string>()).Returns(ci => real.HasClrIndicator((string)ci[0]));
+        return mock;
     }
 
     #endregion

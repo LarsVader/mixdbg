@@ -37,7 +37,7 @@ internal sealed class ManagedBreakpointService(
     public bool TryBindBreakpoint(NativeDebuggerModel model, string filePath, int line, int bpId)
     {
         // Try three resolution strategies in order: loaded modules, disk PDBs, C++/CLI.
-        (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod)? resolved =
+        (int MethodToken, int ILOffset, string? AssemblyName)? resolved =
             ResolveMethodFromLoadedModules(model, filePath, line)
             ?? ResolveMethodFromDiskPdb(filePath, line)
             ?? ResolveMethodFromCliFile(model, filePath, line);
@@ -50,7 +50,7 @@ internal sealed class ManagedBreakpointService(
     /// Searches ICorDebug loaded modules for a method at the given source location
     /// using portable PDB resolution.
     /// </summary>
-    private (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod)? ResolveMethodFromLoadedModules(
+    private (int MethodToken, int ILOffset, string? AssemblyName)? ResolveMethodFromLoadedModules(
         NativeDebuggerModel model, string filePath, int line)
     {
         foreach (ManagedModuleInfo loaded in _corDebug.GetModules(model.CorWrapper))
@@ -63,7 +63,7 @@ internal sealed class ManagedBreakpointService(
             {
                 string assemblyName = Path.GetFileNameWithoutExtension(loaded.Path);
                 _log.LogInfo(_logStore, $"  Resolved {filePath}:{line} -> token=0x{result.Value.MethodToken:X8} IL={result.Value.ILOffset} in {assemblyName}");
-                return (result.Value.MethodToken, result.Value.ILOffset, assemblyName, false);
+                return (result.Value.MethodToken, result.Value.ILOffset, assemblyName);
             }
         }
         return null;
@@ -73,7 +73,7 @@ internal sealed class ManagedBreakpointService(
     /// Searches for PDB files on disk near the source file's project (bin/obj).
     /// Returns method info if found, but the module may not be in ICorDebug yet.
     /// </summary>
-    private (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod)? ResolveMethodFromDiskPdb(
+    private (int MethodToken, int ILOffset, string? AssemblyName)? ResolveMethodFromDiskPdb(
         string filePath, int line)
     {
         (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? diskResult =
@@ -82,7 +82,7 @@ internal sealed class ManagedBreakpointService(
             return null;
 
         _log.LogInfo(_logStore, $"  Found method via disk PDB: {diskResult.Value.MethodName} token=0x{diskResult.Value.MethodToken:X8} in {diskResult.Value.AssemblyName} — but module not in ICorDebug yet");
-        return (diskResult.Value.MethodToken, diskResult.Value.ILOffset, diskResult.Value.AssemblyName, false);
+        return (diskResult.Value.MethodToken, diskResult.Value.ILOffset, diskResult.Value.AssemblyName);
     }
 
     /// <summary>
@@ -91,7 +91,7 @@ internal sealed class ManagedBreakpointService(
     /// looks up the method token from PE metadata. Tries dbgeng module info
     /// first (works for any project layout), falls back to vcxproj scanning.
     /// </summary>
-    private (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod)? ResolveMethodFromCliFile(
+    private (int MethodToken, int ILOffset, string? AssemblyName)? ResolveMethodFromCliFile(
         NativeDebuggerModel model, string filePath, int line)
     {
         // Try for any C++ file — don't require vcxproj detection (fragile in large projects).
@@ -142,7 +142,7 @@ internal sealed class ManagedBreakpointService(
         }
 
         _log.LogInfo(_logStore, $"  C++/CLI: resolved token=0x{token.Value:X8} in {assemblyName}");
-        return (token.Value, 0, assemblyName, true);
+        return (token.Value, 0, assemblyName);
     }
 
     /// <summary>
@@ -154,7 +154,7 @@ internal sealed class ManagedBreakpointService(
     /// </summary>
     private bool BindResolvedMethod(
         NativeDebuggerModel model, string filePath, int line, int bpId,
-        (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod) resolved)
+        (int MethodToken, int ILOffset, string? AssemblyName) resolved)
     {
         if (resolved.AssemblyName == null)
             return false;
@@ -173,9 +173,7 @@ internal sealed class ManagedBreakpointService(
         TrackFileBreakpoint(model, filePath, bpId);
 
         // Send WATCH command to profiler so it enables FunctionEnter hooks for this method.
-        // For C++/CLI, assembly-level watches are set up at pre-launch time.
-        if (!resolved.IsCliMethod)
-            SendWatchToken(model, resolved.AssemblyName, resolved.MethodToken);
+        SendWatchToken(model, resolved.AssemblyName, resolved.MethodToken);
 
         // If the method is already running on the stack (ActiveMethodBreakpoints entry
         // exists), install the HW BP immediately so the in-progress execution can hit it.
@@ -225,7 +223,7 @@ internal sealed class ManagedBreakpointService(
         {
             model.DeferredManagedBreakpoints.Add(
                 new DeferredManagedBreakpoint(filePath, line, resolved.MethodToken, resolved.ILOffset,
-                    bpId, resolved.AssemblyName, resolved.IsCliMethod));
+                    bpId, resolved.AssemblyName));
             model.RebuildDeferredBreakpointIndex();
             _log.LogInfo(_logStore, $"  Deferred managed bp #{bpId}: method not JIT'd yet");
         }
@@ -289,7 +287,7 @@ internal sealed class ManagedBreakpointService(
     /// <inheritdoc />
     public Breakpoint? TryResolveCliBreakpoint(NativeDebuggerModel model, string filePath, int line, int bpId)
     {
-        (int MethodToken, int ILOffset, string? AssemblyName, bool IsCliMethod)? resolved =
+        (int MethodToken, int ILOffset, string? AssemblyName)? resolved =
             ResolveMethodFromCliFile(model, filePath, line);
 
         return resolved != null && BindResolvedMethod(model, filePath, line, bpId, resolved.Value)
@@ -528,9 +526,9 @@ internal sealed class ManagedBreakpointService(
 
     /// <summary>
     /// Resolves the assembly name for a C++/CLI source file by walking up directories
-    /// looking for a .vcxproj with CLRSupport.
+    /// looking for a .vcxproj with CLR support indicators.
     /// </summary>
-    private static string? ResolveCliAssemblyName(string sourceFile)
+    private string? ResolveCliAssemblyName(string sourceFile)
     {
         string? dir = Path.GetDirectoryName(sourceFile);
         for (int up = 0; up < 5 && dir != null; up++)
@@ -539,7 +537,7 @@ internal sealed class ManagedBreakpointService(
             {
                 foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
                 {
-                    if (File.ReadAllText(vcx).Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                    if (_sourceFiles.HasClrIndicator(File.ReadAllText(vcx)))
                         return Path.GetFileNameWithoutExtension(vcx);
                 }
             }
@@ -552,7 +550,7 @@ internal sealed class ManagedBreakpointService(
     /// <summary>
     /// Finds the built DLL for a C++/CLI project by searching bin/ directories.
     /// </summary>
-    private static string? FindCliAssemblyDll(string sourceFile, string? assemblyName)
+    private string? FindCliAssemblyDll(string sourceFile, string? assemblyName)
     {
         if (assemblyName == null) return null;
         string? dir = Path.GetDirectoryName(sourceFile);
@@ -563,7 +561,7 @@ internal sealed class ManagedBreakpointService(
                 foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
                 {
                     if (Path.GetFileNameWithoutExtension(vcx).Equals(assemblyName, StringComparison.OrdinalIgnoreCase)
-                        && File.ReadAllText(vcx).Contains("<CLRSupport>", StringComparison.OrdinalIgnoreCase))
+                        && _sourceFiles.HasClrIndicator(File.ReadAllText(vcx)))
                     {
                         // Search bin/ for the DLL.
                         string binDir = Path.Combine(dir, "bin");

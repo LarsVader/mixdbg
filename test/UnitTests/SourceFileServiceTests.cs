@@ -257,6 +257,23 @@ public sealed class SourceFileServiceTests : IDisposable
         ThenResultIsFalse();
     }
 
+    // ── HasClrIndicator ───────────────────────────────────────
+
+    [Theory]
+    [InlineData("<CLRSupport>true</CLRSupport>")]
+    [InlineData("<CLRImageType>ForceIJWImage</CLRImageType>")]
+    [InlineData("<CompileAsManaged>true</CompileAsManaged>")]
+    [InlineData("<AdditionalOptions>/clr %(AdditionalOptions)</AdditionalOptions>")]
+    public void HasClrIndicator_WhenClrContent_ReturnsTrue(string content)
+        => Assert.True(_testee.HasClrIndicator($"<Project>{content}</Project>"));
+
+    [Theory]
+    [InlineData("<RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>")]
+    [InlineData("")]
+    [InlineData("<Project></Project>")]
+    public void HasClrIndicator_WhenNoClrContent_ReturnsFalse(string content)
+        => Assert.False(_testee.HasClrIndicator(content));
+
     // ── Catch blocks (IO errors) ─────────────────────────────
 
     [Fact]

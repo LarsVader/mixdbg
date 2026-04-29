@@ -746,6 +746,53 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         ThenNoLogErrors();
     }
 
+    [Fact]
+    public async Task LateCliBreakpoint_WhenSetMidSession_StopsWhenModuleLoads()
+    {
+        GivenMixDbgAndWpfAppExist();
+        await WhenStartingMixDbg();
+        await WhenSendingInitialize();
+
+        // Set a C# BP first so we get a stop to add the CLI BP mid-session.
+        await SendDapRequest(2, "setBreakpoints", new
+        {
+            source = new { path = _bpFile, name = "MainWindow.xaml.cs" },
+            breakpoints = new[] { new { line = _addLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+
+        // --auto-test-late: clicks Add, then calls LateCalculator.Square.
+        await WhenLaunchingWithAutoTestLate();
+        await WhenSendingConfigurationDone();
+
+        // Hit 1: C# OnAddClick.
+        await WhenWaitingForStoppedEvent(timeout: 20);
+        await WhenRequestingStackTraceForMultipleThreads();
+
+        // Now set the CLI BP mid-session (LateCliWrapper not loaded yet).
+        await SendDapRequest(20, "setBreakpoints", new
+        {
+            source = new { path = _lateCliBpFile, name = "LateCalculator.h" },
+            breakpoints = new[] { new { line = _lateSquareLine } },
+        });
+        await WhenWaitingForResponse("setBreakpoints", timeout: 5);
+        await WhenSendingContinue();
+
+        // Hit 2: LateCalculator::Square (loaded on demand after Add returns).
+        await WhenWaitingForStoppedEvent(timeout: 30);
+        await WhenRequestingStackTraceForMultipleThreads();
+        await WhenSendingContinue();
+
+        await WhenSendingDisconnect();
+        await WhenWaitingForExit();
+
+        ThenBreakpointWasHit(hitIndex: 0);
+        ThenStackTraceHasSource(hitIndex: 0, "MainWindow.xaml.cs");
+        ThenBreakpointWasHit(hitIndex: 1);
+        ThenStackTraceHasSource(hitIndex: 1, "LateCalculator.h");
+        ThenNoLogErrors();
+    }
+
     #region Given
 
     private void GivenMixDbgAndWpfAppExist()

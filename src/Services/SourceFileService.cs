@@ -47,6 +47,10 @@ public sealed class SourceFileService : ISourceFileService
         => ISourceFileService.IsCppExtension(path)
             && HasClrSupport(Path.GetDirectoryName(path));
 
+    /// <inheritdoc />
+    public bool HasClrIndicator(string vcxprojContent) =>
+        ClrIndicators.Any(ind => vcxprojContent.Contains(ind, StringComparison.OrdinalIgnoreCase));
+
     /// <summary>
     /// Checks whether the directory (or a parent up to 5 levels) contains a
     /// vcxproj with CLR support indicators. Results are cached per directory to avoid
@@ -82,8 +86,7 @@ public sealed class SourceFileService : ISourceFileService
                     // regardless (this is the owning project).
                     foreach (string vcx in vcxprojs)
                     {
-                        string text = File.ReadAllText(vcx);
-                        if (ClrIndicators.Any(ind => text.Contains(ind, StringComparison.OrdinalIgnoreCase)))
+                        if (HasClrIndicator(File.ReadAllText(vcx)))
                         {
                             result = true;
                             break;

@@ -7,7 +7,15 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\CliWrapper\CliWrapper.vcxproj" />
-    <ProjectReference Include="..\LateCliWrapper\LateCliWrapper.vcxproj" />
+    <ProjectReference Include="..\LateCliWrapper\LateCliWrapper.vcxproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="LateCliWrapper">
+      <HintPath>$(SolutionDir)x64\$(Configuration)\LateCliWrapper.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
   <Target Name="CopyNativeLib" AfterTargets="Build">
     <Copy SourceFiles="$(SolutionDir)x64\$(Configuration)\NativeLib.dll;$(SolutionDir)x64\$(Configuration)\NativeLib.pdb"

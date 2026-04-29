@@ -35,4 +35,11 @@ public interface ISourceFileService
         string ext = Path.GetExtension(path).ToLowerInvariant();
         return ext is ".cpp" or ".c" or ".cc" or ".cxx" or ".h" or ".hpp";
     }
+
+    /// <summary>
+    /// Returns true if vcxproj content contains any CLR support indicator:
+    /// <c>&lt;CLRSupport&gt;</c>, <c>&lt;CLRImageType&gt;</c>,
+    /// <c>&lt;CompileAsManaged&gt;</c>, or <c>/clr</c>.
+    /// </summary>
+    bool HasClrIndicator(string vcxprojContent);
 }
