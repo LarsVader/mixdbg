@@ -19,6 +19,11 @@ internal sealed class ManagedBreakpointService(
     ICorDebugWrapper _corDebug,
     IPdbSourceMapper _pdbMapper) : IManagedBreakpointService
 {
+    /// <summary>
+    /// Cache of source directory → CLI assembly name. Vcxproj content doesn't change
+    /// during a debug session, so this is safe to cache for the service lifetime.
+    /// </summary>
+    private readonly Dictionary<string, string?> _cliAssemblyNameCache = new(StringComparer.OrdinalIgnoreCase);
     public Breakpoint[] SetManagedBreakpoints(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
     {
         _log.LogInfo(_logStore, $"SetManagedBreakpoints: file={filePath} count={requested.Length}");
@@ -530,7 +535,19 @@ internal sealed class ManagedBreakpointService(
     /// </summary>
     private string? ResolveCliAssemblyName(string sourceFile)
     {
-        string? dir = Path.GetDirectoryName(sourceFile);
+        string? sourceDir = Path.GetDirectoryName(sourceFile);
+        if (sourceDir == null)
+        {
+            return null;
+        }
+
+        if (_cliAssemblyNameCache.TryGetValue(sourceDir, out string? cached))
+        {
+            return cached;
+        }
+
+        string? result = null;
+        string? dir = sourceDir;
         for (int up = 0; up < 5 && dir != null; up++)
         {
             try
@@ -538,13 +555,22 @@ internal sealed class ManagedBreakpointService(
                 foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
                 {
                     if (_sourceFiles.HasClrIndicator(File.ReadAllText(vcx)))
-                        return Path.GetFileNameWithoutExtension(vcx);
+                    {
+                        result = Path.GetFileNameWithoutExtension(vcx);
+                        break;
+                    }
+                }
+                if (result != null)
+                {
+                    break;
                 }
             }
             catch { }
             dir = Path.GetDirectoryName(dir);
         }
-        return null;
+
+        _cliAssemblyNameCache[sourceDir] = result;
+        return result;
     }
 
     /// <summary>

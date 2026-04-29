@@ -234,6 +234,94 @@ public sealed class ManagedBreakpointResolverServiceTests : IDisposable
             Arg.Any<string>());
     }
 
+    // ── ProcessProfilerNotifications: BodyAddress clamping ─────────
+
+    [Fact]
+    public void ProcessProfilerNotifications_OnEnter_WhenMappedAddrBeforeBody_ClampsToBodyAddress()
+    {
+        GivenManagedBpPlanWithSites(token: 0x06000001, assembly: "TestAsm",
+            sites: [(bpId: 10, ilOffset: 0x00, line: 5)]);
+        GivenJitMethodMapping("TestAsm", 0x06000001, codeStart: 0x1000, ilMap: [(0x00, 0x00)]);
+        GivenSetManagedCodeBreakpointSucceedsWithSequential([100u]);
+        GivenProfilerAckEvent();
+        GivenQueuedEnter(token: 0x06000001, bodyAddress: 0x1020, tid: 1, assembly: "TestAsm");
+
+        _ = WhenProcessingProfilerNotifications();
+
+        ThenHwBpWasSetAt(0x1020UL, line: 5);
+    }
+
+    [Fact]
+    public void ProcessProfilerNotifications_OnEnter_WhenMappedAddrAtOrAfterBody_UsesMapping()
+    {
+        GivenManagedBpPlanWithSites(token: 0x06000001, assembly: "TestAsm",
+            sites: [(bpId: 10, ilOffset: 0x10, line: 7)]);
+        GivenJitMethodMapping("TestAsm", 0x06000001, codeStart: 0x1000, ilMap: [(0x10, 0x30)]);
+        GivenSetManagedCodeBreakpointSucceedsWithSequential([100u]);
+        GivenProfilerAckEvent();
+        GivenQueuedEnter(token: 0x06000001, bodyAddress: 0x1020, tid: 1, assembly: "TestAsm");
+
+        _ = WhenProcessingProfilerNotifications();
+
+        ThenHwBpWasSetAt(0x1030UL, line: 7);
+    }
+
+    // ── ProcessProfilerNotifications: LEAVE batch deferral ──────────
+
+    [Fact]
+    public void ProcessProfilerNotifications_WhenLeaveInSameBatchAsEnter_DefersLeave()
+    {
+        GivenManagedBpPlanWithSites(token: 0x06000001, assembly: "TestAsm",
+            sites: [(bpId: 10, ilOffset: 0x00, line: 5)]);
+        GivenJitMethodMapping("TestAsm", 0x06000001, codeStart: 0x1000, ilMap: [(0x00, 0x00)]);
+        GivenSetManagedCodeBreakpointSucceedsWithSequential([100u]);
+        GivenProfilerAckEvent();
+        GivenQueuedEnter(token: 0x06000001, bodyAddress: 0x1000, tid: 1, assembly: "TestAsm");
+        GivenQueuedLeave(token: 0x06000001, tid: 1, assembly: "TestAsm");
+
+        _ = WhenProcessingProfilerNotifications();
+
+        ThenActiveMethodBreakpointExists(token: 0x06000001, assembly: "TestAsm");
+        ThenActiveMethodBreakpointActivationCount(token: 0x06000001, assembly: "TestAsm", expected: 1);
+        ThenDeferredNotificationsWereReEnqueued();
+    }
+
+    [Fact]
+    public void ProcessProfilerNotifications_WhenTailcallInSameBatchAsEnter_DefersTailcall()
+    {
+        GivenManagedBpPlanWithSites(token: 0x06000001, assembly: "TestAsm",
+            sites: [(bpId: 10, ilOffset: 0x00, line: 5)]);
+        GivenJitMethodMapping("TestAsm", 0x06000001, codeStart: 0x1000, ilMap: [(0x00, 0x00)]);
+        GivenSetManagedCodeBreakpointSucceedsWithSequential([100u]);
+        GivenProfilerAckEvent();
+        GivenQueuedEnter(token: 0x06000001, bodyAddress: 0x1000, tid: 1, assembly: "TestAsm");
+        GivenQueuedTailcall(token: 0x06000001, tid: 1, assembly: "TestAsm");
+
+        _ = WhenProcessingProfilerNotifications();
+
+        ThenActiveMethodBreakpointExists(token: 0x06000001, assembly: "TestAsm");
+        ThenDeferredNotificationsWereReEnqueued();
+    }
+
+    [Fact]
+    public void ProcessProfilerNotifications_WhenLeaveForDifferentMethod_NotDeferred()
+    {
+        GivenManagedBpPlanWithSites(token: 0x06000001, assembly: "TestAsm",
+            sites: [(bpId: 10, ilOffset: 0x00, line: 5)]);
+        GivenJitMethodMapping("TestAsm", 0x06000001, codeStart: 0x1000, ilMap: [(0x00, 0x00)]);
+        GivenSetManagedCodeBreakpointSucceedsWithSequential([100u]);
+        GivenProfilerAckEvent();
+        GivenActiveMethodBreakpoint(token: 0x06000002, assembly: "TestAsm", bpId: 200);
+        GivenQueuedEnter(token: 0x06000001, bodyAddress: 0x1000, tid: 1, assembly: "TestAsm");
+        GivenQueuedLeave(token: 0x06000002, tid: 1, assembly: "TestAsm");
+
+        _ = WhenProcessingProfilerNotifications();
+
+        ThenActiveMethodBreakpointDoesNotExist(token: 0x06000002, assembly: "TestAsm");
+        ThenActiveMethodBreakpointExists(token: 0x06000001, assembly: "TestAsm");
+        ThenNoDeferredNotificationsWereReEnqueued();
+    }
+
     // ── ProcessProfilerNotifications: LEAVE behavior ──────────────
 
     [Fact]
@@ -539,6 +627,13 @@ public sealed class ManagedBreakpointResolverServiceTests : IDisposable
     private void GivenQueuedTailcall(int token, uint tid, string assembly) =>
         _model.ProfilerNotifications.Enqueue(new TailcallNotification(token, tid, assembly));
 
+    private void GivenActiveMethodBreakpoint(int token, string assembly, uint bpId)
+    {
+        ActiveMethodBreakpoint active = new() { ActivationCount = 1 };
+        active.InstalledBpIds.Add(bpId);
+        _model.ActiveMethodBreakpoints[(token, assembly)] = active;
+    }
+
     private void GivenJitMethodMapping(string assembly, int token, ulong codeStart, (int ILOffset, int NativeOffset)[] ilMap) =>
         _model.JitMethodMappings[(token, assembly)] = new JitMethodMapping(
             codeStart, [.. ilMap.Select(m => (m.ILOffset, m.NativeOffset))]);
@@ -639,6 +734,15 @@ public sealed class ManagedBreakpointResolverServiceTests : IDisposable
 
     private void ThenActiveMethodBreakpointActivationCount(int token, string assembly, int expected) =>
         Assert.Equal(expected, _model.ActiveMethodBreakpoints[(token, assembly)].ActivationCount);
+
+    private void ThenHwBpWasSetAt(ulong address, int line) =>
+        _bpService.Received(1).SetManagedCodeBreakpoint(_model, address, Arg.Any<string>(), line);
+
+    private void ThenDeferredNotificationsWereReEnqueued() =>
+        Assert.False(_model.ProfilerNotifications.IsEmpty);
+
+    private void ThenNoDeferredNotificationsWereReEnqueued() =>
+        Assert.True(_model.ProfilerNotifications.IsEmpty);
 
     #endregion
 
