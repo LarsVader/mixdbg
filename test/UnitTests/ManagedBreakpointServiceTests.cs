@@ -228,6 +228,21 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     }
 
     [Fact]
+    public void TryBindBreakpoint_WhenCliFileResolves_QueuesWatchCommand()
+    {
+        GivenCliSourceFileOnDisk();
+        GivenNoLoadedModules();
+        GivenGetOffsetByLineSucceeds(_cliSourcePath!, 25, 0x7000);
+        GivenGetModuleByOffsetReturns(0x7000, 0x1000);
+        GivenGetModuleImagePathReturns(0x1000, @"C:\out\CliWrapper.dll");
+        GivenFindTokenByRvaReturns(@"C:\out\CliWrapper.dll", (int)(0x7000 - 0x1000), 0x06000088);
+
+        WhenBindingBreakpoint(_cliSourcePath!, 25, bpId: 402);
+
+        ThenWatchCommandWasQueued("CliWrapper", 0x06000088);
+    }
+
+    [Fact]
     public void TryBindBreakpoint_WhenLoadedModuleHasNullPdbPath_SkipsModule()
     {
         // Module with null PdbPath is skipped (line 59 continue).
@@ -1013,7 +1028,8 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     private void ThenDeferredBreakpointHasILOffset(int index, int ilOffset)
         => Assert.Equal(ilOffset, _model.DeferredManagedBreakpoints[index].ILOffset);
 
-
+    private void ThenWatchCommandWasQueued(string assembly, int token) =>
+        Assert.Contains(_model.PendingWatchCommands, cmd => cmd == $"WATCH:{assembly}:{token:X8}");
 
     private void ThenDeferredBreakpointHasAssembly(int index, string expected)
         => Assert.Equal(expected, _model.DeferredManagedBreakpoints[index].AssemblyName);
@@ -1070,10 +1086,14 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     private static ISourceFileService CreateSourceFilesMock()
     {
         ISourceFileService mock = Substitute.For<ISourceFileService>();
-        // Delegate HasClrIndicator to the real implementation so tests that create
-        // vcxproj files with CLR indicators get correct results.
-        SourceFileService real = new();
+        // Delegate HasClrIndicator and ResolveCliAssemblyName to the real implementation
+        // so tests that create vcxproj files with CLR indicators get correct results.
+        SourceFileService real = new(
+            new MixDbg.Models.VcxprojCache(),
+            Substitute.For<ILoggingService>(),
+            new MixDbg.Models.LogStore(Path.Combine(Path.GetTempPath(), "test.log")));
         _ = mock.HasClrIndicator(Arg.Any<string>()).Returns(ci => real.HasClrIndicator((string)ci[0]));
+        _ = mock.ResolveCliAssemblyName(Arg.Any<string>()).Returns(ci => real.ResolveCliAssemblyName((string)ci[0]));
         return mock;
     }
 

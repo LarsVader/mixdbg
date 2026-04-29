@@ -239,7 +239,10 @@ internal sealed class ManagedBreakpointResolverService(
         bool drained = false;
         // Track methods that got HW BPs installed in this batch. Their LEAVE must
         // be deferred — the method body hasn't executed yet (ENTER and LEAVE arrived
-        // in the same engine stop).
+        // in the same engine stop). This is bounded: installedThisBatch only contains
+        // methods where HandleEnter returned true (first activation, count 0→1).
+        // Recursive re-entries (count > 1) return false, so a deferred LEAVE that
+        // gets re-enqueued won't be deferred again on the next pass.
         HashSet<(int, string)>? installedThisBatch = null;
         List<ProfilerNotification>? deferred = null;
 

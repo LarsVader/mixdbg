@@ -106,6 +106,7 @@ src/
       Events/                    # StoppedEventBody, OutputEventBody, BreakpointEventBody, Terminated/InitializedEventBody
     DapServerModel.cs            # DAP transport state: streams, write lock, sequence counter
     DebugSessionModel.cs         # Session state: engine ref, pending breakpoints, SessionState enum
+    VcxprojCache.cs              # Cached vcxproj classification (CLR support, assembly names) — singleton
     NativeDebuggerModel.cs       # Engine state: DbgEngWrapperModel + CorDebugWrapperModel refs, threads, flags, breakpoint tracking, ManagedStepState + ActiveManagedStep + ManagedStepIntoCompleted
     StopReason.cs                # StopReason enum (Breakpoint, Step, Pause) + ToDapString() extension
   Services/
@@ -119,7 +120,7 @@ src/
       IEngineQueryService.cs     # Stateless engine queries — stack trace, scopes, variables, threads
       ISteppingService.cs        # Stateless stepping/execution control — continue, step over/into/out
       IStepResolutionService.cs  # Stateless step resolution — DetermineStopReason (StopReason enum), CheckStepLanding, CompleteManagedStep
-      ISourceFileService.cs      # IsNativeFile(string path), IsManagedFile(string path)
+      ISourceFileService.cs      # IsNativeFile, IsManagedFile, IsCliFile, HasClrIndicator, ResolveCliAssemblyName
       IManagedDebugger.cs        # Stateless managed debugging — runtime lifecycle, frame resolution
       IManagedBreakpointService.cs # Stateless managed breakpoint setting/removal — PDB resolution, hardware BPs
       IManagedBreakpointResolver.cs # Stateless deferred managed BP resolution — JIT notifications, DAC polling, ENTER hooks
@@ -155,11 +156,12 @@ test/
   IntegrationTests/                  # End-to-end tests against TestApp (xunit.runner.json disables parallel execution)
     SteppingIntegrationTest.cs       # M6: cross-boundary stepping integration tests
   TestApp/                           # Mixed-mode WPF integration test target
-    TestApp.sln                      # Solution: NativeLib + CliWrapper + WpfApp
+    TestApp.sln                      # Solution: NativeLib + CliWrapper + LateCliWrapper + WpfApp
     Makefile                         # Build via MSBuild (make all)
     NativeLib/                       # Native C++ library (Calculator::Add/Multiply)
     CliWrapper/                      # C++/CLI wrapper (ManagedCalculator)
-  WpfApp/                            # C# WPF frontend — --auto-test / --auto-test-slow for CI
+    LateCliWrapper/                  # C++/CLI late-loaded wrapper (LateCalculator, uses /clr not CLRSupport)
+    WpfApp/                          # C# WPF frontend — --auto-test / --auto-test-slow for CI
 ```
 
 ## Architecture

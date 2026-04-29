@@ -26,7 +26,8 @@ public static class ServiceCollectionExtensions
         _ = services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();
         _ = services.AddSingleton<IProfilerPipeService, ProfilerPipeService>();
 
-        // State models (singletons created by services)
+        // State models
+        _ = services.AddSingleton(new Models.VcxprojCache());
         _ = services.AddSingleton(sp =>
         {
             Models.LogStore store = logPath != null

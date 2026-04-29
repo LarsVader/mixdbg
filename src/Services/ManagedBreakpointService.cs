@@ -19,11 +19,6 @@ internal sealed class ManagedBreakpointService(
     ICorDebugWrapper _corDebug,
     IPdbSourceMapper _pdbMapper) : IManagedBreakpointService
 {
-    /// <summary>
-    /// Cache of source directory → CLI assembly name. Vcxproj content doesn't change
-    /// during a debug session, so this is safe to cache for the service lifetime.
-    /// </summary>
-    private readonly Dictionary<string, string?> _cliAssemblyNameCache = new(StringComparer.OrdinalIgnoreCase);
     public Breakpoint[] SetManagedBreakpoints(NativeDebuggerModel model, string filePath, SourceBreakpoint[] requested)
     {
         _log.LogInfo(_logStore, $"SetManagedBreakpoints: file={filePath} count={requested.Length}");
@@ -393,6 +388,9 @@ internal sealed class ManagedBreakpointService(
                 _ = clearedBpIds.Add(id);
 
                 // Remove hardware breakpoints set by the managed debugger.
+                // NOTE: id is a DAP BP ID (int) while BreakpointIds values are dbgeng HW BP
+                // IDs (uint). The (uint)id cast can falsely match an unrelated dbgeng BP.
+                // The key-prefix fallback mitigates this by also matching on file path.
                 KeyValuePair<string, uint> key = model.BreakpointIds.FirstOrDefault(kv => kv.Value == (uint)id
                     || kv.Key.StartsWith(filePath + ":", StringComparison.OrdinalIgnoreCase));
                 if (key.Key != null && model.BreakpointIds.TryGetValue(key.Key, out uint hwId))
@@ -529,52 +527,13 @@ internal sealed class ManagedBreakpointService(
         }
     }
 
-    /// <summary>
-    /// Resolves the assembly name for a C++/CLI source file by walking up directories
-    /// looking for a .vcxproj with CLR support indicators.
-    /// </summary>
-    private string? ResolveCliAssemblyName(string sourceFile)
-    {
-        string? sourceDir = Path.GetDirectoryName(sourceFile);
-        if (sourceDir == null)
-        {
-            return null;
-        }
-
-        if (_cliAssemblyNameCache.TryGetValue(sourceDir, out string? cached))
-        {
-            return cached;
-        }
-
-        string? result = null;
-        string? dir = sourceDir;
-        for (int up = 0; up < 5 && dir != null; up++)
-        {
-            try
-            {
-                foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
-                {
-                    if (_sourceFiles.HasClrIndicator(File.ReadAllText(vcx)))
-                    {
-                        result = Path.GetFileNameWithoutExtension(vcx);
-                        break;
-                    }
-                }
-                if (result != null)
-                {
-                    break;
-                }
-            }
-            catch { }
-            dir = Path.GetDirectoryName(dir);
-        }
-
-        _cliAssemblyNameCache[sourceDir] = result;
-        return result;
-    }
+    private string? ResolveCliAssemblyName(string sourceFile) =>
+        _sourceFiles.ResolveCliAssemblyName(sourceFile);
 
     /// <summary>
     /// Finds the built DLL for a C++/CLI project by searching bin/ directories.
+    /// Matches by assembly name only — CLR support was already validated by
+    /// <see cref="ISourceFileService.ResolveCliAssemblyName"/>.
     /// </summary>
     private string? FindCliAssemblyDll(string sourceFile, string? assemblyName)
     {
@@ -584,36 +543,50 @@ internal sealed class ManagedBreakpointService(
         {
             try
             {
-                foreach (string vcx in Directory.GetFiles(dir, "*.vcxproj"))
+                string[] vcxprojs = Directory.GetFiles(dir, "*.vcxproj");
+                if (vcxprojs.Length > 0)
                 {
-                    if (Path.GetFileNameWithoutExtension(vcx).Equals(assemblyName, StringComparison.OrdinalIgnoreCase)
-                        && _sourceFiles.HasClrIndicator(File.ReadAllText(vcx)))
+                    foreach (string vcx in vcxprojs)
                     {
-                        // Search bin/ for the DLL.
-                        string binDir = Path.Combine(dir, "bin");
-                        if (Directory.Exists(binDir))
+                        if (Path.GetFileNameWithoutExtension(vcx).Equals(assemblyName, StringComparison.OrdinalIgnoreCase))
                         {
-                            foreach (string dll in Directory.GetFiles(binDir, $"{assemblyName}.dll", SearchOption.AllDirectories))
-                                return dll;
-                        }
-                        // Also check output in the WpfApp bin (typical for C++/CLI wrapper).
-                        string? parent = Path.GetDirectoryName(dir);
-                        if (parent != null)
-                        {
-                            foreach (string subDir in Directory.GetDirectories(parent))
+                            // Search bin/ for the DLL.
+                            string binDir = Path.Combine(dir, "bin");
+                            if (Directory.Exists(binDir))
                             {
-                                string subBin = Path.Combine(subDir, "bin");
-                                if (Directory.Exists(subBin))
+                                foreach (string dll in Directory.GetFiles(binDir, $"{assemblyName}.dll", SearchOption.AllDirectories))
+                                    return dll;
+                            }
+                            // Also check output in the WpfApp bin (typical for C++/CLI wrapper).
+                            string? parent = Path.GetDirectoryName(dir);
+                            if (parent != null)
+                            {
+                                foreach (string subDir in Directory.GetDirectories(parent))
                                 {
-                                    foreach (string dll in Directory.GetFiles(subBin, $"{assemblyName}.dll", SearchOption.AllDirectories))
-                                        return dll;
+                                    string subBin = Path.Combine(subDir, "bin");
+                                    if (Directory.Exists(subBin))
+                                    {
+                                        foreach (string dll in Directory.GetFiles(subBin, $"{assemblyName}.dll", SearchOption.AllDirectories))
+                                            return dll;
+                                    }
                                 }
                             }
                         }
                     }
+                    return null; // Found vcxproj(s) — stop walking regardless.
+                }
+
+                // Stop at solution or repo root — don't cross project boundaries.
+                if (Directory.GetFiles(dir, "*.sln").Length > 0
+                    || Directory.Exists(Path.Combine(dir, ".git")))
+                {
+                    return null;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _log.LogWarning(_logStore, $"FindCliAssemblyDll: IO error at {dir}: {ex.Message}");
+            }
             dir = Path.GetDirectoryName(dir);
         }
         return null;

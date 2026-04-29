@@ -42,4 +42,11 @@ public interface ISourceFileService
     /// <c>&lt;CompileAsManaged&gt;</c>, or <c>/clr</c>.
     /// </summary>
     bool HasClrIndicator(string vcxprojContent);
+
+    /// <summary>
+    /// Resolves the assembly name for a C++/CLI source file by walking up directories
+    /// looking for a vcxproj with CLR support indicators. Results are cached per
+    /// source directory.
+    /// </summary>
+    string? ResolveCliAssemblyName(string sourceFile);
 }

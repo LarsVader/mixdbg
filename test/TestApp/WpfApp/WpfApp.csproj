@@ -13,12 +13,12 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="LateCliWrapper">
-      <HintPath>$(SolutionDir)x64\$(Configuration)\LateCliWrapper.dll</HintPath>
+      <HintPath>..\x64\$(Configuration)\LateCliWrapper.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>
-  <Target Name="CopyNativeLib" AfterTargets="Build">
-    <Copy SourceFiles="$(SolutionDir)x64\$(Configuration)\NativeLib.dll;$(SolutionDir)x64\$(Configuration)\NativeLib.pdb"
+  <Target Name="CopyNativeDeps" AfterTargets="Build">
+    <Copy SourceFiles="..\x64\$(Configuration)\NativeLib.dll;..\x64\$(Configuration)\NativeLib.pdb;..\x64\$(Configuration)\LateCliWrapper.dll;..\x64\$(Configuration)\LateCliWrapper.pdb"
           DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
   </Target>
 </Project>

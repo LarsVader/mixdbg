@@ -274,6 +274,97 @@ public sealed class SourceFileServiceTests : IDisposable
     public void HasClrIndicator_WhenNoClrContent_ReturnsFalse(string content)
         => Assert.False(_testee.HasClrIndicator(content));
 
+    // ── ResolveCliAssemblyName ─────────────────────────────────
+
+    [Fact]
+    public void ResolveCliAssemblyName_WhenCppCliVcxproj_ReturnsProjectName()
+    {
+        GivenACppCliVcxproj();
+        GivenAFileWithName("wrapper.cpp");
+
+        string? result = _testee.ResolveCliAssemblyName(_filePath);
+
+        Assert.Equal("project", result);
+    }
+
+    [Fact]
+    public void ResolveCliAssemblyName_WhenNativeVcxproj_ReturnsNull()
+    {
+        GivenANativeVcxproj();
+        GivenAFileWithName("native.cpp");
+
+        string? result = _testee.ResolveCliAssemblyName(_filePath);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ResolveCliAssemblyName_WhenNoVcxproj_ReturnsNull()
+    {
+        GivenAFileWithName("standalone.cpp");
+
+        string? result = _testee.ResolveCliAssemblyName(_filePath);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ResolveCliAssemblyName_WhenSlashClrInAdditionalOptions_ReturnsProjectName()
+    {
+        GivenVcxprojWithContent("<Project><ItemDefinitionGroup><ClCompile><AdditionalOptions>/clr %(AdditionalOptions)</AdditionalOptions></ClCompile></ItemDefinitionGroup></Project>");
+        GivenAFileWithName("wrapper.cpp");
+
+        string? result = _testee.ResolveCliAssemblyName(_filePath);
+
+        Assert.Equal("project", result);
+    }
+
+    [Fact]
+    public void ResolveCliAssemblyName_WhenVcxprojInParentDir_ReturnsProjectName()
+    {
+        GivenACppCliVcxproj();
+        string subDir = Path.Combine(_tempDir, "subfolder");
+        _ = Directory.CreateDirectory(subDir);
+        _filePath = Path.Combine(subDir, "deep.cpp");
+        File.WriteAllText(_filePath, "// source");
+
+        string? result = _testee.ResolveCliAssemblyName(_filePath);
+
+        Assert.Equal("project", result);
+    }
+
+    [Fact]
+    public void ResolveCliAssemblyName_StopsAtSlnBoundary()
+    {
+        GivenASlnFile();
+        GivenAFileWithName("file.cpp");
+        // vcxproj is above the sln — should not be found.
+        string parentDir = Path.GetDirectoryName(_tempDir)!;
+        File.WriteAllText(Path.Combine(parentDir, "Parent.vcxproj"),
+            "<Project><PropertyGroup><CLRSupport>true</CLRSupport></PropertyGroup></Project>");
+
+        string? result = _testee.ResolveCliAssemblyName(_filePath);
+
+        Assert.Null(result);
+        // Clean up parent vcxproj.
+        File.Delete(Path.Combine(parentDir, "Parent.vcxproj"));
+    }
+
+    [Fact]
+    public void ResolveCliAssemblyName_CachesResult()
+    {
+        GivenACppCliVcxproj();
+        GivenAFileWithName("a.cpp");
+
+        string? first = _testee.ResolveCliAssemblyName(_filePath);
+        // Delete the vcxproj — cached result should still return.
+        File.Delete(Path.Combine(_tempDir, "project.vcxproj"));
+        string? second = _testee.ResolveCliAssemblyName(Path.Combine(_tempDir, "b.cpp"));
+
+        Assert.Equal("project", first);
+        Assert.Equal("project", second);
+    }
+
     // ── Catch blocks (IO errors) ─────────────────────────────
 
     [Fact]
@@ -380,7 +471,10 @@ public sealed class SourceFileServiceTests : IDisposable
 
     #region Misc
 
-    private readonly SourceFileService _testee = new();
+    private readonly SourceFileService _testee = new(
+        new MixDbg.Models.VcxprojCache(),
+        NSubstitute.Substitute.For<MixDbg.Services.Interfaces.ILoggingService>(),
+        new MixDbg.Models.LogStore(Path.Combine(Path.GetTempPath(), "test.log")));
     private readonly string _tempDir = Path.Combine(Path.GetTempPath(), $"mixdbg_test_{Guid.NewGuid()}");
     private string _filePath = "";
     private bool _result;

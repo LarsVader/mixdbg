@@ -250,9 +250,13 @@ internal sealed class BreakpointService(
         {
             return;
         }
-        string[] parts = entry.Key.Split(':', 2);
-        string path = parts[0];
-        int line = int.TryParse(parts[1], out int l) ? l : 0;
+        int lastColon = entry.Key.LastIndexOf(':');
+        if (lastColon <= 0)
+        {
+            return;
+        }
+        string path = entry.Key[..lastColon];
+        int line = int.TryParse(entry.Key[(lastColon + 1)..], out int l) ? l : 0;
 
         _server.SendEvent(_transport, "breakpoint", new BreakpointEventBody
         {
@@ -271,8 +275,8 @@ internal sealed class BreakpointService(
     {
         // Check if this EXCEPTION_BREAKPOINT is from a managed IL breakpoint.
         if (!model.ManagedInitialized ||
-                !model.ManagedBreakpointAddresses.Contains(address) &&
-                 ((model.CorWrapper?.HasLegacyBreakpoints) != true || model.UserBreakpointIds.Contains(model.LastHitBpId)))
+                (!model.ManagedBreakpointAddresses.Contains(address)
+                 && ((model.CorWrapper?.HasLegacyBreakpoints) != true || model.UserBreakpointIds.Contains(model.LastHitBpId))))
         {
             return;
         }

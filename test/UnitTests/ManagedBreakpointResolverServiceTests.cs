@@ -322,6 +322,29 @@ public sealed class ManagedBreakpointResolverServiceTests : IDisposable
         ThenNoDeferredNotificationsWereReEnqueued();
     }
 
+    [Fact]
+    public void ProcessProfilerNotifications_WhenDeferredLeaveReprocessed_RemovesHwBps()
+    {
+        GivenManagedBpPlanWithSites(token: 0x06000001, assembly: "TestAsm",
+            sites: [(bpId: 10, ilOffset: 0x00, line: 5)]);
+        GivenJitMethodMapping("TestAsm", 0x06000001, codeStart: 0x1000, ilMap: [(0x00, 0x00)]);
+        GivenSetManagedCodeBreakpointSucceedsWithSequential([100u]);
+        GivenRemoveBreakpointSucceeds(100);
+        GivenProfilerAckEvent();
+        GivenQueuedEnter(token: 0x06000001, bodyAddress: 0x1000, tid: 1, assembly: "TestAsm");
+        GivenQueuedLeave(token: 0x06000001, tid: 1, assembly: "TestAsm");
+
+        // First pass: ENTER installs BP, LEAVE is deferred.
+        _ = WhenProcessingProfilerNotifications();
+        ThenActiveMethodBreakpointExists(token: 0x06000001, assembly: "TestAsm");
+        ThenDeferredNotificationsWereReEnqueued();
+
+        // Second pass: deferred LEAVE is processed, HW BPs removed.
+        _ = WhenProcessingProfilerNotifications();
+        ThenActiveMethodBreakpointDoesNotExist(token: 0x06000001, assembly: "TestAsm");
+        ThenNoDeferredNotificationsWereReEnqueued();
+    }
+
     // ── ProcessProfilerNotifications: LEAVE behavior ──────────────
 
     [Fact]

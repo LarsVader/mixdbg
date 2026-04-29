@@ -19,7 +19,7 @@ release:
 
 clean:
 	$(MSBUILD) $(SLN) -p:Configuration=$(CONFIG) -p:Platform=$(PLATFORM) -t:Clean -nologo -v:minimal
-	rm -rf x64 WpfApp/bin WpfApp/obj CliWrapper/x64 NativeLib/x64
+	rm -rf x64 WpfApp/bin WpfApp/obj CliWrapper/x64 NativeLib/x64 LateCliWrapper/x64
 
 run: build
 	$(OUTPUT)/WpfApp.exe

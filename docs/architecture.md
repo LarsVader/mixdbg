@@ -100,6 +100,7 @@ Current settings: `Breakpoint` → BREAK, `CreateProcess` → BREAK, `ExitProces
 - Breakpoint IDs: dbgeng assigns 0-based IDs. Pending responses use IDs starting at 1000 to avoid collision.
 - `UserBreakpointIds` HashSet tracks which dbgeng breakpoint IDs are user BPs (vs system breakpoints).
 - `ISourceFileService.IsNativeFile`: rejects `.cs` files AND `.cpp` files in C++/CLI projects (scans vcxproj for CLR indicators: `<CLRSupport>`, `<CLRImageType>`, `<CompileAsManaged>`, `/clr`). For `.cpp` files where vcxproj detection fails (large projects, deep nesting), `BreakpointService` has a C++/CLI fallback that tries `ResolveMethodFromCliFile` via dbgeng's Windows PDB before falling back to native `bu`.
+- Late-loaded C++/CLI modules: BPs stored in `PendingILBreakpoints` are retried on every `OnLoadModule` event after `ManagedInitialized`. Additionally, `TryInitializeManaged` retries pending BPs immediately after CLR init to catch modules that loaded before coreclr (their `OnLoadModule` was skipped because `ManagedInitialized` was false).
 
 ## Managed Debugging
 
