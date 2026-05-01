@@ -327,7 +327,7 @@ internal sealed class ManagedBreakpointResolverService(
     {
         (int Token, string Assembly) key = (enter.MethodToken, enter.AssemblyName);
 
-        // Watched method with no plan (assembly-level watch, no BPs): ACK and skip.
+        // Method with no plan (e.g. cleared breakpoint): ACK and skip.
         if (!model.ManagedBpPlans.TryGetValue(key, out ManagedMethodBreakpointPlan? plan))
         {
             _log.LogVerbose(_logStore,

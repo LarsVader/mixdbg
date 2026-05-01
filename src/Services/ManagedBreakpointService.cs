@@ -327,22 +327,6 @@ internal sealed class ManagedBreakpointService(
         return tokens;
     }
 
-    public List<string> ResolveWatchAssemblies(
-        IEnumerable<(string FilePath, int Line)> breakpoints)
-    {
-        HashSet<string> assemblies = new(StringComparer.OrdinalIgnoreCase);
-        foreach ((string? filePath, _) in breakpoints)
-        {
-            if (_sourceFiles.IsCliFile(filePath))
-            {
-                string? asmName = ResolveCliAssemblyName(filePath);
-                if (asmName != null)
-                    _ = assemblies.Add(asmName);
-            }
-        }
-        return [.. assemblies];
-    }
-
     // ── Private ─────────────────────────────────────────
 
     private Breakpoint SetOneManagedBreakpoint(

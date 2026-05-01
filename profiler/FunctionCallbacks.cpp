@@ -26,11 +26,9 @@ extern "C" UINT_PTR __stdcall MixDbgFunctionIDMapper(FunctionID funcId, BOOL* pb
     char asmUtf8[256] = {};
     MixDbgProfiler::ExtractAssemblyName(modulePath, asmUtf8, sizeof(asmUtf8));
 
-    if (g_pProfiler->IsWatchedMethod(asmUtf8, token) ||
-        g_pProfiler->IsWatchedAssembly(asmUtf8)) {
-        // Only enable hooks if the profiler has them active.
-        if (g_pProfiler->m_hooksActive)
-            *pbHookFunction = TRUE;
+    // Only enable ENTER/LEAVE hooks for methods with exact WATCH tokens.
+    if (g_pProfiler->IsWatchedMethod(asmUtf8, token) && g_pProfiler->m_hooksActive) {
+        *pbHookFunction = TRUE;
         LPCBYTE codeStart = nullptr; ULONG codeSize = 0;
         g_pProfiler->GetInfo()->GetCodeInfo(funcId, &codeStart, &codeSize);
 

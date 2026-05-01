@@ -22,8 +22,7 @@ Standard ICorDebug V4 "piggybacked" debugging can't set managed breakpoints befo
 
 For methods with breakpoints, MixDbg pre-configures "watch" lists via env vars before launching the target:
 
-- `MIXDBG_WATCH_TOKENS` — exact `Assembly:Token` pairs (C# methods, resolved from PDBs).
-- `MIXDBG_WATCH_ASSEMBLIES` — full assemblies (C++/CLI, where tokens aren't known ahead of time).
+- `MIXDBG_WATCH_TOKENS` — exact `Assembly:Token` pairs (resolved from PDBs). C++/CLI tokens are sent dynamically via `WATCH:` commands on the command pipe once the module loads.
 
 The breakpoint flow:
 

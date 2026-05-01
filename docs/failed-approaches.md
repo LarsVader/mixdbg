@@ -92,6 +92,20 @@ The piggybacked ICorDebug V4 process (created via `OpenVirtualProcessImpl` with 
 
 `!clrstack -l` with output capture. The DAC (already loaded) has all GC info parsing for local variable stack layout. Fragile but functional.
 
+## Assembly-Level Profiler Watches (MIXDBG_WATCH_ASSEMBLIES) (2026-05-01)
+
+The profiler's `FunctionIDMapper` was originally configured to hook **all methods** from watched assemblies (`MIXDBG_WATCH_ASSEMBLIES`). The intent was to ensure ENTER/LEAVE notifications for any C++/CLI method that might later need a breakpoint.
+
+**Failed at scale:** In large C++/CLI assemblies (e.g., DentalBaseDotNet with thousands of methods):
+
+1. **Registration overflow:** `FunctionIDMapper` set `*pbHookFunction = TRUE` for every method in the assembly, filling the 64-slot `m_funcSlots` registration table with random methods. When the actual breakpoint target was JIT'd, `RegisterWatchedFunction` silently failed — the ENTER notification was never sent and the hardware breakpoint was never installed.
+
+2. **ENTER storm:** Every registered method's ENTER notification interrupted the debug engine (9,493 interrupts observed in a real session). Each interrupt required the engine to stop, drain the notification queue, find no matching BP plan, ACK, and resume — making the debugger completely unresponsive.
+
+3. **Unnecessary inlining suppression:** `JITInlining` blocked inlining for all methods in watched assemblies, degrading JIT optimization for code that had no breakpoints.
+
+**Fix:** Only hook methods with exact WATCH tokens (specific method token match). Assembly-level watches were removed entirely — the profiler no longer parses `MIXDBG_WATCH_ASSEMBLIES`. JIT notifications (from `JITCompilationFinished`) are unaffected and still fire for all methods. The MixDbg side also fast-paths ENTER notifications for methods without BP plans, ACKing immediately without interrupting the engine.
+
 ## Summary
 
 The fundamental limitation: **ICorDebug V4 piggybacked on dbgeng is inspection-only** — it can read metadata and memory but cannot set breakpoints, enumerate threads reliably, or access JIT state. Any approach requiring ICorDebug runtime operations will fail. The working paths are:

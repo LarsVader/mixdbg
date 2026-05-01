@@ -53,11 +53,4 @@ public interface IManagedBreakpointService
     /// </summary>
     List<(string Assembly, int Token)> ResolveTokensFromBreakpoints(IEnumerable<(string FilePath, int Line)> breakpoints);
 
-    /// <summary>
-    /// Resolves C++/CLI assembly names from breakpoint file:line hints. Returns
-    /// distinct assembly names for C++/CLI files that have CLR support in their vcxproj.
-    /// Used to set <c>MIXDBG_WATCH_ASSEMBLIES</c> so the profiler hooks all methods
-    /// from these assemblies (enabling first-click breakpoints).
-    /// </summary>
-    List<string> ResolveWatchAssemblies(IEnumerable<(string FilePath, int Line)> breakpoints);
 }

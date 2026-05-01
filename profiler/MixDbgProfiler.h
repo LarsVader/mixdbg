@@ -38,21 +38,11 @@ class MixDbgProfiler : public IUnknown {
 
     void CmdReaderLoop();
 
-    // Assembly-level watches for C++/CLI — hook ALL methods from these assemblies.
-    // Set via MIXDBG_WATCH_ASSEMBLIES env var at pre-launch time because
-    // FunctionIDMapper results are cached by the CLR (can't add watches dynamically).
-    static const int MAX_WATCH_ASM = 8;
-    char m_watchAssemblies[MAX_WATCH_ASM][256];
-    int m_watchAssemblyCount;
-
     void WriteToPipe(const char* data, int len);
 
 public: // Accessed by static FunctionIDMapper callback — no vtable impact (non-virtual).
     // Check if an (assembly, token) pair is in the exact watch list.
     bool IsWatchedMethod(const char* asmName, unsigned int token);
-
-    // Check if an assembly is in the assembly-level watch list (C++/CLI).
-    bool IsWatchedAssembly(const char* asmName);
 
     // --- Enter/leave hook data (all non-virtual, no vtable impact) ---
 

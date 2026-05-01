@@ -120,9 +120,8 @@ public sealed class ManagedBreakpointIntegrationTest : IAsyncLifetime
         });
         await WhenWaitingForResponse("setBreakpoints", timeout: 5);
 
-        // Use --auto-test: first-click BPs now work for C++/CLI via assembly-level
-        // WATCH (MIXDBG_WATCH_ASSEMBLIES). The profiler hooks all methods from the
-        // C++/CLI assembly, so ENTER fires on the very first call.
+        // Use --auto-test: C++/CLI BPs are resolved via WATCH tokens sent to the
+        // profiler. The profiler hooks exact methods, so ENTER fires on first call.
         await WhenLaunchingWithAutoTest();
         await WhenSendingConfigurationDone();
 

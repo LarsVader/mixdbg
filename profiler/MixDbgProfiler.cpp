@@ -15,9 +15,8 @@ MixDbgProfiler* g_pProfiler = nullptr;
 MixDbgProfiler::MixDbgProfiler() : m_refCount(1), m_pInfo(nullptr),
     m_hPipe(INVALID_HANDLE_VALUE), m_hCmdPipe(INVALID_HANDLE_VALUE),
     m_hAckEvent(nullptr),
-    m_watchCount(0), m_watchAssemblyCount(0) {
+    m_watchCount(0) {
     memset(m_watchEntries, 0, sizeof(m_watchEntries));
-    memset(m_watchAssemblies, 0, sizeof(m_watchAssemblies));
     InitializeCriticalSection(&m_pipeLock);
     InitializeCriticalSection(&m_watchLock);
     InitializeCriticalSection(&m_funcLock);
@@ -91,14 +90,6 @@ bool MixDbgProfiler::IsWatchedMethod(const char* asmName, unsigned int token) {
     }
     LeaveCriticalSection(&m_watchLock);
     return found;
-}
-
-bool MixDbgProfiler::IsWatchedAssembly(const char* asmName) {
-    for (int i = 0; i < m_watchAssemblyCount; i++) {
-        if (_stricmp(m_watchAssemblies[i], asmName) == 0)
-            return true;
-    }
-    return false;
 }
 
 void MixDbgProfiler::ExtractAssemblyName(const WCHAR* modulePath, char* out, int outSize) {
@@ -202,7 +193,8 @@ HRESULT STDMETHODCALLTYPE MixDbgProfiler::JITInlining(
     char asmUtf8[256] = {};
     ExtractAssemblyName(modulePath, asmUtf8, sizeof(asmUtf8));
 
-    if (IsWatchedMethod(asmUtf8, token) || IsWatchedAssembly(asmUtf8))
+    // Only block inlining for methods with exact WATCH tokens (breakpoints).
+    if (IsWatchedMethod(asmUtf8, token))
         *pfShouldInline = FALSE;
 
     return S_OK;
@@ -249,24 +241,6 @@ void MixDbgProfiler::CmdReaderLoop() {
                         m_watchCount++;
                     }
                     LeaveCriticalSection(&m_watchLock);
-
-                    // Ensure enter/leave hooks are set up (may be first watch token
-                    // if no pre-launch BPs existed — e.g. late-loaded assemblies).
-                    if (!m_hooksActive && m_pInfo) {
-                        // First dynamic watch: set up global profiler pointer and
-                        // FunctionIDMapper so the CLR consults us for every new JIT.
-                        if (!g_pProfiler) {
-                            g_pProfiler = this;
-                            m_pInfo->SetFunctionIDMapper((void*)&MixDbgFunctionIDMapper);
-                        }
-                        HRESULT hr = m_pInfo->SetEnterLeaveFunctionHooks(
-                            (void*)FunctionEnterNaked, (void*)FunctionLeaveNaked, (void*)FunctionTailcallNaked);
-                        if (SUCCEEDED(hr)) {
-                            m_pInfo->SetEventMask(
-                                COR_PRF_MONITOR_JIT_COMPILATION | COR_PRF_MONITOR_ENTERLEAVE);
-                            m_hooksActive = true;
-                        }
-                    }
                 }
             }
 
@@ -368,29 +342,16 @@ HRESULT STDMETHODCALLTYPE MixDbgProfiler::Initialize(IUnknown* pICorProfilerInfo
         }
     }
 
-    // Parse "Asm1,Asm2,..." — assemblies to watch at assembly level (C++/CLI).
-    // FunctionIDMapper hooks every method from these assemblies.
-    char asmBuf[2048] = {};
-    DWORD asmLen = GetEnvironmentVariableA("MIXDBG_WATCH_ASSEMBLIES", asmBuf, sizeof(asmBuf));
-    if (asmLen > 0 && asmLen < sizeof(asmBuf)) {
-        char* ctx = nullptr;
-        char* tok = strtok_s(asmBuf, ",", &ctx);
-        while (tok && m_watchAssemblyCount < MAX_WATCH_ASM) {
-            strncpy_s(m_watchAssemblies[m_watchAssemblyCount], 256, tok, _TRUNCATE);
-            m_watchAssemblyCount++;
-            tok = strtok_s(nullptr, ",", &ctx);
-        }
-    }
-
-    if (m_watchCount > 0 || m_watchAssemblyCount > 0) {
-        g_pProfiler = this;
-        m_pInfo->SetFunctionIDMapper((void*)&MixDbgFunctionIDMapper);
-        hr = m_pInfo->SetEnterLeaveFunctionHooks(
-            (void*)FunctionEnterNaked, (void*)FunctionLeaveNaked, (void*)FunctionTailcallNaked);
-        if (SUCCEEDED(hr)) {
-            eventMask |= COR_PRF_MONITOR_ENTERLEAVE;
-            m_hooksActive = true;
-        }
+    // Always activate hooks — mid-session WATCH commands can arrive at any time
+    // via the command pipe. FunctionIDMapper returns FALSE for non-watched methods
+    // so only exact-token matches get ENTER/LEAVE overhead.
+    g_pProfiler = this;
+    m_pInfo->SetFunctionIDMapper((void*)&MixDbgFunctionIDMapper);
+    hr = m_pInfo->SetEnterLeaveFunctionHooks(
+        (void*)FunctionEnterNaked, (void*)FunctionLeaveNaked, (void*)FunctionTailcallNaked);
+    if (SUCCEEDED(hr)) {
+        eventMask |= COR_PRF_MONITOR_ENTERLEAVE;
+        m_hooksActive = true;
     }
 
     hr = m_pInfo->SetEventMask(eventMask);

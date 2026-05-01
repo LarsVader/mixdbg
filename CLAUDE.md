@@ -37,6 +37,8 @@ Never report a task as done without running both.
 
 After code changes, check whether `docs/` files need updating — especially `docs/architecture.md` (service responsibilities, data model, threading, managed debugging), `docs/stepping-architecture.md` (stepping/BP interactions), and `docs/failed-approaches.md` (if a new dead-end was discovered). Keep `CLAUDE.md` in sync with any changes to build/test commands, project structure, or critical implementation gotchas.
 
+When a code review identifies an issue that the user agrees to skip for now, document it in `docs/tech-debt.md` with the date, description, why it's low risk, and fix options.
+
 ## Test Target
 
 The `test/TestApp/` directory contains a mixed-mode WPF app (C# frontend → C++/CLI wrapper → native C++ library) used as the integration test target. Build with `make all` from `test/TestApp/`.

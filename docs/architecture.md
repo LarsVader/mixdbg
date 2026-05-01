@@ -119,10 +119,9 @@ Three mechanisms:
 2. **`FunctionEnter`/`FunctionLeave`/`FunctionTailcall`** hooks (x64 MASM stubs in `EnterLeaveStubs.asm`) — fire on every call/return of watched methods
 3. **`JITInlining`** — returns `*pfShouldInline = FALSE` for watched callees so hooks always fire
 
-`FunctionIDMapper` selectively enables hooks for watched methods. Two watch granularities:
-- **Exact token watches** (`MIXDBG_WATCH_TOKENS`): C# methods — resolved from portable PDBs at pre-launch time
-- **Assembly-level watches** (`MIXDBG_WATCH_ASSEMBLIES`): C++/CLI assemblies — all methods hooked because tokens can't be resolved before module load
-- **Mid-session watches** (`WATCH:Assembly:Token`): sent via command pipe when breakpoints are set after launch. All methods (C# and C++/CLI) send a WATCH when their token is resolved by `BindResolvedMethod`.
+`FunctionIDMapper` selectively enables hooks for watched methods. Only exact token matches get ENTER/LEAVE hooks:
+- **Pre-launch watches** (`MIXDBG_WATCH_TOKENS`): C# methods — resolved from portable PDBs at pre-launch time
+- **Mid-session watches** (`WATCH:Assembly:Token`): sent via command pipe when breakpoints are set after launch (both C# and C++/CLI). C++/CLI tokens are resolved from PDBs once the module loads in dbgeng.
 
 Named pipe protocol:
 - `READY:\n` — profiler initialization complete
@@ -166,7 +165,7 @@ For mid-session BPs on already-JIT'd methods where `FunctionIDMapper` wasn't cal
 - **Multi-threading**: `ActivationCount` increments once per ENTER regardless of thread. A method running on 2 threads has count=2 and holds the HW BP until both finish. Correct but coarser than per-thread tracking.
 - **Tailcalls**: Treated identically to `Leave` — the current activation is ending.
 - **Exception unwinds**: `FunctionLeave` is NOT called when an exception unwinds past the method. Activation counts can leak, keeping the HW BP installed. Self-heals on next `setBreakpoints` or process launch. A follow-up can hook `ExceptionUnwindFunctionLeave` if needed.
-- **Assembly-level watches without BPs (C++/CLI)**: ENTER fires for every method in the watched assembly. For methods without a plan entry, MixDbg ACKs immediately (no HW BP work, no activation counting).
+- **ENTER fast-path (no plan)**: If an ENTER notification arrives for a method with no BP plan and no active breakpoints, `ParseEnterNotification` ACKs immediately on the pipe reader thread without interrupting the engine.
 
 ### Managed Stack Traces
 

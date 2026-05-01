@@ -97,21 +97,6 @@ internal sealed class ProfilerPipeService(
             65536); // outBufferSize
         Environment.SetEnvironmentVariable("MIXDBG_CMD_PIPE", $@"\\.\pipe\{cmdPipeName}");
 
-        // Resolve C++/CLI assembly names for assembly-level watching.
-        // FunctionIDMapper is called once per method (result cached by CLR), so we
-        // can't add watches dynamically. Instead, set an env var at pre-launch time
-        // so the profiler hooks ALL methods from these assemblies.
-        if (model.ProfilerBreakpointHints.Count > 0)
-        {
-            List<string> watchAssemblies = _managedBp.ResolveWatchAssemblies(model.ProfilerBreakpointHints);
-            if (watchAssemblies.Count > 0)
-            {
-                string asmList = string.Join(",", watchAssemblies);
-                Environment.SetEnvironmentVariable("MIXDBG_WATCH_ASSEMBLIES", asmList);
-                _log.LogInfo(_logStore, $"Profiler watch assemblies: {asmList}");
-            }
-        }
-
         _log.LogInfo(_logStore, $"Profiler pipe created: {pipeName}, DLL: {profilerPath}");
     }
 
@@ -331,6 +316,18 @@ internal sealed class ProfilerPipeService(
         if (!uint.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out uint eTid)) return;
         string eAsm = parts[3];
 
+        // Fast-path: if no plan and no active BPs for this method, ACK immediately
+        // without interrupting the engine. In large assemblies, most methods have no
+        // BPs and interrupting for each ENTER makes the debugger unresponsive.
+        (int Token, string Assembly) key = (eToken, eAsm);
+        if (!model.ManagedBpPlans.ContainsKey(key) && !model.ActiveMethodBreakpoints.ContainsKey(key))
+        {
+            _log.LogVerbose(_logStore,
+                $"ProfilerReader: ENTER token=0x{eToken:X8} asm={eAsm} — no plan, ACK-only");
+            _ = model.ProfilerAckEvent?.Set();
+            return;
+        }
+
         model.ProfilerNotifications.Enqueue(new EnterNotification(eToken, eAddr, eTid, eAsm));
         _log.LogInfo(_logStore,
             $"ProfilerReader: ENTER token=0x{eToken:X8} addr=0x{eAddr:X} tid={eTid} asm={eAsm} — interrupting engine");
@@ -351,7 +348,6 @@ internal sealed class ProfilerPipeService(
         model.ProfilerNotifications.Enqueue(notification);
 
         // Only interrupt when this method has active HW BPs that need to be removed.
-        // Assembly-level-watch methods without plans don't require engine attention.
         if (model.ActiveMethodBreakpoints.ContainsKey((token, asm)))
         {
             _log.LogVerbose(_logStore,

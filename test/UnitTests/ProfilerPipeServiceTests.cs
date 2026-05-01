@@ -102,48 +102,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         ThenEnvVarIsNull("MIXDBG_WATCH_TOKENS");
     }
 
-    // ── SetupProfilerPipe (watch assemblies resolution) ─────────
-
-    [Fact]
-    public void SetupProfilerPipe_WhenCliHints_ResolvesWatchAssemblies()
-    {
-        GivenProfilerDllExists();
-        GivenBreakpointHints((@"C:\src\Wrapper.cpp", 15));
-        GivenResolveTokensReturns([]);
-        GivenResolveWatchAssembliesReturns(["CliWrapper"]);
-
-        WhenSettingUpProfilerPipe();
-
-        ThenEnvVarIsSet("MIXDBG_WATCH_ASSEMBLIES", "CliWrapper");
-        ThenLogInfoWasCalled("Profiler watch assemblies: CliWrapper");
-    }
-
-    [Fact]
-    public void SetupProfilerPipe_WhenMultipleCliAssemblies_SetsCommaDelimitedEnvVar()
-    {
-        GivenProfilerDllExists();
-        GivenBreakpointHints((@"C:\src\A.cpp", 10), (@"C:\src\B.cpp", 20));
-        GivenResolveTokensReturns([]);
-        GivenResolveWatchAssembliesReturns(["AsmA", "AsmB"]);
-
-        WhenSettingUpProfilerPipe();
-
-        ThenEnvVarIsSet("MIXDBG_WATCH_ASSEMBLIES", "AsmA,AsmB");
-    }
-
-    [Fact]
-    public void SetupProfilerPipe_WhenNoCliAssemblies_DoesNotSetWatchAssembliesEnvVar()
-    {
-        GivenProfilerDllExists();
-        GivenBreakpointHints((@"C:\src\Program.cs", 10));
-        GivenResolveTokensReturns([]);
-        GivenResolveWatchAssembliesReturns([]);
-
-        WhenSettingUpProfilerPipe();
-
-        ThenEnvVarIsNull("MIXDBG_WATCH_ASSEMBLIES");
-    }
-
     // ── StartProfilerReader (pipe is null) ──────────────────────
 
     [Fact]
@@ -280,6 +238,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     {
         GivenProfilerPipeCreated();
         GivenInWaitForEvent();
+        GivenManagedBpPlan(0x06000001, "TestAsm");
         GivenProfilerReaderStarted();
 
         WhenClientSendsLine("ENTER:06000001:2000:1234:TestAsm");
@@ -308,6 +267,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     public void ProfilerReaderLoop_WhenEnterNotificationTwice_EnqueuesBoth()
     {
         GivenProfilerPipeCreated();
+        GivenManagedBpPlan(0x06000001, "TestAsm");
         GivenProfilerReaderStarted();
 
         WhenClientSendsLine("ENTER:06000001:2000:1234:TestAsm");
@@ -316,6 +276,38 @@ public sealed class ProfilerPipeServiceTests : IDisposable
 
         // Both ENTERs are queued — activation counting happens engine-side.
         ThenProfilerNotificationQueueHasCount(2);
+    }
+
+    // ── ProfilerReaderLoop: ENTER without plan — fast-path ACK ─
+
+    [Fact]
+    public void ProfilerReaderLoop_WhenEnterWithoutPlan_AcksWithoutInterrupting()
+    {
+        GivenProfilerPipeCreated();
+        GivenInWaitForEvent();
+        GivenProfilerReaderStarted();
+
+        WhenClientSendsLine("ENTER:06000001:2000:1234:TestAsm");
+        WhenWaitingForProcessing();
+
+        ThenProfilerNotificationQueueIsEmpty();
+        ThenSetInterruptWasNotCalled();
+        ThenProfilerAckWasSignaled();
+    }
+
+    [Fact]
+    public void ProfilerReaderLoop_WhenEnterWithActiveBpsButNoPlan_StillEnqueues()
+    {
+        GivenProfilerPipeCreated();
+        GivenInWaitForEvent();
+        GivenActiveMethodBreakpoint(0x06000001, "TestAsm");
+        GivenProfilerReaderStarted();
+
+        WhenClientSendsLine("ENTER:06000001:2000:1234:TestAsm");
+        WhenWaitingForProcessing();
+
+        ThenProfilerNotificationQueueHasCount(1);
+        ThenSetInterruptWasCalled();
     }
 
     // ── ProfilerReaderLoop: LEAVE notification ──────────────────
@@ -569,22 +561,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         ThenProfilerReaderThreadCompletes();
     }
 
-    // ── SetupProfilerPipe: both tokens and assemblies resolved ──
-
-    [Fact]
-    public void SetupProfilerPipe_WhenBothTokensAndAssemblies_SetsBothEnvVars()
-    {
-        GivenProfilerDllExists();
-        GivenBreakpointHints((@"C:\src\Program.cs", 10), (@"C:\src\Wrapper.cpp", 20));
-        GivenResolveTokensReturns([("AsmA", 0x06000001)]);
-        GivenResolveWatchAssembliesReturns(["CliWrapper"]);
-
-        WhenSettingUpProfilerPipe();
-
-        ThenEnvVarIsSet("MIXDBG_WATCH_TOKENS", "AsmA:06000001");
-        ThenEnvVarIsSet("MIXDBG_WATCH_ASSEMBLIES", "CliWrapper");
-    }
-
     #region Given
 
     private static void GivenProfilerDllDoesNotExist()
@@ -612,10 +588,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         _ = _managedBp.ResolveTokensFromBreakpoints(Arg.Any<IEnumerable<(string, int)>>())
             .Returns(tokens);
 
-    private void GivenResolveWatchAssembliesReturns(List<string> assemblies) =>
-        _ = _managedBp.ResolveWatchAssemblies(Arg.Any<IEnumerable<(string, int)>>())
-            .Returns(assemblies);
-
     private void GivenProfilerPipeCreated()
     {
         _pipeName = $"MixDbgTest-{Guid.NewGuid():N}";
@@ -642,6 +614,13 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     private void GivenActiveMethodBreakpoint(int token, string assembly)
         => _model.ActiveMethodBreakpoints[(token, assembly)] =
             new ActiveMethodBreakpoint { ActivationCount = 1 };
+
+    private void GivenManagedBpPlan(int token, string assembly)
+        => _model.ManagedBpPlans[(token, assembly)] = new ManagedMethodBreakpointPlan
+        {
+            MethodToken = token,
+            AssemblyName = assembly,
+        };
 
     private void GivenInWaitForEvent() => _model.InWaitForEvent = true;
 
@@ -696,6 +675,10 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     private void ThenProfilerPipeNameIsSet() => Assert.NotNull(_model.ProfilerPipeName);
 
     private void ThenProfilerAckEventIsCreated() => Assert.NotNull(_model.ProfilerAckEvent);
+
+    private void ThenProfilerAckWasSignaled()
+        => Assert.True(_model.ProfilerAckEvent!.WaitOne(0),
+            "ProfilerAckEvent should have been signaled by fast-path ACK");
 
     private void ThenLogWarningWasCalled(string messageContains) =>
         _log.Received().LogWarning(
@@ -862,9 +845,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         List<(string Assembly, int Token)> noTokens = [];
         _ = _managedBp.ResolveTokensFromBreakpoints(Arg.Any<IEnumerable<(string, int)>>())
             .Returns(noTokens);
-        List<string> noAssemblies = [];
-        _ = _managedBp.ResolveWatchAssemblies(Arg.Any<IEnumerable<(string, int)>>())
-            .Returns(noAssemblies);
 
         ClearEnvVars();
     }
@@ -886,7 +866,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", null);
         Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", null);
         Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", null);
-        Environment.SetEnvironmentVariable("MIXDBG_WATCH_ASSEMBLIES", null);
     }
 
     public void Dispose()

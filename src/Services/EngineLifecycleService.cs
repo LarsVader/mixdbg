@@ -46,7 +46,8 @@ internal sealed class EngineLifecycleService(
             Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", null);
             Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", null);
             Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", null);
-            Environment.SetEnvironmentVariable("MIXDBG_WATCH_ASSEMBLIES", null);
+            Environment.SetEnvironmentVariable("MIXDBG_CMD_PIPE", null);
+            Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", null);
         };
         return model;
     }

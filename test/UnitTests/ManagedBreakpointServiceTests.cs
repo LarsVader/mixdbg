@@ -476,45 +476,6 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         Assert.Empty(result);
     }
 
-    // ── ResolveWatchAssemblies ────────────────────────────────
-
-    [Fact]
-    public void ResolveWatchAssemblies_WhenNoCliFiles_ReturnsEmpty()
-    {
-        GivenSourceFileIsNotCli(@"C:\src\Program.cs");
-
-        (string FilePath, int Line)[] breakpoints = [(@"C:\src\Program.cs", 10)];
-
-        List<string> result = WhenResolvingWatchAssemblies(breakpoints);
-
-        Assert.Empty(result);
-    }
-
-    [Fact]
-    public void ResolveWatchAssemblies_WhenCliFileWithVcxproj_ReturnsAssemblyName()
-    {
-        GivenCliProjectForWatchAssembly(out string sourceFile, "CliWrapper");
-
-        (string FilePath, int Line)[] breakpoints = [(sourceFile, 10)];
-
-        List<string> result = WhenResolvingWatchAssemblies(breakpoints);
-
-        _ = Assert.Single(result);
-        Assert.Equal("CliWrapper", result[0]);
-    }
-
-    [Fact]
-    public void ResolveWatchAssemblies_WhenDuplicateCliFiles_ReturnsDistinct()
-    {
-        GivenCliProjectForWatchAssembly(out string sourceFile, "CliWrapper");
-
-        (string FilePath, int Line)[] breakpoints = [(sourceFile, 10), (sourceFile, 20)];
-
-        List<string> result = WhenResolvingWatchAssemblies(breakpoints);
-
-        _ = Assert.Single(result);
-    }
-
     // ── ClearManagedBreakpointsForFile (CorWrapper deactivation) ──
 
     [Fact]
@@ -561,21 +522,6 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         bool result = WhenTryingToBindBreakpoint(sourceFile, 10, bpId: 900);
 
         Assert.False(result);
-    }
-
-    // ── ResolveCliAssemblyName (no vcxproj found) ──
-
-    [Fact]
-    public void ResolveWatchAssemblies_WhenNoVcxprojFound_ReturnsEmpty()
-    {
-        string src = GivenSourceFileOnDisk("Wrapper.cpp");
-        _ = _sourceFiles.IsCliFile(src).Returns(true);
-
-        (string FilePath, int Line)[] breakpoints = [(src, 10)];
-
-        List<string> result = WhenResolvingWatchAssemblies(breakpoints);
-
-        Assert.Empty(result);
     }
 
     // ── FindCliAssemblyDll (assembly null) ──
@@ -898,18 +844,6 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
         _ = _sourceFiles.IsCliFile(_cliSourcePath).Returns(true);
     }
 
-    private void GivenCliProjectForWatchAssembly(out string sourceFile, string assemblyName)
-    {
-        string dir = Path.Combine(_tempDir, assemblyName);
-        _ = Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, $"{assemblyName}.vcxproj"),
-            "<Project><CLRSupport>true</CLRSupport></Project>");
-
-        sourceFile = Path.Combine(dir, "Source.cpp");
-        File.WriteAllText(sourceFile, "// fake source");
-        _ = _sourceFiles.IsCliFile(sourceFile).Returns(true);
-    }
-
     #endregion
 
     #region When
@@ -932,10 +866,6 @@ public sealed class ManagedBreakpointServiceTests : IDisposable
     private List<(string Assembly, int Token)> WhenResolvingTokens(
         IEnumerable<(string FilePath, int Line)> breakpoints)
         => _testee.ResolveTokensFromBreakpoints(breakpoints);
-
-    private List<string> WhenResolvingWatchAssemblies(
-        IEnumerable<(string FilePath, int Line)> breakpoints)
-        => _testee.ResolveWatchAssemblies(breakpoints);
 
     #endregion
 

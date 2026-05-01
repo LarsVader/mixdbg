@@ -62,7 +62,7 @@ Text lines, one per notification. Format depends on `m_hooksActive`:
 
 **Notification pipe** (`MIXDBG_PIPE_NAME`, profiler → MixDbg):
 
-With hooks (`MIXDBG_WATCH_TOKENS` or `MIXDBG_WATCH_ASSEMBLIES` set):
+With hooks (`MIXDBG_WATCH_TOKENS` set or dynamic `WATCH:` commands received):
 - `JIT:<token_hex>:<addr_hex>:<size_hex>:<assembly>[:<IL0=N0,IL1=N1,...>]\n`
 - `ENTER:<token_hex>:<body_addr_hex>:<thread_id_hex>:<assembly>\n`
 - `LEAVE:<token_hex>:<thread_id_hex>:<assembly>\n`
@@ -104,7 +104,7 @@ IL-to-native mapping is included for ALL JIT'd methods (not just watched) so mid
 | `MIXDBG_ACK_EVENT` | Event name | ACK synchronization event (first-entry sync only) |
 | `MIXDBG_CMD_PIPE` | `\\.\pipe\MixDbgCmd_<name>` | Command pipe for dynamic WATCH commands |
 | `MIXDBG_WATCH_TOKENS` | `Asm1:Token1,Asm2:Token2,...` | Exact methods to hook (C#) |
-| `MIXDBG_WATCH_ASSEMBLIES` | `Asm1,Asm2,...` | Assemblies to hook entirely (C++/CLI) |
+| ~~`MIXDBG_WATCH_ASSEMBLIES`~~ | ~~`Asm1,Asm2,...`~~ | Removed — caused ENTER storms in large assemblies (see `docs/failed-approaches.md`) |
 
 ### Assembly Stubs (EnterLeaveStubs.asm)
 
