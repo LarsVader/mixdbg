@@ -257,4 +257,32 @@ public sealed class PdbSourceMapperTests
 
         Assert.Null(result);
     }
+
+    [Fact]
+    public void FindMethodAtLine_WhenLineIsInsideLambdaInGetter_ResolvesLambdaNotGetter()
+    {
+        // Regression: CalculatorViewModel.cs has
+        //     public ICommand AddCommand { get => field ??= new RelayCommand(_ =>
+        //     {
+        //         int sum = CliWrapper.ManagedCalculator.Add(InputA, InputB);   // line 20
+        //         ...
+        //     }); } = null;
+        // The compiler emits two sequence points covering line 20:
+        //   • get_AddCommand           SP=L18-L23 ILOffset=0x0
+        //   • <get_AddCommand>b__18_0  SP=L20-L20 ILOffset=0x1
+        // FindMethodAtLine must return the lambda body, not the getter — otherwise
+        // the BP fires on every property read (XAML binding) instead of on Execute.
+        if (!File.Exists(_wpfAppDll)) return;
+
+        string calcVm = Path.Combine(_repoRoot, "test", "TestApp", "WpfApp", "ViewModels", "CalculatorViewModel.cs");
+        if (!File.Exists(calcVm)) return;
+
+        using PdbSourceMapperService mapper = new();
+        (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? result =
+            mapper.FindMethodAtLine(_wpfAppDll, calcVm, 20);
+
+        _ = Assert.NotNull(result);
+        Assert.Equal("WpfApp", result.Value.AssemblyName);
+        Assert.Contains("<get_AddCommand>b__", result.Value.MethodName);
+    }
 }

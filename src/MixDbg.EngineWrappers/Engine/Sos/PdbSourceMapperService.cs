@@ -78,6 +78,15 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
     /// Finds the method token and assembly name for a given source file and line,
     /// searching all loaded PDBs.
     /// </summary>
+    /// <remarks>
+    /// When multiple methods have a sequence point covering the line (e.g. an outer
+    /// getter whose <c>field ??= new RelayCommand(_ => { … })</c> expression spans
+    /// the lambda body), the most specific match wins:
+    /// (1) prefer <c>sp.StartLine == line</c> (an exact statement start on this line)
+    /// over a multi-line range that merely contains it; (2) tiebreak by smallest
+    /// <c>EndLine - StartLine</c>. Without this the outer method (lower token) would
+    /// win and the BP would fire on every property read instead of when the lambda runs.
+    /// </remarks>
     /// <returns>Assembly name and full method name, or <c>null</c> if not found.</returns>
     public (string AssemblyName, string MethodName, int MethodToken, int ILOffset)? FindMethodAtLine(
         string assemblyPath, string sourceFile, int line)
@@ -86,13 +95,18 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
         if (reader == null)
             return null;
 
-        // We need the corresponding assembly metadata reader for type/method names.
         (PEReader Pe, MetadataReader Reader)? peReaderAndStream = GetOrLoadPeReader(assemblyPath);
         if (peReaderAndStream == null)
             return null;
 
         MetadataReader peReader = peReaderAndStream.Value.Reader;
         string assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
+        string normalizedSource = Path.GetFullPath(sourceFile);
+
+        MethodDefinitionHandle bestHandle = default;
+        int bestOffset = 0;
+        bool bestExact = false;
+        int bestSpan = int.MaxValue;
 
         foreach (MethodDebugInformationHandle mdHandle in reader.MethodDebugInformation)
         {
@@ -106,22 +120,41 @@ internal sealed class PdbSourceMapperService : IPdbSourceMapper, IDisposable
                     continue;
 
                 string docName = reader.GetString(reader.GetDocument(sp.Document).Name);
-                if (!Path.GetFullPath(docName).Equals(Path.GetFullPath(sourceFile), StringComparison.OrdinalIgnoreCase))
+                if (!Path.GetFullPath(docName).Equals(normalizedSource, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                if (sp.StartLine <= line && line <= sp.EndLine)
-                {
-                    MethodDefinitionHandle methodHandle = mdHandle.ToDefinitionHandle();
-                    int token = MetadataTokens.GetToken(methodHandle);
+                if (sp.StartLine > line || line > sp.EndLine)
+                    continue;
 
-                    string? methodName = GetFullMethodName(peReader, methodHandle);
-                    if (methodName != null)
-                        return (assemblyName, methodName, token, sp.Offset);
+                bool exact = sp.StartLine == line;
+                int span = sp.EndLine - sp.StartLine;
+
+                // Exact-start matches always beat range-only matches; among matches of
+                // the same kind, the smallest line span wins.
+                bool better =
+                    bestHandle.IsNil
+                    || (exact && !bestExact)
+                    || (exact == bestExact && span < bestSpan);
+
+                if (better)
+                {
+                    bestHandle = mdHandle.ToDefinitionHandle();
+                    bestOffset = sp.Offset;
+                    bestExact = exact;
+                    bestSpan = span;
                 }
             }
         }
 
-        return null;
+        if (bestHandle.IsNil)
+            return null;
+
+        string? methodName = GetFullMethodName(peReader, bestHandle);
+        if (methodName == null)
+            return null;
+
+        int token = MetadataTokens.GetToken(bestHandle);
+        return (assemblyName, methodName, token, bestOffset);
     }
 
     /// <summary>
