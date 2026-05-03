@@ -15,27 +15,27 @@ public class CalculatorViewModel : INotifyPropertyChanged
 
     public string StatusMessage { get; set => SetField(ref field, value); } = "Ready";
 
-    public ICommand AddCommand => new RelayCommand(_ =>
-    {
-        int sum = CliWrapper.ManagedCalculator.Add(InputA, InputB);
-        Result = $"{InputA} + {InputB} = {sum}";
-        StatusMessage = "Addition complete";
-    });
+    public ICommand AddCommand { get => field ??= new RelayCommand(_ =>
+        {
+            int sum = CliWrapper.ManagedCalculator.Add(InputA, InputB);
+            Result = $"{InputA} + {InputB} = {sum}";
+            StatusMessage = "Addition complete";
+        }); } = null;
 
     /// <summary>test</summary>
-    public ICommand MultiplyCommand => new RelayCommand(_ =>
-    {
-        int product = CliWrapper.ManagedCalculator.Multiply(InputA, InputB);
-        Result = $"{InputA} x {InputB} = {product}";
-        StatusMessage = "Multiplication complete";
-    });
+    public ICommand MultiplyCommand { get => field ??= new RelayCommand(_ =>
+        {
+            int product = CliWrapper.ManagedCalculator.Multiply(InputA, InputB);
+            Result = $"{InputA} x {InputB} = {product}";
+            StatusMessage = "Multiplication complete";
+        }); } = null;
 
-    public ICommand FibonacciCommand => new RelayCommand(_ =>
-    {
-        int fib = CliWrapper.ManagedCalculator.Fibonacci(InputA);
-        Result = $"Fibonacci({InputA}) = {fib}";
-        StatusMessage = "Fibonacci complete";
-    });
+    public ICommand FibonacciCommand { get => field ??= new RelayCommand(_ =>
+        {
+            int fib = CliWrapper.ManagedCalculator.Fibonacci(InputA);
+            Result = $"Fibonacci({InputA}) = {fib}";
+            StatusMessage = "Fibonacci complete";
+        }); } = null;
 
     public event PropertyChangedEventHandler PropertyChanged;
 

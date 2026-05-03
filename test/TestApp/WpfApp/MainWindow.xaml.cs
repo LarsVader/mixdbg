@@ -197,4 +197,7 @@ public partial class MainWindow : Window
             ResultText.Text = $"{a}² = {result}";
         }
     }
+
+    private void OnBindingsClick(object sender, RoutedEventArgs e) =>
+        _ = new BindingTestWindow { Owner = this }.ShowDialog();
 }

@@ -44,7 +44,8 @@
         <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,5,0,10">
             <Button Content="Async Calc" Width="80" Margin="0,0,10,0" Click="OnAsyncCalcClick"/>
             <Button Content="Complex" Width="80" Margin="0,0,10,0" Click="OnComplexClick"/>
-            <Button Content="Square (late)" Width="90" Click="OnLateSquareClick"/>
+            <Button Content="Square (late)" Width="90" Margin="0,0,10,0" Click="OnLateSquareClick"/>
+            <Button Content="Bindings" Width="80" Click="OnBindingsClick"/>
         </StackPanel>
 
         <TextBlock Grid.Row="6" Grid.ColumnSpan="2" x:Name="ResultText"
