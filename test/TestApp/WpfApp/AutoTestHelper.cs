@@ -17,6 +17,19 @@ internal static class AutoTestHelper
     {
         window.Hide();
         int firstDelay = App.AutoTestSlow ? 15 : 3;
+        if (App.AutoTestAttach)
+        {
+            // Pre-roll: gives the integration test enough time to spawn MixDbg,
+            // attach via diagnostic IPC, set breakpoints, and send
+            // configurationDone before any click handler executes. The 30-second
+            // floor is generous to absorb Windows-pipe-creation latency on slower
+            // hosts and to leave room for the profiler attach round-trip.
+            MainWindow.ScheduleActions(
+                (30, window.OnAddClickAction),
+                (10, window.OnMultiplyClickAction),
+                (5, window.Close));
+            return;
+        }
         if (App.AutoTestComplex)
         {
             MainWindow.ScheduleActions(
