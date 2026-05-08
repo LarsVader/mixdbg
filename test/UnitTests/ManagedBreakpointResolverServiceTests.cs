@@ -589,13 +589,24 @@ public sealed class ManagedBreakpointResolverServiceTests : IDisposable
     }
 
     [Fact]
-    public void StartDeferredBreakpointPoller_DisposeActionCleansUp()
+    public void StartDeferredBreakpointPoller_DisposeActionChainsOnPriorCleanup()
     {
+        // The poller appends a timer-dispose step onto whatever DisposeAction
+        // EngineLifecycleService.CreateModel installed (profiler-pipe cleanup,
+        // env-var clear, Terminated=true). Mimic that prior action here and
+        // assert it still runs through the chain.
+        bool priorRan = false;
+        _model.DisposeAction = () =>
+        {
+            priorRan = true;
+            _model.Terminated = true;
+        };
         GivenDeferredBreakpoint(@"C:\src\A.cs", line: 10, token: 0x06000001, ilOffset: 0, bpId: 1, assembly: "Asm");
 
         WhenStartingDeferredBreakpointPoller();
         _model.DisposeAction!.Invoke();
 
+        Assert.True(priorRan, "Prior DisposeAction must run through the chain");
         Assert.True(_model.Terminated);
     }
 

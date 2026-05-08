@@ -48,15 +48,37 @@ internal sealed class ManagedBreakpointResolverService(
                 // for the target IL offset instead of using the method entry point.
                 ulong nativeAddress = entryAddress;
                 (int Token, string Assembly) mapKey = (deferred.MethodToken, deferred.AssemblyName!);
-                if (deferred.ILOffset > 0 &&
-                    model.JitMethodMappings.TryGetValue(mapKey, out JitMethodMapping? mapping))
+                if (model.JitMethodMappings.TryGetValue(mapKey, out JitMethodMapping? mapping))
                 {
-                    nativeAddress = mapping.GetNativeAddress(deferred.ILOffset);
-                    _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{entryAddress:X} -> IL 0x{deferred.ILOffset:X} at 0x{nativeAddress:X}");
+                    if (deferred.ILOffset > 0)
+                    {
+                        nativeAddress = mapping.GetNativeAddress(deferred.ILOffset);
+                        _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{entryAddress:X} -> IL 0x{deferred.ILOffset:X} at 0x{nativeAddress:X}");
+                    }
+                    else
+                    {
+                        _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{entryAddress:X} (IL offset 0 — entry)");
+                    }
+                }
+                else if (deferred.ILOffset > 0)
+                {
+                    // Symmetric to InstallEagerHardwareBp: at IL offset > 0
+                    // without a JIT IL map, we have no way to find the right
+                    // native address. Refusing here keeps the BP deferred so
+                    // a future JIT/rejit notification with a map can install
+                    // it correctly — silently using entryAddress would fire
+                    // the BP on method entry every time instead of on the
+                    // user's chosen line.
+                    _log.LogWarning(_logStore,
+                        $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{entryAddress:X} found, " +
+                        $"but no IL map for token=0x{deferred.MethodToken:X8} asm={deferred.AssemblyName}; " +
+                        $"refusing to bind at {deferred.FilePath}:{deferred.Line} (IL offset 0x{deferred.ILOffset:X}) " +
+                        $"to avoid silently misplacing it on method entry");
+                    continue;
                 }
                 else
                 {
-                    _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{entryAddress:X} (no IL map, using entry)");
+                    _log.LogInfo(_logStore, $"  Deferred bp #{deferred.BpId}: XCLRData entry=0x{entryAddress:X} (IL offset 0 — entry; no map)");
                 }
 
                 uint? hwBpId = _bpService.SetManagedCodeBreakpoint(model, nativeAddress, deferred.FilePath, deferred.Line);
@@ -117,10 +139,8 @@ internal sealed class ManagedBreakpointResolverService(
     private List<Breakpoint> FoldJitIntoPlans(NativeDebuggerModel model, JitNotification jit)
     {
         List<Breakpoint> resolved = [];
-        if (model.DeferredManagedBreakpoints.Count == 0)
-            return resolved;
-
         HashSet<DeferredManagedBreakpoint> bound = [];
+
         foreach (DeferredManagedBreakpoint deferred in model.DeferredManagedBreakpoints)
         {
             if (deferred.MethodToken != jit.MethodToken ||
@@ -135,28 +155,46 @@ internal sealed class ManagedBreakpointResolverService(
                 $"token=0x{jit.MethodToken:X8} addr=0x{jit.NativeAddress:X} asm={jit.AssemblyName}");
 
             // Create/merge a method plan. ENTER hook will install the HW BP.
-            AddSiteToPlan(
-                model, deferred.MethodToken, deferred.AssemblyName,
-                new MethodBreakpointSite
-                {
-                    BpId = deferred.BpId,
-                    ILOffset = deferred.ILOffset,
-                    FilePath = deferred.FilePath,
-                    Line = deferred.Line,
-                });
-
-            _ = bound.Add(deferred);
-            resolved.Add(new Breakpoint
+            MethodBreakpointSite site = new()
             {
-                Id = deferred.BpId,
-                Verified = true,
+                BpId = deferred.BpId,
+                ILOffset = deferred.ILOffset,
+                FilePath = deferred.FilePath,
                 Line = deferred.Line,
-                Source = new Source
+            };
+            AddSiteToPlan(model, deferred.MethodToken, deferred.AssemblyName, site);
+
+            // Attach mode (IsRejitMode): no ENTER/LEAVE notifications will fire
+            // for runtime hooks (COR_PRF_MONITOR_ENTERLEAVE is rejected by the
+            // CLR for attached profilers), so install the HW BP immediately at
+            // the IL-mapped native address. Subject to the 4-concurrent
+            // hardware-debug-register cap until the IL rewriter is implemented.
+            bool eagerOk = true;
+            if (model.IsRejitMode)
+            {
+                eagerOk = InstallEagerHardwareBp(
+                    model, deferred.MethodToken, deferred.AssemblyName, site, jit.NativeAddress);
+            }
+
+            // Only finalize the deferred entry when we actually bound the BP.
+            // If eager install failed (e.g. IL map missing), leave it deferred
+            // so the periodic DAC poll can retry — orphaning it here would
+            // permanently strand the BP unverified with no further attempts.
+            if (eagerOk)
+            {
+                _ = bound.Add(deferred);
+                resolved.Add(new Breakpoint
                 {
-                    Name = Path.GetFileName(deferred.FilePath),
-                    Path = deferred.FilePath,
-                },
-            });
+                    Id = deferred.BpId,
+                    Verified = true,
+                    Line = deferred.Line,
+                    Source = new Source
+                    {
+                        Name = Path.GetFileName(deferred.FilePath),
+                        Path = deferred.FilePath,
+                    },
+                });
+            }
         }
 
         if (bound.Count > 0)
@@ -164,7 +202,97 @@ internal sealed class ManagedBreakpointResolverService(
             _ = model.DeferredManagedBreakpoints.RemoveAll(bound.Contains);
             model.RebuildDeferredBreakpointIndex();
         }
+
+        // Attach mode: signal the ACK event after processing. The profiler's
+        // JITCompilationFinished blocks every watched JIT on this event
+        // (500 ms timeout) so MixDbg can install a HW BP before the method
+        // body executes. We signal here unconditionally — even when the
+        // foreach found no installable site (deferred entry filtered out
+        // by AssemblyName==null, or stale plan) — so a stuck watched JIT
+        // unblocks instead of hitting the 500 ms timeout.
+        //
+        // Reaching this code path means a JIT notification was queued by
+        // ParseJitNotification, which only enqueues when MatchesDeferred-
+        // Breakpoint is true — so this never fires for unrelated/framework
+        // JITs (those don't reach the queue).
+        //
+        // Known limitation: the auto-reset event semantics are imperfect
+        // for batched processing — if multiple JIT notifications dequeue
+        // back-to-back and each Set fires while no waiter is in
+        // WaitForSingleObject yet, the Sets collapse into one signal and
+        // only one waiter wakes. Surfaces under heavy concurrent JIT
+        // pressure (tier promotion, multi-thread JIT). Documented in
+        // CLAUDE.md M7 PARTIAL — proper fix is M9 IL injection (no ACK
+        // protocol).
+        if (model.IsRejitMode)
+            _ = (model.ProfilerAckEvent?.Set());
+
         return resolved;
+    }
+
+    /// <summary>
+    /// Installs a permanent HW BP at the IL-mapped native address for an attach-mode
+    /// breakpoint. Used in lieu of the ENTER-driven plan activation that requires
+    /// runtime ENTER/LEAVE hooks (unavailable to attached profilers). The installed
+    /// BP is recorded in <see cref="NativeDebuggerModel.ActiveMethodBreakpoints"/>
+    /// with an artificial activation count of 1 — never decremented, never removed
+    /// while the BP is set. There is no LEAVE-driven cleanup; the BP persists for
+    /// the life of the session.
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> if a HW BP was installed at the requested IL offset (or was
+    /// already installed there), <c>false</c> if the BP could not be installed
+    /// at the correct address — caller should mark the BP as unverified.
+    /// </returns>
+    private bool InstallEagerHardwareBp(NativeDebuggerModel model, int token, string assembly,
+        MethodBreakpointSite site, ulong nativeAddress)
+    {
+        (int Token, string Assembly) key = (token, assembly);
+
+        // Resolve the exact native address. If the IL→native map is missing
+        // we can only honor a BP at IL offset 0 (method entry) — anything else
+        // would silently install a permanent BP at the wrong line. Refusing
+        // here surfaces the failure to the user as an unverified BP rather
+        // than a BP that fires on the wrong line every time.
+        ulong addr;
+        if (model.JitMethodMappings.TryGetValue(key, out JitMethodMapping? mapping))
+        {
+            addr = mapping.GetNativeAddress(site.ILOffset);
+        }
+        else if (site.ILOffset == 0)
+        {
+            addr = nativeAddress;
+        }
+        else
+        {
+            _log.LogWarning(_logStore,
+                $"  ATTACH-EAGER: no IL map for token=0x{token:X8} asm={assembly}; " +
+                $"refusing to install BP at {site.FilePath}:{site.Line} (IL offset 0x{site.ILOffset:X}) " +
+                $"to avoid silently misplacing it on method entry");
+            return false;
+        }
+
+        if (!model.ActiveMethodBreakpoints.TryGetValue(key, out ActiveMethodBreakpoint? active))
+        {
+            active = new ActiveMethodBreakpoint { ActivationCount = 1 };
+            model.ActiveMethodBreakpoints[key] = active;
+        }
+
+        if (active.InstalledAddresses.Contains(addr))
+            return true; // Already installed at this address.
+
+        uint? bpId = _bpService.SetManagedCodeBreakpoint(model, addr, site.FilePath, site.Line);
+        if (bpId == null)
+        {
+            _log.LogWarning(_logStore,
+                $"  ATTACH-EAGER: HW BP limit reached for site {site.FilePath}:{site.Line} (token=0x{token:X8})");
+            return false;
+        }
+        active.InstalledBpIds.Add(bpId.Value);
+        _ = active.InstalledAddresses.Add(addr);
+        _log.LogInfo(_logStore,
+            $"  ATTACH-EAGER: installed hw BP #{bpId} at 0x{addr:X} for {site.FilePath}:{site.Line}");
+        return true;
     }
 
     private static void AddSiteToPlan(
@@ -252,6 +380,8 @@ internal sealed class ManagedBreakpointResolverService(
             switch (notification)
             {
                 case JitNotification jit:
+                    // Attach-mode ACK signaling is done inside FoldJitIntoPlans
+                    // after the install attempt — see the explanation there.
                     resolved.AddRange(FoldJitIntoPlans(model, jit));
                     break;
 
@@ -467,16 +597,16 @@ internal sealed class ManagedBreakpointResolverService(
             }
         }, null, 2000, 2000);
 
-        // Store the timer so it can be disposed.
+        // Chain the timer dispose onto the existing DisposeAction set by
+        // EngineLifecycleService.CreateModel — clobbering it would skip
+        // the profiler-pipe / cmd-pipe / ack-event cleanup and leave
+        // pipe handles open in the target process (especially bad for
+        // attach mode, where the profiler DLL stays loaded).
+        Action? prior = model.DisposeAction;
         model.DisposeAction = () =>
         {
             timer.Dispose();
-            model.Terminated = true;
-            model.Commands.CompleteAdding();
-            _ = (model.EngineThread?.Join(3000));
-            model.Commands.Dispose();
-            model.Stopped.Dispose();
-            model.EngineReady.Dispose();
+            prior?.Invoke();
         };
     }
 

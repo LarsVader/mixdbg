@@ -146,6 +146,7 @@ public sealed class NativeDebuggerModel : IDisposable
     // Command pipe — sends WATCH commands to the profiler for mid-session breakpoints.
     internal NamedPipeServerStream? ProfilerCmdPipe { get; set; }
     internal StreamWriter? ProfilerCmdPipeWriter { get; set; }
+    internal Thread? ProfilerCmdConnectThread { get; set; }
 
     /// <summary>
     /// Pending WATCH lines queued while the command pipe was not yet connected.
@@ -153,7 +154,37 @@ public sealed class NativeDebuggerModel : IDisposable
     /// </summary>
     internal ConcurrentQueue<string> PendingWatchCommands { get; } = new();
     internal volatile bool ProfilerConnected;
+    /// <summary>
+    /// True once the profiler has emitted <c>READY:attach</c>. Indicates that
+    /// <c>InitializeForAttach</c> ran to completion (event mask set, ack/cmd
+    /// pipes opened, watch list parsed). Use this — not <c>ProfilerConnected</c>
+    /// — to gate dbgeng <c>AttachProcess</c>: <c>ProfilerConnected</c> flips
+    /// the moment <c>CreateFileW</c> returns on the profiler side, which is
+    /// the *first* thing in <c>InitializeForAttach</c>; suspending the
+    /// runtime profiler-init thread mid-init leaves the profiler half-loaded.
+    /// </summary>
+    internal volatile bool ProfilerInitComplete;
     internal volatile bool ProfilerHooksActive; // True when profiler uses ENTER: notifications (enter/leave hooks).
+
+    /// <summary>
+    /// True when the profiler was loaded via <c>AttachProfiler</c> instead of
+    /// process-launch env vars. In ReJIT mode, ENTER/LEAVE notifications come
+    /// from IL-rewritten P/Invoke calls (the runtime <c>FunctionEnter</c>/
+    /// <c>FunctionLeave</c> hooks are unavailable to attached profilers), and
+    /// <c>WATCH:</c> commands trigger <c>RequestReJITWithInliners</c> rather
+    /// than just registering the token in the watch list.
+    /// </summary>
+    internal volatile bool IsRejitMode;
+
+    /// <summary>
+    /// Set by <c>AttachOrCreateProcess</c> after it has consumed the initial
+    /// dbgeng attach-replay event. Tells the engine loop to skip its first
+    /// <c>WaitForEvent</c> (the target is already stopped at the attach
+    /// breakin — calling <c>WaitForEvent</c> would block indefinitely waiting
+    /// for the next debug event, leaving queued DAP commands like
+    /// <c>setBreakpoints</c> and <c>configurationDone</c> unprocessed).
+    /// </summary>
+    internal volatile bool SkipNextWaitForEvent;
 
     /// <summary>
     /// Incremented after the profiler reader processes each line. Tests can poll this
@@ -162,11 +193,15 @@ public sealed class NativeDebuggerModel : IDisposable
     internal volatile int ProfilerLinesProcessed;
 
     /// <summary>
-    /// Maps (assembly:token) to the code start address and IL-to-native offset mapping
-    /// from the profiler's JIT notification. Used by ENTER hooks to compute the exact
-    /// native address for a breakpointed line.
+    /// Maps (assembly:token) to the code start + IL-to-native offset mapping
+    /// from the profiler's JIT notification. Used by ENTER hooks, DAC
+    /// fallback, and stepping/step-into call resolution to compute exact
+    /// native addresses for breakpointed lines.
+    /// Concurrent because the profiler-reader thread writes to it while the
+    /// engine thread reads — a torn read on a Dictionary resize would
+    /// surface as either wrong data or an IndexOutOfRangeException.
     /// </summary>
-    internal Dictionary<(int Token, string Assembly), JitMethodMapping> JitMethodMappings { get; } =
+    internal ConcurrentDictionary<(int Token, string Assembly), JitMethodMapping> JitMethodMappings { get; } =
         new(DeferredBreakpointKeyComparer.Instance);
     internal EventWaitHandle? ProfilerAckEvent { get; set; }
 

@@ -434,6 +434,25 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     }
 
     [Fact]
+    public void StartEngineThread_WhenProfilerInitNeverCompletes_SetsEngineInitErrorAndSkipsDbgEngAttach()
+    {
+        GivenWrapperCreateModelReturns();
+        GivenAttachModeWithoutProfilerReady(pid: 1234);
+
+        WhenStartingEngineThread();
+        // The deadline is 5 s; allow extra slack for thread startup + soft-fail bail.
+        Assert.True(_model.EngineReady.Wait(TimeSpan.FromSeconds(15)),
+            "EngineReady not signaled within 15 s");
+        WhenWaitingForEngineThreadToExit();
+
+        Assert.NotNull(_model.EngineInitError);
+        Assert.Contains("InitializeForAttach", _model.EngineInitError!.Message);
+        // Engine must NOT have called dbgeng AttachProcess — that's the whole
+        // point of the wait gate.
+        _wrapper.DidNotReceive().AttachProcess(Arg.Any<DbgEngWrapperModel>(), Arg.Any<uint>());
+    }
+
+    [Fact]
     public void StartEngineThread_WhenLaunch_CallsCreateProcess()
     {
         GivenWrapperCreateModelReturns();
@@ -1022,6 +1041,36 @@ public sealed class EngineLifecycleServiceTests : IDisposable
     {
         _model.IsAttach = true;
         _model.AttachPid = pid;
+
+        // Production code waits up to 5 s after SetupProfilerPipeForAttach for
+        // the profiler to flip model.ProfilerInitComplete (set when the reader
+        // observes READY:attach, signalling that InitializeForAttach finished).
+        // Substitute.For<IProfilerPipeService> does nothing by default, so the
+        // wait would always exhaust its timeout and the engine thread would
+        // miss the test's own EngineReady deadline. Simulate the READY:attach
+        // arrival by flipping the flag synchronously here.
+        _profilerPipe.When(p => p.SetupProfilerPipeForAttach(Arg.Any<NativeDebuggerModel>(), Arg.Any<int>()))
+            .Do(ci =>
+            {
+                NativeDebuggerModel m = ci.ArgAt<NativeDebuggerModel>(0);
+                m.ProfilerConnected = true;
+                m.ProfilerInitComplete = true;
+            });
+    }
+
+    /// <summary>
+    /// Attach mode where the profiler IPC succeeds but InitializeForAttach
+    /// never finishes (READY:attach never arrives). Exercises the 5 s
+    /// timeout path in <c>EngineLifecycleService.AttachToRunningProcess</c>.
+    /// </summary>
+    private void GivenAttachModeWithoutProfilerReady(uint pid)
+    {
+        _model.IsAttach = true;
+        _model.AttachPid = pid;
+        // SetupProfilerPipeForAttach succeeds (returns) but does NOT flip
+        // ProfilerInitComplete — the production code's wait loop must time
+        // out and surface an EngineInitError instead of hanging or letting
+        // dbgeng AttachProcess run against a half-loaded profiler.
     }
 
     private void GivenLaunchMode(string program, string? cwd = null, string[]? args = null)
