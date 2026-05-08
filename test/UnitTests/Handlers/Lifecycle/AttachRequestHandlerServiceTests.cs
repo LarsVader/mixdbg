@@ -25,12 +25,32 @@ public sealed class AttachRequestHandlerServiceTests
     }
 
     [Fact]
-    public void Execute_WhenSymbolPathProvided_SetsSymbolPathToNull()
+    public void Execute_WhenSymbolPathProvided_JoinsPathsWithSemicolon()
     {
-        // AttachRequestHandlerService always sets SymbolPath to null.
         GivenAttachArgs(pid: 1234);
-        _attachArgs!.SymbolPath = ["/symbols"];
+        _attachArgs!.SymbolPath = ["C:\\sym1", "C:\\sym2"];
         _attachArgs.Program = "test.exe";
+
+        WhenExecuting();
+
+        Assert.Equal("C:\\sym1;C:\\sym2", _engineModel.SymbolPath);
+    }
+
+    [Fact]
+    public void Execute_WhenSymbolPathOmitted_LeavesSymbolPathNull()
+    {
+        GivenAttachArgs(pid: 1234);
+
+        WhenExecuting();
+
+        Assert.Null(_engineModel.SymbolPath);
+    }
+
+    [Fact]
+    public void Execute_WhenSymbolPathEmptyArray_LeavesSymbolPathNull()
+    {
+        GivenAttachArgs(pid: 1234);
+        _attachArgs!.SymbolPath = [];
 
         WhenExecuting();
 
