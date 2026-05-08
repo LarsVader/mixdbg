@@ -198,4 +198,16 @@ C# locals/args via SOS `!clrstack -l` output parsing. Managed variable refs star
 
 Cross-boundary step over/into/out across C#, C++/CLI, and native C++. See `docs/stepping-architecture.md`.
 
-### M7: Polish + Integration — TODO
+### M7: Attach to Running Process — PARTIAL
+
+Attach to an already-running .NET process via dbgeng + the .NET diagnostic IPC pipe (`\\.\pipe\dotnet-diagnostic-{PID}`, `AttachProfiler` command `0x0301`). Native debugging is fully functional. Managed BPs work via an "eager HW BP install" path (`ManagedBreakpointResolverService.InstallEagerHardwareBp`) triggered at JIT time — the profiler blocks `JITCompilationFinished` on the ACK event so MixDbg can install the HW BP at the IL-mapped native address before the rejitted method body executes.
+
+**Limitation**: ENTER/LEAVE-driven activation counting (M4V3) is unavailable in attach mode because `COR_PRF_MONITOR_ENTERLEAVE` is not in `COR_PRF_ALLOWABLE_AFTER_ATTACH`. As a result, attach-mode managed BPs are permanent (never released by LEAVE) and subject to the 4-concurrent x64 hardware-debug-register cap. The IL-rewriting follow-up (`profiler/MixDbgProfiler.cpp::GetReJITParameters`) is a stub — implementing it would synthesize ENTER/LEAVE via injected P/Invoke calls to `MixDbgHelper_Enter`/`Leave` and restore the unlimited-BPs behavior of M4V3 in attach mode.
+
+**Tiered-compilation interaction**: Targets attached with default tiered compilation enabled will re-JIT hot methods at higher tiers. For methods with HW BPs already bound, the BP fires at the *old* native address, which after re-JIT may point at freed code or unrelated code. Additionally, the profiler blocks every watched JIT on the ACK event for 500 ms to give MixDbg time to install — and on re-JITs of already-bound BPs, no deferred-BP match exists, so the engine never signals the ACK and the runtime eats the full timeout. Both issues go away with M9 (IL-injection BPs are at IL offsets, immune to native-address shifts on re-JIT). Until then, attach against a process started with `DOTNET_TieredCompilation=0` if you need rock-solid managed BPs.
+
+### M8: Polish + Integration — TODO
+
+### M9: BP-at-Line IL Rewriting — PLANNED
+
+Replace the M4V3 ENTER/LEAVE + hardware-BP scheme with direct IL injection at every breakpointed line. Each managed BP becomes an injected `MixDbgHelper.HitBreakpoint(token, ilOffset)` P/Invoke; the helper blocks until the user resumes. Removes the 4-BP cap permanently (no longer uses CPU debug registers for managed BPs), unifies launch and attach modes (the M7 attach limitation goes away), and lets a lot of M4/M7 plumbing be deleted (ENTER/LEAVE hooks, activation counting, ACK sync, JIT-time HW-BP install path). Conditional BPs and logpoints become trivial. See `docs/m9-il-rewriting-bps.md` for the implementation plan and `docs/il-rewriting-explanation.md` for the conceptual background.

@@ -15,6 +15,19 @@ Items identified during code reviews that are accepted risks or non-urgent impro
 - Take a snapshot (`ToArray()`) before the pipe reader checks (allocation per batch)
 - Add a `ReaderWriterLockSlim` around dictionary access (most correct, most invasive)
 
+## LocateProfilerDll is not unit-testable
+
+**Identified:** 2026-05-07
+
+`ProfilerPipeService.LocateProfilerDll` looks for `MixDbgProfiler.dll` next to the exe and falls back to `repoRoot/profiler/x64/Debug/MixDbgProfiler.dll`. The fallback exists on every dev machine and on CI, so a unit test like `SetupProfilerPipeForAttach_WhenProfilerNotFound_DoesNotCallIpc` cannot reliably arrange the not-found state without filesystem manipulation that races with parallel tests and the integration suite. The test currently sits behind `[Fact(Skip = ...)]`.
+
+**Why it's low risk today:** The success path is exercised by `AttachIntegrationTest` and the launch-mode tests; the failure path is verified by inspection.
+
+**Fix options:**
+- Inject the resolver behind an interface (`IProfilerLocator`) so unit tests can stub it.
+- Pass the override path via constructor injection / config.
+- Accept the test as inherently integration-only and delete the unit-test stub.
+
 ## Silent slot overflow in profiler m_funcSlots
 
 **Identified:** 2026-05-01

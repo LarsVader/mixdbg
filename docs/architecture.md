@@ -180,6 +180,25 @@ Profiler's `JitMethodMap` (sorted by native address) maps any IP in JIT'd code t
 
 `ICorDebugWrapper.GetModules()` walks `ICorDebugProcess.AppDomains` → assemblies → modules. Called on init and on each dbgeng LoadModule event for managed DLLs. Pending breakpoints bind when their module becomes available.
 
+### Attach to Running Process (M7)
+
+The launch path injects the profiler via `CORECLR_*` env vars set in `ProfilerPipeService.SetupProfilerPipe` before `CreateProcess`. Env vars cannot be retroactively set on a running process, so the attach path uses two CoreCLR mechanisms instead:
+
+1. **Diagnostic IPC** (`\\.\pipe\dotnet-diagnostic-{PID}`) — `ProfilerAttachIpcService` sends the `AttachProfiler` command (command set `0x03`, command id `0x01`) carrying the profiler CLSID, DLL path, and a binary client-data blob. The blob (`ProfilerClientDataBuilder`) holds the pipe names and watch tokens that env vars carry in launch mode.
+2. **`ICorProfilerCallback3::InitializeForAttach`** — invoked by the runtime once the profiler DLL is loaded. The profiler reads the client-data blob, opens the named pipe + ACK event + cmd pipe, and sets event mask `COR_PRF_MONITOR_JIT_COMPILATION | COR_PRF_ENABLE_REJIT`. **`COR_PRF_MONITOR_ENTERLEAVE` is not in `COR_PRF_ALLOWABLE_AFTER_ATTACH`** — runtime ENTER/LEAVE hooks never fire for an attached profiler.
+
+Sequencing in `EngineLifecycleService.AttachOrCreateProcess`:
+
+1. `SetupProfilerPipeForAttach` — create pipes, build client data, send `AttachProfiler` IPC, wait for `READY:attach` from the profiler. **Done before** `_wrapper.AttachProcess` because dbgeng suspends every thread in the target — including the runtime thread that processes the AttachProfiler request — and would deadlock the IPC round-trip.
+2. `_wrapper.AttachProcess` — invasive dbgeng attach.
+3. **Drain the dbgeng attach replay** — first `WaitForEvent` returns at the CreateProcess event; subsequent module-load events arrive only when the engine is in GO state. The drain runs a Go → SetInterrupt → WaitForEvent cycle until coreclr is observed (capped at 50 iterations × ~50 ms = ~3 s for processes with deep module-load chains), which fires every queued `OnLoadModule` callback. Without this, ClrLoaded would only flip later, after some user-triggered module load — too late for managed BPs to bind before code runs through them. Each iteration also calls `ProcessProfilerNotifications` so JITs that arrive during the drain don't stall on the runtime's 500 ms ACK timeout.
+4. `TryInitializeManaged` — same `ICorDebug` V4 bootstrap as launch, just kicked off explicitly here because no CLR-notification exception fires for an already-initialized CLR.
+5. `SkipNextWaitForEvent = true` — tells the engine loop's first iteration to skip its `WaitForEvent` (the target is already stopped at the attach breakin) and go straight to processing queued DAP commands (setBreakpoints, configurationDone).
+
+**Eager HW BP install** — `ManagedBreakpointResolverService.InstallEagerHardwareBp`. In attach mode (`NativeDebuggerModel.IsRejitMode = true`), every JIT notification that matches a deferred BP installs a HW BP immediately at the IL-mapped native address, instead of waiting for an ENTER hook that will never fire. The profiler's `JITCompilationFinished` blocks the JIT thread on the ACK event for watched methods (500 ms timeout) so the HW BP is in place before the rejitted method body executes; the engine signals the ACK after `FoldJitIntoPlans` runs — unconditionally in attach mode, so a JIT that didn't match an installable site still unblocks promptly instead of stalling on the timeout.
+
+**Limitation**: attach-mode managed BPs are permanent (no LEAVE-driven cleanup) and subject to the 4-concurrent x64 hardware-debug-register cap. The `GetReJITParameters` IL rewriter in `MixDbgProfiler.cpp` is currently a stub — implementing it would inject calls to `MixDbgHelper_Enter`/`Leave` (exported from the profiler DLL) at method entry/exit via `IMetaDataEmit2`-defined P/Invokes, restoring the unlimited-BPs behavior of M4V3. See the TODO block in `GetReJITParameters` for the implementation outline.
+
 ## Variable Inspection
 
 ### Native (M3)
