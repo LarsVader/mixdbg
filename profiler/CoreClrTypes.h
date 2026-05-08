@@ -32,6 +32,16 @@ typedef UINT32   mdToken;
 // COR_PRF_MONITOR flags
 #define COR_PRF_MONITOR_JIT_COMPILATION 0x00000020
 #define COR_PRF_MONITOR_ENTERLEAVE      0x00001000
+#define COR_PRF_ENABLE_REJIT            0x00040000
+#define COR_PRF_DISABLE_INLINING        0x00200000
+
+// ReJITID type alias from corprof.h
+typedef UINT_PTR ReJITID;
+typedef UINT32 mdMethodDef;
+typedef UINT32 mdModuleRef;
+typedef UINT32 mdMemberRef;
+typedef UINT32 mdTypeDef;
+typedef UINT32 mdSignature;
 
 // ============================================================================
 // GUIDs
@@ -52,6 +62,28 @@ static const GUID IID_ICorProfilerCallback2 =
 // ICorProfilerInfo: {28B5557D-3F3F-48b4-90B2-5F9EEA2F6C48}
 static const GUID IID_ICorProfilerInfo =
     { 0x28B5557D, 0x3F3F, 0x48B4, { 0x90, 0xB2, 0x5F, 0x9E, 0xEA, 0x2F, 0x6C, 0x48 } };
+
+// ICorProfilerCallback3: {4FD2ED52-7731-4b8d-9469-03D2CC3086C5}
+// Adds InitializeForAttach + ProfilerAttachComplete + ProfilerDetachSucceeded.
+static const GUID IID_ICorProfilerCallback3 =
+    { 0x4FD2ED52, 0x7731, 0x4B8D, { 0x94, 0x69, 0x03, 0xD2, 0xCC, 0x30, 0x86, 0xC5 } };
+
+// ICorProfilerCallback4: {7B63B2E3-107D-4d48-B2F6-F61E229470D2}
+// Adds ReJIT callbacks: ReJITCompilationStarted, GetReJITParameters,
+// ReJITCompilationFinished, ReJITError, MovedReferences2, SurvivingReferences2.
+static const GUID IID_ICorProfilerCallback4 =
+    { 0x7B63B2E3, 0x107D, 0x4D48, { 0xB2, 0xF6, 0xF6, 0x1E, 0x22, 0x94, 0x70, 0xD2 } };
+
+// ICorProfilerInfo4: {0D8FDCAA-6257-47bf-B1BF-94DAC88466EE}
+// Used for RequestReJIT / RequestRevert / EnumModules.
+static const GUID IID_ICorProfilerInfo4 =
+    { 0x0D8FDCAA, 0x6257, 0x47BF, { 0xB1, 0xBF, 0x94, 0xDA, 0xC8, 0x84, 0x66, 0xEE } };
+
+// ICorProfilerFunctionControl: {F0963021-E1EA-4732-8581-E01B0BD3C0C6}
+// Passed to GetReJITParameters; profiler calls SetILFunctionBody to install
+// rewritten IL for a method being rejitted.
+static const GUID IID_ICorProfilerFunctionControl =
+    { 0xF0963021, 0xE1EA, 0x4732, { 0x85, 0x81, 0xE0, 0x1B, 0x0B, 0xD3, 0xC0, 0xC6 } };
 
 // COR_DEBUG_IL_TO_NATIVE_MAP structure (3 x ULONG32)
 struct ILNativeMap { ULONG32 ilOffset; ULONG32 nativeStartOffset; ULONG32 nativeEndOffset; };

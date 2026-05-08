@@ -56,6 +56,12 @@ public: // Accessed by static FunctionIDMapper callback — no vtable impact (no
 public: // Accessed by static FunctionIDMapper — no vtable impact (all non-virtual).
     bool m_hooksActive = false;
 
+    // True when loaded via InitializeForAttach. ENTER/LEAVE notifications come
+    // from IL-rewritten P/Invoke calls (via MixDbgHelper exports) rather than
+    // runtime FunctionEnter/Leave hooks; WATCH commands trigger RequestReJIT
+    // instead of just registering the token.
+    bool m_isAttachMode = false;
+
     static void ExtractAssemblyName(const WCHAR* modulePath, char* out, int outSize);
 
 public:
@@ -66,6 +72,12 @@ public:
     const FunctionWatchInfo* FindWatchedFunction(FunctionID funcId);
     void OnFunctionEnter(FunctionID funcId);
     void OnFunctionLeave(FunctionID funcId);
+
+    // Used by MixDbgHelper exports (called from rewritten IL in attach mode).
+    // Wraps WriteToPipe + ACK event access without exposing the underlying
+    // pipe handles or critical section.
+    void WriteToPipeFromHelper(const char* data, int len) { WriteToPipe(data, len); }
+    HANDLE GetAckEventForHelper() const { return m_hAckEvent; }
 
 public:
     MixDbgProfiler();
@@ -151,14 +163,20 @@ public:
     virtual HRESULT STDMETHODCALLTYPE UnmanagedToManagedTransition(FunctionID, int) { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE ManagedToUnmanagedTransition(FunctionID, int) { return S_OK; }
 
-    // Slot 42-46: Runtime suspend/resume
+    // Slot 42-48: Runtime suspend/resume + thread suspend/resume.
+    // RuntimeThreadSuspended/RuntimeThreadResumed are part of corprof.idl's
+    // ICorProfilerCallback declaration — omitting them shifts every later
+    // slot by 2 and causes the CLR to call the wrong method when it expects
+    // (e.g.) InitializeForAttach.
     virtual HRESULT STDMETHODCALLTYPE RuntimeSuspendStarted(int) { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE RuntimeSuspendFinished() { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE RuntimeSuspendAborted() { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE RuntimeResumeStarted() { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE RuntimeResumeFinished() { return S_OK; }
+    virtual HRESULT STDMETHODCALLTYPE RuntimeThreadSuspended(ThreadID) { return S_OK; }
+    virtual HRESULT STDMETHODCALLTYPE RuntimeThreadResumed(ThreadID) { return S_OK; }
 
-    // Slot 47-51: GC/object callbacks
+    // Slot 49-53: GC/object callbacks
     virtual HRESULT STDMETHODCALLTYPE MovedReferences(ULONG, ObjectID*, ObjectID*, ULONG*) { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE ObjectAllocated(ObjectID, ClassID) { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE ObjectsAllocatedByClass(ULONG, ClassID*, ULONG*) { return S_OK; }
@@ -202,6 +220,62 @@ public:
     virtual HRESULT STDMETHODCALLTYPE RootReferences2(ULONG, ObjectID*, int*, int*, UINT_PTR*) { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE HandleCreated(GCHandleID, ObjectID) { return S_OK; }
     virtual HRESULT STDMETHODCALLTYPE HandleDestroyed(GCHandleID) { return S_OK; }
+
+    // ========================================================================
+    // ICorProfilerCallback3 — 3 methods (slots 78-80)
+    // Required for profiler attach via the diagnostic IPC pipe.
+    // ========================================================================
+
+    // Slot 78: InitializeForAttach — called by the CLR when the profiler is
+    // loaded via AttachProfiler (instead of the launch-time CORECLR_PROFILER
+    // env vars). pvClientData is the blob passed to AttachProfiler — for
+    // mixdbg it contains the pipe names + watch tokens (see
+    // ProfilerClientDataBuilder on the C# side).
+    virtual HRESULT STDMETHODCALLTYPE InitializeForAttach(
+        IUnknown* pCorProfilerInfoUnk, void* pvClientData, UINT cbClientData);
+
+    // Slot 79: ProfilerAttachComplete — fired after InitializeForAttach
+    // returns. The runtime will not call any callbacks until then.
+    virtual HRESULT STDMETHODCALLTYPE ProfilerAttachComplete() { return S_OK; }
+
+    // Slot 80: ProfilerDetachSucceeded — fires after RequestProfilerDetach
+    // unloads us. We have no state to flush here; Shutdown does the cleanup.
+    virtual HRESULT STDMETHODCALLTYPE ProfilerDetachSucceeded() { return S_OK; }
+
+    // ========================================================================
+    // ICorProfilerCallback4 — 6 methods (slots 81-86)
+    // Required for ReJIT — used in attach mode to rewrite already-JIT'd
+    // methods so their entry/exit can be observed without the
+    // FunctionEnter/Leave hooks (which are unavailable to attached profilers).
+    // ========================================================================
+
+    // Slot 81: ReJITCompilationStarted
+    virtual HRESULT STDMETHODCALLTYPE ReJITCompilationStarted(
+        FunctionID, ReJITID, BOOL) { return S_OK; }
+
+    // Slot 82: GetReJITParameters — called once per ReJIT request. The profiler
+    // hands the new IL (and any flags) to pFunctionControl->SetILFunctionBody.
+    // For now this is a stub that retains the original IL — full IL rewriting
+    // is the Phase B follow-up that injects MixDbgHelper.Enter/Leave calls
+    // around the original body.
+    virtual HRESULT STDMETHODCALLTYPE GetReJITParameters(
+        ModuleID moduleId, mdMethodDef methodId, IUnknown* pFunctionControl);
+
+    // Slot 83: ReJITCompilationFinished
+    virtual HRESULT STDMETHODCALLTYPE ReJITCompilationFinished(
+        FunctionID, ReJITID, HRESULT, BOOL) { return S_OK; }
+
+    // Slot 84: ReJITError
+    virtual HRESULT STDMETHODCALLTYPE ReJITError(
+        ModuleID, mdMethodDef, FunctionID, HRESULT) { return S_OK; }
+
+    // Slot 85: MovedReferences2 (GC, unused)
+    virtual HRESULT STDMETHODCALLTYPE MovedReferences2(
+        ULONG, ObjectID*, ObjectID*, SIZE_T*) { return S_OK; }
+
+    // Slot 86: SurvivingReferences2 (GC, unused)
+    virtual HRESULT STDMETHODCALLTYPE SurvivingReferences2(
+        ULONG, ObjectID*, SIZE_T*) { return S_OK; }
 };
 
 // Global profiler instance — accessed by static callbacks (FunctionIDMapper, FunctionEnterImpl).

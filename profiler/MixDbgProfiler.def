@@ -2,3 +2,8 @@ LIBRARY MixDbgProfiler
 EXPORTS
     DllGetClassObject PRIVATE
     DllCanUnloadNow PRIVATE
+    ; Helpers called from rewritten managed IL via P/Invoke (attach mode).
+    ; The names are bare (no @N decoration) because P/Invoke callers use
+    ; CallingConvention=StdCall with `EntryPoint = "MixDbgHelper_Enter"`.
+    MixDbgHelper_Enter
+    MixDbgHelper_Leave
