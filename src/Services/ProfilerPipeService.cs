@@ -14,23 +14,95 @@ internal sealed class ProfilerPipeService(
     ILoggingService log,
     LogStore logStore,
     IManagedBreakpointService managedBp,
-    IDbgEngWrapper dbgEngWrapper) : IProfilerPipeService
+    IDbgEngWrapper dbgEngWrapper,
+    IProfilerAttachIpcService attachIpc) : IProfilerPipeService
 {
+    /// <summary>
+    /// CLSID of <c>MixDbgProfiler</c> — must match the value in
+    /// <c>profiler/ClassFactory.cpp</c>.
+    /// </summary>
+    internal static readonly Guid ProfilerClsid = new("{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}");
+
     private readonly ILoggingService _log = log;
     private readonly LogStore _logStore = logStore;
     private readonly IManagedBreakpointService _managedBp = managedBp;
     private readonly IDbgEngWrapper _dbgEng = dbgEngWrapper;
+    private readonly IProfilerAttachIpcService _attachIpc = attachIpc;
 
     public void SetupProfilerPipe(NativeDebuggerModel model)
     {
-        // Find MixDbgProfiler.dll next to MixDbg.exe.
+        string? profilerPath = LocateProfilerDll();
+        if (profilerPath == null)
+            return;
+
+        (string pipeName, string ackEventName, string cmdPipeName) = CreatePipesAndAckEvent(model);
+
+        // Resolve exact method tokens from pending breakpoints so the profiler only
+        // blocks for breakpointed methods (skips all other JITs including framework).
+        List<(string Assembly, int Token)> watchTokens = ResolveWatchTokens(model);
+        string? watchTokensCsv = watchTokens.Count > 0
+            ? string.Join(",", watchTokens.Select(t => $"{t.Assembly}:{t.Token:X8}"))
+            : null;
+        if (watchTokensCsv != null)
+            _log.LogInfo(_logStore, $"Profiler watch tokens: {watchTokensCsv}");
+
+        // Set CLR profiling env vars — child process inherits them.
+        Environment.SetEnvironmentVariable("CORECLR_ENABLE_PROFILING", "1");
+        Environment.SetEnvironmentVariable("CORECLR_PROFILER", ProfilerClsid.ToString("B").ToUpperInvariant());
+        Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", profilerPath);
+        Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", $@"\\.\pipe\{pipeName}");
+        Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", ackEventName);
+        Environment.SetEnvironmentVariable("MIXDBG_CMD_PIPE", $@"\\.\pipe\{cmdPipeName}");
+
+        if (watchTokensCsv != null)
+            Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", watchTokensCsv);
+
+        _log.LogInfo(_logStore, $"Profiler pipe created: {pipeName}, DLL: {profilerPath}");
+    }
+
+    public void SetupProfilerPipeForAttach(NativeDebuggerModel model, int pid)
+    {
+        string? profilerPath = LocateProfilerDll();
+        if (profilerPath == null)
+            return;
+
+        (string pipeName, string ackEventName, string cmdPipeName) = CreatePipesAndAckEvent(model);
+
+        List<(string Assembly, int Token)> watchTokens = ResolveWatchTokens(model);
+        if (watchTokens.Count > 0)
+        {
+            _log.LogInfo(_logStore,
+                $"Attach profiler watch tokens: {string.Join(",", watchTokens.Select(t => $"{t.Assembly}:{t.Token:X8}"))}");
+        }
+
+        byte[] clientData = ProfilerClientDataBuilder.Build(
+            pipeName: $@"\\.\pipe\{pipeName}",
+            ackEventName: ackEventName,
+            cmdPipeName: $@"\\.\pipe\{cmdPipeName}",
+            watchTokens: watchTokens);
+
+        // Tag the model AFTER the IPC succeeds. If the IPC throws, IsRejitMode
+        // stays false so the resolver doesn't take the attach-mode-only paths
+        // for the rest of the (failed) session.
+        _attachIpc.AttachProfiler(pid, ProfilerClsid, profilerPath, clientData);
+        model.IsRejitMode = true;
+
+        _log.LogInfo(_logStore, $"Profiler attached to pid {pid}: {pipeName}, DLL: {profilerPath}");
+    }
+
+    /// <summary>
+    /// Locates <c>MixDbgProfiler.dll</c> next to the exe, or in the dev-build
+    /// fallback (<c>profiler/x64/Debug/</c>). Returns null if not found and logs
+    /// a warning — managed BPs are a no-op without the profiler.
+    /// </summary>
+    private string? LocateProfilerDll()
+    {
         string exeDir = AppContext.BaseDirectory;
         string profilerPath = Path.Combine(exeDir, "MixDbgProfiler.dll");
 
-        // Also check profiler/x64/Debug/ relative to the repo root (dev builds).
-        // Exe is at src/bin/Debug/net10.0/win-x64/ — 5 levels up to repo root.
         if (!File.Exists(profilerPath))
         {
+            // Exe is at src/bin/Debug/net10.0/win-x64/ — 5 levels up to repo root.
             string repoRoot = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "..", ".."));
             string devPath = Path.Combine(repoRoot, "profiler", "x64", "Debug", "MixDbgProfiler.dll");
             if (File.Exists(devPath))
@@ -40,10 +112,20 @@ internal sealed class ProfilerPipeService(
         if (!File.Exists(profilerPath))
         {
             _log.LogWarning(_logStore, $"MixDbgProfiler.dll not found at {profilerPath} — JIT notifications disabled");
-            return;
+            return null;
         }
+        return profilerPath;
+    }
 
-        // Create a named pipe for the profiler to connect to.
+    /// <summary>
+    /// Creates the notification pipe (profiler→MixDbg), ACK event, and command
+    /// pipe (MixDbg→profiler) on <paramref name="model"/>. Returns the names so
+    /// callers can install them as env vars (launch) or pack them into client
+    /// data (attach).
+    /// </summary>
+    private static (string PipeName, string AckEventName, string CmdPipeName)
+        CreatePipesAndAckEvent(NativeDebuggerModel model)
+    {
         string pipeName = $"MixDbgProfiler-{Environment.ProcessId}-{Guid.NewGuid():N}";
         model.ProfilerPipeName = pipeName;
         model.ProfilerPipe = new NamedPipeServerStream(
@@ -55,37 +137,9 @@ internal sealed class ProfilerPipeService(
             65536, // inBufferSize
             0);    // outBufferSize
 
-        // Create a named event for ACK signaling. The profiler blocks on this event
-        // after writing a JIT notification, ensuring the hardware breakpoint is set
-        // before the method body executes (first-click breakpoints).
         string ackEventName = $"MixDbgProfilerAck-{pipeName}";
         model.ProfilerAckEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ackEventName);
 
-        // Resolve exact method tokens from pending breakpoints so the profiler only
-        // blocks for breakpointed methods (skips all other JITs including framework).
-        string? watchTokens = null;
-        if (model.ProfilerBreakpointHints.Count > 0)
-        {
-            List<(string Assembly, int Token)> tokens = _managedBp.ResolveTokensFromBreakpoints(model.ProfilerBreakpointHints);
-            if (tokens.Count > 0)
-            {
-                watchTokens = string.Join(",", tokens.Select(t => $"{t.Assembly}:{t.Token:X8}"));
-                _log.LogInfo(_logStore, $"Profiler watch tokens: {watchTokens}");
-            }
-        }
-
-        // Set CLR profiling env vars — child process inherits them.
-        Environment.SetEnvironmentVariable("CORECLR_ENABLE_PROFILING", "1");
-        Environment.SetEnvironmentVariable("CORECLR_PROFILER", "{D13D53A1-6E42-4D6B-B4C5-8F3A7E2C1B90}");
-        Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", profilerPath);
-        Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", $@"\\.\pipe\{pipeName}");
-        Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", ackEventName);
-
-        if (watchTokens != null)
-            Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", watchTokens);
-
-        // Create a command pipe for sending dynamic WATCH commands to the profiler.
-        // Used for mid-session breakpoints set after the debugger is already running.
         string cmdPipeName = $"MixDbgProfilerCmd-{pipeName}";
         model.ProfilerCmdPipe = new NamedPipeServerStream(
             cmdPipeName,
@@ -93,12 +147,16 @@ internal sealed class ProfilerPipeService(
             1,
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous,
-            0,     // inBufferSize
-            65536); // outBufferSize
-        Environment.SetEnvironmentVariable("MIXDBG_CMD_PIPE", $@"\\.\pipe\{cmdPipeName}");
+            0,
+            65536);
 
-        _log.LogInfo(_logStore, $"Profiler pipe created: {pipeName}, DLL: {profilerPath}");
+        return (pipeName, ackEventName, cmdPipeName);
     }
+
+    private List<(string Assembly, int Token)> ResolveWatchTokens(NativeDebuggerModel model)
+        => model.ProfilerBreakpointHints.Count == 0
+            ? []
+            : _managedBp.ResolveTokensFromBreakpoints(model.ProfilerBreakpointHints);
 
     /// <summary>
     /// Starts a background thread that reads profiler notifications from the pipe.
@@ -118,10 +176,14 @@ internal sealed class ProfilerPipeService(
         };
         model.ProfilerReaderThread.Start();
 
-        // Wait for the command pipe connection on a separate thread.
+        // Wait for the command pipe connection on a separate thread. The
+        // thread handle is stored on the model so DisposeAction can join
+        // it — without that, a profiler that dies before connecting leaves
+        // the thread blocked in WaitForConnection until the OS cleans it
+        // up at process exit.
         if (model.ProfilerCmdPipe != null)
         {
-            Thread cmdThread = new(() =>
+            model.ProfilerCmdConnectThread = new Thread(() =>
             {
                 try
                 {
@@ -154,7 +216,7 @@ internal sealed class ProfilerPipeService(
                 Name = "profiler-cmd-connect",
                 IsBackground = true,
             };
-            cmdThread.Start();
+            model.ProfilerCmdConnectThread.Start();
         }
     }
 
@@ -189,15 +251,27 @@ internal sealed class ProfilerPipeService(
                 if (line.StartsWith("READY:"))
                 {
                     _log.LogInfo(_logStore, $"ProfilerReader: profiler ready ({line[6..]})");
+                    // READY:attach signals that InitializeForAttach finished
+                    // its setup (event mask set, ack/cmd pipes opened, watch
+                    // list parsed) — this is the only safe point at which
+                    // dbgeng can suspend runtime threads without corrupting
+                    // profiler init.
+                    if (line.AsSpan(6).StartsWith("attach"))
+                        model.ProfilerInitComplete = true;
                     _ = Interlocked.Increment(ref model.ProfilerLinesProcessed);
                     continue;
                 }
                 if (line.StartsWith("JIT:"))
                 {
-                    // Set flag before parsing — ParseJitNotification may call
-                    // RequestInterrupt which wakes the engine thread. The engine
-                    // must see ProfilerHooksActive=true to skip the DAC fallback.
-                    model.ProfilerHooksActive = true;
+                    // ProfilerHooksActive means "ENTER/LEAVE hooks are authoritative
+                    // for installing managed BPs" — true in launch mode (runtime
+                    // FunctionEnter/Leave fires), false in attach mode (no
+                    // COR_PRF_MONITOR_ENTERLEAVE; only JIT-time eager install
+                    // catches new JITs). In attach mode the DAC fallback is the
+                    // only path that binds BPs on methods JIT'd before attach,
+                    // so we must NOT suppress it here.
+                    if (!model.IsRejitMode)
+                        model.ProfilerHooksActive = true;
                     ParseJitNotification(model, line[4..]);
                     _ = Interlocked.Increment(ref model.ProfilerLinesProcessed);
                     continue;

@@ -52,17 +52,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         ThenEnvVarContains("MIXDBG_PIPE_NAME", _model.ProfilerPipeName!);
     }
 
-    [Fact]
-    public void SetupProfilerPipe_DoesNotSetRehookEventEnvVar()
-    {
-        // The rehook event was removed — env var must not be set.
-        GivenProfilerDllExists();
-
-        WhenSettingUpProfilerPipe();
-
-        ThenEnvVarIsNull("MIXDBG_REHOOK_EVENT");
-    }
-
     // ── SetupProfilerPipe (watch tokens resolution) ─────────────
 
     [Fact]
@@ -100,6 +89,80 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         WhenSettingUpProfilerPipe();
 
         ThenEnvVarIsNull("MIXDBG_WATCH_TOKENS");
+    }
+
+    // ── SetupProfilerPipeForAttach (calls IPC, sets IsRejitMode) ────────
+
+    [Fact]
+    public void SetupProfilerPipeForAttach_WhenProfilerFound_CallsAttachIpcAndCreatesPipes()
+    {
+        GivenProfilerDllExists();
+
+        WhenSettingUpProfilerPipeForAttach(pid: 4242);
+
+        ThenProfilerPipeIsNotNull();
+        ThenProfilerPipeNameIsSet();
+        ThenProfilerAckEventIsCreated();
+        Assert.True(_model.IsRejitMode);
+        _attachIpc.Received(1).AttachProfiler(
+            4242,
+            Arg.Any<Guid>(),
+            Arg.Is<string>(s => s.EndsWith("MixDbgProfiler.dll")),
+            Arg.Any<byte[]>(),
+            Arg.Any<uint>(),
+            Arg.Any<int>());
+    }
+
+    [Fact]
+    public void SetupProfilerPipeForAttach_DoesNotSetCorEclrEnvVars()
+    {
+        // Attach must NOT set CORECLR_* env vars — they would only affect
+        // future child processes of mixdbg, not the running target.
+        GivenProfilerDllExists();
+
+        WhenSettingUpProfilerPipeForAttach(pid: 4242);
+
+        ThenEnvVarIsNull("CORECLR_ENABLE_PROFILING");
+        ThenEnvVarIsNull("CORECLR_PROFILER");
+        ThenEnvVarIsNull("CORECLR_PROFILER_PATH");
+        ThenEnvVarIsNull("MIXDBG_PIPE_NAME");
+    }
+
+    [Fact]
+    public void SetupProfilerPipeForAttach_PassesWatchTokensInClientData()
+    {
+        GivenProfilerDllExists();
+        GivenBreakpointHints((@"C:\src\Program.cs", 10));
+        GivenResolveTokensReturns([("AsmA", 0x06000001)]);
+
+        byte[]? capturedData = null;
+        _attachIpc.When(s => s.AttachProfiler(
+                Arg.Any<int>(), Arg.Any<Guid>(), Arg.Any<string>(),
+                Arg.Any<byte[]>(), Arg.Any<uint>(), Arg.Any<int>()))
+            .Do(ci => capturedData = ci.ArgAt<byte[]>(3));
+
+        WhenSettingUpProfilerPipeForAttach(pid: 4242);
+
+        Assert.NotNull(capturedData);
+        (_, _, _, IReadOnlyList<(string Assembly, int Token)> tokens) =
+            ProfilerClientDataBuilder.Parse(capturedData);
+        _ = Assert.Single(tokens);
+        Assert.Equal("AsmA", tokens[0].Assembly);
+        Assert.Equal(0x06000001, tokens[0].Token);
+    }
+
+    [Fact(Skip = "Cannot reliably arrange 'profiler DLL not found' in unit tests — " +
+        "LocateProfilerDll falls back to the repo's profiler/x64/Debug/MixDbgProfiler.dll which " +
+        "always exists on dev machines and CI. To make this testable, LocateProfilerDll needs to " +
+        "be injected behind an interface. See docs/tech-debt.md.")]
+    public void SetupProfilerPipeForAttach_WhenProfilerNotFound_DoesNotCallIpc()
+    {
+        GivenProfilerDllDoesNotExist();
+
+        WhenSettingUpProfilerPipeForAttach(pid: 4242);
+
+        _attachIpc.DidNotReceiveWithAnyArgs().AttachProfiler(
+            default, default, default!, default!, default, default);
     }
 
     // ── StartProfilerReader (pipe is null) ──────────────────────
@@ -636,6 +699,8 @@ public sealed class ProfilerPipeServiceTests : IDisposable
 
     private void WhenSettingUpProfilerPipe() => _testee.SetupProfilerPipe(_model);
 
+    private void WhenSettingUpProfilerPipeForAttach(int pid) => _testee.SetupProfilerPipeForAttach(_model, pid);
+
     private void WhenStartingProfilerReader() => _testee.StartProfilerReader(_model);
 
     private void WhenClientSendsLine(string line)
@@ -823,6 +888,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
     private readonly LogStore _logStore = new(Path.Combine(Path.GetTempPath(), "test-profiler.log"));
     private readonly IManagedBreakpointService _managedBp = Substitute.For<IManagedBreakpointService>();
     private readonly IDbgEngWrapper _dbgEngWrapper = Substitute.For<IDbgEngWrapper>();
+    private readonly IProfilerAttachIpcService _attachIpc = Substitute.For<IProfilerAttachIpcService>();
     private readonly NativeDebuggerModel _model;
     private readonly ProfilerPipeService _testee;
 
@@ -840,7 +906,7 @@ public sealed class ProfilerPipeServiceTests : IDisposable
             Wrapper = new DbgEngWrapperModel(),
             CorWrapper = new CorDebugWrapperModel(),
         };
-        _testee = new ProfilerPipeService(_log, _logStore, _managedBp, _dbgEngWrapper);
+        _testee = new ProfilerPipeService(_log, _logStore, _managedBp, _dbgEngWrapper, _attachIpc);
 
         List<(string Assembly, int Token)> noTokens = [];
         _ = _managedBp.ResolveTokensFromBreakpoints(Arg.Any<IEnumerable<(string, int)>>())
@@ -864,7 +930,6 @@ public sealed class ProfilerPipeServiceTests : IDisposable
         Environment.SetEnvironmentVariable("CORECLR_PROFILER_PATH", null);
         Environment.SetEnvironmentVariable("MIXDBG_PIPE_NAME", null);
         Environment.SetEnvironmentVariable("MIXDBG_ACK_EVENT", null);
-        Environment.SetEnvironmentVariable("MIXDBG_REHOOK_EVENT", null);
         Environment.SetEnvironmentVariable("MIXDBG_WATCH_TOKENS", null);
     }
 

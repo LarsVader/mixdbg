@@ -9,8 +9,21 @@ namespace MixDbg.Services.Interfaces;
 /// </summary>
 public interface IProfilerPipeService
 {
-    /// <summary>Sets up the profiler pipe, resolves watch tokens/assemblies, and configures env vars on the model.</summary>
+    /// <summary>
+    /// Launch path: creates the named pipes and ACK event, then sets the
+    /// <c>CORECLR_*</c>/<c>MIXDBG_*</c> environment variables that the
+    /// child process will inherit on <c>CreateProcess</c>.
+    /// </summary>
     void SetupProfilerPipe(NativeDebuggerModel model);
+
+    /// <summary>
+    /// Attach path: creates the named pipes and ACK event, then loads the
+    /// profiler into the already-running target via the .NET diagnostic IPC
+    /// pipe (<c>AttachProfiler</c> command). The configuration that env vars
+    /// carry in the launch path is passed inline as the <c>InitializeForAttach</c>
+    /// client-data blob.
+    /// </summary>
+    void SetupProfilerPipeForAttach(NativeDebuggerModel model, int pid);
 
     /// <summary>Starts the background thread that reads profiler notifications from the named pipe.</summary>
     void StartProfilerReader(NativeDebuggerModel model);
