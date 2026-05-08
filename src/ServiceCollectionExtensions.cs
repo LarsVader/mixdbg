@@ -25,6 +25,7 @@ public static class ServiceCollectionExtensions
         _ = services.AddSingleton<IManagedBreakpointResolver, ManagedBreakpointResolverService>();
         _ = services.AddSingleton<IManagedDebugger, ManagedDebuggerService>();
         _ = services.AddSingleton<IProfilerPipeService, ProfilerPipeService>();
+        _ = services.AddSingleton<IProfilerAttachIpcService, ProfilerAttachIpcService>();
 
         // State models
         _ = services.AddSingleton(new Models.VcxprojCache());
