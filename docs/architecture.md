@@ -252,6 +252,12 @@ Key points:
 - Any output dbgeng emits *after* `Terminated` is set (e.g. during `TerminateSession`/`EndSession`) is intentionally dropped by the producer's self-suppress check. Preserving it isn't a goal; clean dispose sequencing is.
 - `EngineLifecycleService.CreateEngine` subscribes to all `wrapperModel.On*` events **before** calling `_wrapper.CreateEngine`. Defensive ordering: dbgeng today only fires callbacks from `WaitForEvent` (which runs later in the engine loop), but subscribing up front guarantees no callbacks are lost if a future wrapper change ever invokes them during engine creation.
 
+## DAP Startup Ordering: `initialize` Response Before `initialized` Event
+
+The DAP spec requires the `initialize` **response** to reach the client before the `initialized` **event** is emitted. Violating that ordering deadlocks nvim-dap when no breakpoints are configured: nvim-dap's `event_initialized` handler calls `set_breakpoints`, whose `on_done` callback checks `self.capabilities.supportsConfigurationDoneRequest` to decide whether to send `configurationDone`. With zero breakpoints, `set_breakpoints` runs its `on_done` synchronously — but `self.capabilities` is only populated when the `initialize` response arrives, so an out-of-order event makes the check fail silently and `configurationDone` is never sent. The engine then sits in `ProcessCommandsUntilResume` forever.
+
+`IDapAfterResponseAction` is the mechanism that enforces the ordering. Handlers that need to emit a follow-up message after their response opt in by implementing it; `DapDispatcherService` invokes `OnAfterResponse()` immediately after `SendResponse` returns. `InitializeRequestHandlerService` uses this to send `initialized` from `OnAfterResponse`, never from `ExecuteInternal`.
+
 ## Key Dependencies
 
 - `dbgeng.dll` — ships with Windows (System32)

@@ -20,9 +20,22 @@ public sealed class InitializeRequestHandlerServiceTests
     }
 
     [Fact]
-    public void Execute_WhenCalled_SendsInitializedEvent()
+    public void Execute_WhenCalled_DoesNotSendInitializedEventBeforeResponse()
+    {
+        // The initialized event must not fire from ExecuteInternal — that put
+        // it on the wire BEFORE the initialize response, which races nvim-dap
+        // (with no breakpoints, set_breakpoints calls on_done synchronously
+        // before capabilities have been set, skipping configurationDone).
+        WhenExecuting();
+
+        _server.DidNotReceive().SendEvent(_transport, "initialized", Arg.Any<InitializedEventBody>());
+    }
+
+    [Fact]
+    public void OnAfterResponse_WhenCalled_SendsInitializedEvent()
     {
         WhenExecuting();
+        _testee.OnAfterResponse();
 
         ThenInitializedEventWasSent();
     }
