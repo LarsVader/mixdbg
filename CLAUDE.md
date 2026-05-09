@@ -67,8 +67,6 @@ src/
         DbgEngDataTarget.cs      # Internal: ICorDebugMutableDataTarget bridge
         DbgEngClrDataTarget.cs   # Internal: ICLRDataTarget bridge for DAC
         DbgShimBootstrap.cs      # Internal: ICorDebug bootstrap via dbgshim.dll
-        ManagedCallbackHandler.cs # Internal: ICorDebug managed callback wrapper
-        UnmanagedCallbackHandler.cs # Internal: ICorDebug unmanaged callback wrapper
         RuntimeLibraryProvider.cs # Internal: finds mscordbi.dll next to coreclr.dll
       Sos/
         PdbSourceMapperService.cs # Internal: reads portable PDBs, implements IPdbSourceMapper (singleton) — GetMethodSequencePoints, GetCallTargetAtOffset, FindMethodToken
