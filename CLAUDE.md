@@ -61,7 +61,8 @@ src/
         Constants/               # Internal: DbgEngNative, DebugStatus, DebugAttach, CreateProcessFlags, etc.
         Interfaces/              # Internal: IDebugClient, IDebugControl, IDebugSymbols, IDebugBreakpoint, etc.
         EventCallbacks.cs        # Internal: IDebugEventCallbacks implementation
-        OutputCapture.cs         # Internal: IDebugOutputCallbacks implementation
+        OutputCapture.cs         # Internal: IDebugOutputCallbacks implementation (temporary, used by ExecuteCommandWithCapture)
+        DebuggeeOutputForwarder.cs # Internal: persistent IDebugOutputCallbacks — forwards DEBUG_OUTPUT_DEBUGGEE (OutputDebugString / Trace / Debug) to DbgEngWrapperModel.OnDebuggeeOutput
       CorDebug/
         DbgEngDataTarget.cs      # Internal: ICorDebugMutableDataTarget bridge
         DbgEngClrDataTarget.cs   # Internal: ICLRDataTarget bridge for DAC

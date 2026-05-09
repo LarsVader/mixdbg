@@ -50,6 +50,15 @@ internal sealed class DbgEngWrapperService : IDbgEngWrapper
         };
 
         Check(model.Client.SetEventCallbacks(model.Callbacks));
+
+        // Persistent output callback so debuggee text (OutputDebugString,
+        // Trace.WriteLine, Debug.WriteLine) is forwarded to the model's
+        // OnDebuggeeOutput event. ExecuteCommandWithCapture swaps in a
+        // temporary OutputCapture for the duration of the SOS command (so
+        // the command's output is captured into the return string) and
+        // restores this forwarder in its finally block.
+        model.OutputCallbacks = new DebuggeeOutputForwarder(model.RaiseDebuggeeOutput);
+        Check(model.Client.SetOutputCallbacks(model.OutputCallbacks));
     }
 
     public void CreateProcess(DbgEngWrapperModel model, string cmdLine) => Check(model.Client.CreateProcess(

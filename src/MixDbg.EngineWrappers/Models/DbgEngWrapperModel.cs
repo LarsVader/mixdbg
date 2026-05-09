@@ -20,6 +20,7 @@ public sealed class DbgEngWrapperModel
     internal IDebugDataSpaces DataSpaces { get; set; } = null!;
     internal IDebugAdvanced Advanced { get; set; } = null!;
     internal EventCallbacks Callbacks { get; set; } = null!;
+    internal DebuggeeOutputForwarder OutputCallbacks { get; set; } = null!;
 
     // ── Engine callback events (public for EngineLifecycleService) ──
 
@@ -42,6 +43,14 @@ public sealed class DbgEngWrapperModel
     public event Action? OnClrNotification;
 
     /// <summary>
+    /// Raised when dbgeng emits debuggee text (<c>OutputDebugString</c> /
+    /// <c>Trace.WriteLine</c> / <c>Debug.WriteLine</c>). The forwarder
+    /// applies the <c>DEBUG_OUTPUT_DEBUGGEE</c> mask filter internally so
+    /// callers don't need to know about dbgeng masks.
+    /// </summary>
+    public event Action<string>? OnDebuggeeOutput;
+
+    /// <summary>
     /// Set by subscribers of <see cref="OnClrNotification"/> to request the engine
     /// to break on the next CLR notification instead of auto-continuing.
     /// </summary>
@@ -55,6 +64,7 @@ public sealed class DbgEngWrapperModel
     internal void RaiseCreateProcess(string? name) => OnCreateProcess?.Invoke(name);
     internal void RaiseExceptionBreakpoint(ulong address) => OnExceptionBreakpoint?.Invoke(address);
     internal void RaiseClrNotification() => OnClrNotification?.Invoke();
+    internal void RaiseDebuggeeOutput(string text) => OnDebuggeeOutput?.Invoke(text);
 
     // ── Variable inspection state (internal, managed by DbgEngWrapperService) ──
 

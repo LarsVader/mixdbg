@@ -50,6 +50,20 @@ public sealed class NativeDebuggerModel : IDisposable
     // Command queue: main thread queues, engine thread executes.
     internal BlockingCollection<Action> Commands { get; } = [];
 
+    /// <summary>
+    /// Debuggee output (OutputDebugString / Trace.WriteLine / Debug.WriteLine)
+    /// queued by the engine thread inside dbgeng's IDebugOutputCallbacks::Output
+    /// callback. A dedicated writer thread drains this and emits DAP "output"
+    /// events. Decoupling is mandatory: a synchronous SendEvent on the engine
+    /// thread can block on stdout backpressure when the runtime emits many
+    /// trace strings during startup, which would pin WaitForEvent and starve
+    /// every subsequent debug event.
+    /// </summary>
+    internal BlockingCollection<string> DebuggeeOutputQueue { get; } = [];
+
+    /// <summary>Background writer that drains <see cref="DebuggeeOutputQueue"/>.</summary>
+    internal Thread? DebuggeeOutputThread { get; set; }
+
     // Managed breakpoint tracking (ICorDebug V4).
     internal HashSet<uint> ManagedBreakpointIds { get; } = [];
 

@@ -61,6 +61,9 @@ All dbgeng COM calls happen here (thread affinity required). Runs `WaitForEvent`
 ### Profiler Reader Thread
 Reads JIT/ENTER/LEAVE notifications from the named pipe connected to `MixDbgProfiler.dll` (running in-process in the target). Enqueues notifications to `ProfilerNotifications` and calls `SetInterrupt` to wake the engine thread when a notification matches a deferred breakpoint.
 
+### Debuggee Output Writer Thread
+Drains `NativeDebuggerModel.DebuggeeOutputQueue` (a `BlockingCollection<string>`) and emits DAP `output` events. Decouples dbgeng's `IDebugOutputCallbacks` callback (which runs on the engine thread) from `IDapServer.SendEvent` so a slow stdout reader on the client side cannot back-pressure the engine thread. See "Debuggee Output Forwarding" below.
+
 ## dbgeng COM Interop Details
 
 Inside the wrapper boundary (`Engine/DbgEng/`, `DbgEngWrapperService`):
@@ -226,6 +229,28 @@ See [stepping-architecture.md](stepping-architecture.md) for the full stepping a
 ## Diagnostic Logging
 
 All sessions log to `~/mixdbg.log` via `ILoggingService` (with state in `LogStore`). Uses `[CallerFilePath]` to auto-tag log entries with the source file name. Writes to both in-memory `LogStore.Entries` and the log file.
+
+## Debuggee Output Forwarding
+
+`Trace.WriteLine`, `Debug.WriteLine`, and `OutputDebugString` calls from the debuggee surface in the DAP client console (e.g. nvim-dap REPL) via:
+
+```
+debuggee → OutputDebugString
+        → dbgeng IDebugOutputCallbacks.Output(mask, text)
+        → DebuggeeOutputForwarder (filters to DEBUG_OUTPUT_DEBUGGEE = 0x80)
+        → DbgEngWrapperModel.OnDebuggeeOutput event (string)
+        → EngineLifecycleService handler → NativeDebuggerModel.DebuggeeOutputQueue
+        → DebuggeeOutputWriter thread → IDapServer.SendEvent("output", { category = "stdout", output })
+```
+
+Key points:
+
+- `DebuggeeOutputForwarder` is a **persistent** `IDebugOutputCallbacks` installed via `IDebugClient.SetOutputCallbacks` once at engine creation. During `ExecuteCommandWithCapture` it's swapped out for a temporary `OutputCapture` so the command's output is captured into the SOS return string; the forwarder is restored in the `finally` block.
+- The forwarder owns the dbgeng-mask filter: it forwards only `DEBUG_OUTPUT_DEBUGGEE` (0x80) text. Keeping the filter inside the EngineWrappers assembly means callers outside it never reference dbgeng mask constants — the consumer just sees `Action<string>`.
+- The callback runs on the engine thread. The lifecycle handler enqueues to `DebuggeeOutputQueue` and returns immediately. The dedicated `DebuggeeOutputWriter` thread does the `SendEvent` so a stalled DAP client can't deadlock the engine thread inside dbgeng's callback.
+- Disposed by `EngineLifecycleService.DisposeAction` in this order: set `Terminated`, `CompleteAdding()` on `Commands`, join the engine thread (the producer of `DebuggeeOutputQueue`), then `CompleteAdding()` on `DebuggeeOutputQueue`, then join the writer thread. The engine join goes first so the queue isn't completed while the engine thread is still producing — that ordering avoids `Add` racing against `CompleteAdding`/`Dispose`.
+- Any output dbgeng emits *after* `Terminated` is set (e.g. during `TerminateSession`/`EndSession`) is intentionally dropped by the producer's self-suppress check. Preserving it isn't a goal; clean dispose sequencing is.
+- `EngineLifecycleService.CreateEngine` subscribes to all `wrapperModel.On*` events **before** calling `_wrapper.CreateEngine`. Defensive ordering: dbgeng today only fires callbacks from `WaitForEvent` (which runs later in the engine loop), but subscribing up front guarantees no callbacks are lost if a future wrapper change ever invokes them during engine creation.
 
 ## Key Dependencies
 

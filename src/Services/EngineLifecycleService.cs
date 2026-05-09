@@ -25,22 +25,63 @@ internal sealed class EngineLifecycleService(
     public NativeDebuggerModel CreateModel()
     {
         NativeDebuggerModel model = new();
+        StartDebuggeeOutputWriter(model);
+        int disposed = 0;
         model.DisposeAction = () =>
         {
+            // Idempotency: IDisposable contract allows multiple Dispose calls.
+            // Without this guard a second call would re-CompleteAdding /
+            // re-Dispose already-disposed BlockingCollections and throw.
+            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
             model.Terminated = true;
             model.Commands.CompleteAdding();
-            _ = (model.EngineThread?.Join(3000));
+            // Join the engine thread BEFORE completing the debuggee-output
+            // queue. The engine thread is the producer (its OnDebuggeeOutput
+            // handler enqueues), so completing/disposing the queue while it's
+            // still alive would race Add() against CompleteAdding()/Dispose().
+            // Output emitted after Terminated is already dropped by the
+            // producer's self-suppress check — this ordering is about clean
+            // dispose sequencing, not preserving trailing output.
+            // Note: if the join times out, the ordering alone no longer
+            // prevents the race — the catch in the OnDebuggeeOutput handler
+            // is what absorbs the resulting InvalidOperationException /
+            // ObjectDisposedException.
+            bool engineJoined = model.EngineThread is null || model.EngineThread.Join(3000);
+            if (!engineJoined)
+                _log.LogWarning(_logStore, "DisposeAction: engine thread Join timed out after 3s");
+            model.DebuggeeOutputQueue.CompleteAdding();
+            // Same 3s budget as the engine join: the writer's only blocking
+            // call is _server.SendEvent, which can stall on stdout backpressure
+            // if the client is wedged. 1s was tight under that scenario.
+            bool writerJoined = model.DebuggeeOutputThread is null || model.DebuggeeOutputThread.Join(3000);
+            if (!writerJoined)
+                _log.LogWarning(_logStore, "DisposeAction: debuggee-output thread Join timed out after 3s");
             _ = (model.ProfilerAckEvent?.Set()); // Unblock profiler if waiting.
-            model.ProfilerAckEvent?.Dispose();
             model.ProfilerPipeReader?.Dispose();
             model.ProfilerPipe?.Dispose();
             model.ProfilerCmdPipeWriter?.Dispose();
             model.ProfilerCmdPipe?.Dispose();
             _ = (model.ProfilerReaderThread?.Join(1000));
             _ = (model.ProfilerCmdConnectThread?.Join(1000));
-            model.Commands.Dispose();
-            model.Stopped.Dispose();
-            model.EngineReady.Dispose();
+            // Skip the final Dispose() calls when the producer thread didn't
+            // exit cleanly — disposing primitives that are still being touched
+            // by a live thread would race Set/Reset/Add against Dispose. The
+            // process is exiting anyway; let the OS reclaim them.
+            // ProfilerAckEvent is also gated here: the engine thread calls
+            // .Set() on it via ManagedBreakpointResolverService, so disposing
+            // it while the engine is still alive has the same hazard.
+            if (engineJoined && writerJoined)
+            {
+                model.Commands.Dispose();
+                model.DebuggeeOutputQueue.Dispose();
+                model.Stopped.Dispose();
+                model.EngineReady.Dispose();
+                model.ProfilerAckEvent?.Dispose();
+            }
+            else
+            {
+                _log.LogWarning(_logStore, "DisposeAction: skipping final Dispose() calls because thread Join timed out (intentional leak; process is exiting)");
+            }
 
             // Clear profiler env vars so they don't leak to other processes.
             Environment.SetEnvironmentVariable("CORECLR_ENABLE_PROFILING", null);
@@ -76,7 +117,7 @@ internal sealed class EngineLifecycleService(
         {
             try { _wrapper.TerminateSession(model.Wrapper); } catch { }
         }
-        model.Commands.Add(WakeEngineThread);
+        TryWakeEngineThread(model);
     }
 
     /// <summary>Detaches from the debugged process and wakes the engine thread to exit.</summary>
@@ -84,7 +125,20 @@ internal sealed class EngineLifecycleService(
     {
         model.Terminated = true;
         _wrapper.DetachSession(model.Wrapper);
-        model.Commands.Add(WakeEngineThread);
+        TryWakeEngineThread(model);
+    }
+
+    /// <summary>
+    /// Enqueues a wake sentinel onto <c>Commands</c>. If <c>DisposeAction</c> is
+    /// running concurrently it may have already called <c>CompleteAdding</c> /
+    /// <c>Dispose</c> on the queue; in that case there is no engine thread left
+    /// to wake, so we swallow the exception silently.
+    /// </summary>
+    private static void TryWakeEngineThread(NativeDebuggerModel model)
+    {
+        try { model.Commands.Add(WakeEngineThread); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { /* CompleteAdding called */ }
     }
 
     public void StartEngineThread(NativeDebuggerModel model)
@@ -118,23 +172,42 @@ internal sealed class EngineLifecycleService(
 
                 while (!model.Terminated)
                 {
-                    if(!EngineLoopStep(model, model.Wrapper)){
+                    try
+                    {
+                        if (!EngineLoopStep(model, model.Wrapper))
+                            break;
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // Concurrent DisposeAction (engine-thread join timed
+                        // out → disposal continued) disposed Stopped /
+                        // EngineReady / Commands etc. while we were mid-step.
+                        // The session is gone; exit cleanly.
                         break;
                     }
                 }
             }
             catch (Exception ex)
             {
-                _log.LogError(_logStore, $"EngineLoop EXCEPTION: {ex}");
-                // If init failed, unblock the main thread.
+                // Best-effort error reporting. If DisposeAction is running
+                // concurrently (engine-thread join timed out → disposal
+                // proceeded), EngineReady / transport / queue may already be
+                // disposed. We swallow defensively so this catch can never
+                // escape and crash the engine thread with an unhandled
+                // exception during shutdown.
+                try { _log.LogError(_logStore, $"EngineLoop EXCEPTION: {ex}"); } catch { }
                 model.EngineInitError = ex;
-                model.EngineReady.Set();
-                _server.SendEvent(_transport, "output", new OutputEventBody
+                try { model.EngineReady.Set(); } catch { /* disposed during shutdown race */ }
+                try
                 {
-                    Category = "stderr",
-                    Output = $"[mixdbg] Engine error: {ex.Message}\n",
-                });
-                _server.SendEvent(_transport, "terminated", new TerminatedEventBody());
+                    _server.SendEvent(_transport, "output", new OutputEventBody
+                    {
+                        Category = "stderr",
+                        Output = $"[mixdbg] Engine error: {ex.Message}\n",
+                    });
+                    _server.SendEvent(_transport, "terminated", new TerminatedEventBody());
+                }
+                catch { /* transport closed during shutdown race */ }
             }
         })
         {
@@ -146,6 +219,42 @@ internal sealed class EngineLifecycleService(
 
     /// <summary>No-op command that unblocks the engine thread's <c>Commands.Take()</c>.</summary>
     private static void WakeEngineThread() { }
+
+    /// <summary>
+    /// Spawns the dedicated worker that drains <see cref="NativeDebuggerModel.DebuggeeOutputQueue"/>
+    /// and emits DAP <c>output</c> events. The producer (engine thread) only ever enqueues;
+    /// the actual stdout write happens here, so stdout backpressure cannot pin the engine.
+    /// </summary>
+    private void StartDebuggeeOutputWriter(NativeDebuggerModel model)
+    {
+        model.DebuggeeOutputThread = new Thread(() =>
+        {
+            try
+            {
+                foreach (string text in model.DebuggeeOutputQueue.GetConsumingEnumerable())
+                {
+                    try
+                    {
+                        _server.SendEvent(_transport, "output", new OutputEventBody
+                        {
+                            Category = "stdout",
+                            Output = text,
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogError(_logStore, $"DebuggeeOutput writer: SendEvent failed: {ex.Message}");
+                    }
+                }
+            }
+            catch (ObjectDisposedException) { /* shutdown race */ }
+        })
+        {
+            Name = "mixdbg-debuggee-output",
+            IsBackground = true,
+        };
+        model.DebuggeeOutputThread.Start();
+    }
 
     private bool EngineLoopStep(NativeDebuggerModel model, DbgEngWrapperModel dbgEngWrapperModel)
     {
@@ -628,15 +737,46 @@ internal sealed class EngineLifecycleService(
         model.Wrapper = wrapperModel;
         model.InterruptAction = () => _wrapper.SetInterrupt(wrapperModel);
 
-        _wrapper.CreateEngine(wrapperModel);
-
+        // Subscribe before CreateEngine. In the current wrapper, dbgeng only
+        // actually fires callbacks from WaitForEvent (which doesn't run until
+        // the engine loop starts), so the ordering is defensive — but cheap.
+        // If a future wrapper change ever emits a callback during CreateEngine
+        // or InitializeSymbols, having subscriptions in place ahead of time
+        // means we don't silently lose the first event.
         wrapperModel.OnBreakpointHit += bpId => _breakpointService.HandleBreakpointHit(model, bpId);
         wrapperModel.OnExitProcess += code => OnExitProcess(model, code);
         wrapperModel.OnCreateProcess += OnCreateProcess;
         wrapperModel.OnLoadModule += (mod, img, baseOffset) => OnLoadModule(model, mod, img, baseOffset);
         wrapperModel.OnClrNotification += () => OnClrNotification(model, wrapperModel);
         wrapperModel.OnExceptionBreakpoint += addr => _breakpointService.HandleExceptionBreakpoint(model, addr);
+        // Enqueue rather than SendEvent: this fires from the engine thread
+        // inside dbgeng's WaitForEvent callback chain. A synchronous DAP
+        // write would pin the engine thread under stdout backpressure and
+        // starve every subsequent debug event.
+        wrapperModel.OnDebuggeeOutput += text =>
+        {
+            // Self-suppress once shutdown begins. If EngineThread.Join times
+            // out in DisposeAction, the engine thread can still fire this
+            // callback while we proceed to Dispose() the queue — racing
+            // Add() against Dispose() is undefined per BlockingCollection
+            // docs. The Terminated check narrows the window; the catch is the
+            // backstop because this handler runs across the COM boundary
+            // (IDebugOutputCallbacks::Output) where an escaping managed
+            // exception is undefined behaviour.
+            if (model.Terminated) return;
+            try { model.DebuggeeOutputQueue.Add(text); }
+            catch (ObjectDisposedException) { /* Dispose called (derives from InvalidOperationException, so must come first) */ }
+            catch (InvalidOperationException) { /* CompleteAdding called */ }
+            catch (Exception ex)
+            {
+                // Anything else is a real bug — log it (still swallowing so
+                // the exception doesn't cross back into dbgeng).
+                try { _log.LogError(_logStore, $"OnDebuggeeOutput unexpected error: {ex.GetType().Name}: {ex.Message}"); }
+                catch { }
+            }
+        };
 
+        _wrapper.CreateEngine(wrapperModel);
         _wrapper.InitializeSymbols(wrapperModel, model.SymbolPath, null);
     }
 

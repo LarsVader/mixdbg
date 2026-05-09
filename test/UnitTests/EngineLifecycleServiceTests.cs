@@ -29,6 +29,20 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         ThenCreatedModelIsTerminated();
     }
 
+    [Fact]
+    public void CreateModel_WhenDisposedTwice_SecondCallIsNoOp()
+    {
+        // IDisposable contract permits multiple Dispose() calls. Without the
+        // Interlocked guard the second call would CompleteAdding /
+        // Dispose() on already-disposed BlockingCollections and throw.
+        WhenCreatingModel();
+        WhenDisposingCreatedModel();
+
+        Exception? secondCallEx = Record.Exception(() => _createdModel!.Dispose());
+
+        Assert.Null(secondCallEx);
+    }
+
     // ── Break ──────────────────────────────────────────────
 
     [Fact]
@@ -911,6 +925,49 @@ public sealed class EngineLifecycleServiceTests : IDisposable
         WhenWaitingForEngineThreadToExit();
 
         ThenHandleExceptionBreakpointWasCalledWith(0xDEADBEEF);
+    }
+
+    // ── OnDebuggeeOutput (via wrapper events) ──────────────
+
+    [Fact]
+    public async System.Threading.Tasks.Task OnDebuggeeOutput_WhenSendEventBlocks_ProducerReturnsQuicklyAsync()
+    {
+        // Regression: the persistent IDebugOutputCallbacks runs on the engine
+        // thread inside dbgeng's WaitForEvent. If forwarding does a synchronous
+        // SendEvent and stdout backpressure pushes back, the engine thread is
+        // pinned and no further debug events (module loads, configurationDone)
+        // are processed. This test fakes that backpressure with a blocking
+        // SendEvent and asserts that RaiseDebuggeeOutput does not block its
+        // caller.
+        GivenWrapperCreateModelReturns();
+        GivenWaitForEventReturns(WaitForEventResult.Failed);
+        using System.Threading.ManualResetEventSlim release = new(false);
+        _server
+            .When(s => s.SendEvent(
+                _transport,
+                "output",
+                Arg.Is<OutputEventBody>(b => b.Category == "stdout")))
+            .Do(_ => release.Wait());
+
+        WhenStartingEngineThread();
+        WhenWaitingForEngineReady();
+
+        System.Threading.Tasks.Task producer = System.Threading.Tasks.Task.Run(
+            () => _createdWrapperModel!.RaiseDebuggeeOutput("trace text\n"));
+        // 5s ceiling: the regression target is deadlock — a generous threshold
+        // still catches it without flaking on a busy CI box where GC + thread
+        // scheduling could plausibly push a single enqueue past 500ms.
+        System.Threading.Tasks.Task done =
+            await System.Threading.Tasks.Task.WhenAny(producer,
+                System.Threading.Tasks.Task.Delay(5000));
+        bool finishedQuickly = done == producer;
+
+        // Release the blocked writer so the test can clean up.
+        release.Set();
+        await producer;
+
+        Assert.True(finishedQuickly,
+            "RaiseDebuggeeOutput blocked its caller — engine thread would hang in WaitForEvent.");
     }
 
     // ── EngineLoopStep: WaitForEvent timeout ───────────────
