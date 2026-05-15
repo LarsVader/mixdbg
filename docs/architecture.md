@@ -210,7 +210,7 @@ Sequencing in `EngineLifecycleService.AttachOrCreateProcess`:
 
 ### Managed (M5)
 
-SOS via dbgeng: `!clrstack -l` with output capture, parse text for local names/values. Variable names come from portable PDB local scope tables (`GetLocalVariableNames`) and PE parameter metadata (`GetParameterNames`).
+Managed locals are read exclusively via SOS `!clrstack -a` through dbgeng output capture, then parsed for PARAMETERS/LOCALS sections of the top frame. The ICorDebug ILFrame path was tried first but always failed (`E_NOTIMPL` on chain/frame enumeration in the piggybacked V4 process — see `docs/failed-approaches.md`), so it has been removed. Variable names are enriched from portable PDB local scope tables (`GetLocalVariableNames`) and PE parameter metadata (`GetParameterNames`).
 
 `ManagedVariableStore` allocates refs starting at 100,000 (native `VariableStore` starts at 1). `EngineQueryService.GetVariablesOnEngine` routes by `ManagedVariableStore.IsManaged(ref)`.
 

@@ -886,6 +886,43 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
         ThenParsedVariableAtIndexHasValue(0, "1");
     }
 
+    // ── NotifySosMissing ────────────────────────────────────
+
+    [Fact]
+    public void NotifySosMissing_WhenFirstCall_SendsOutputEvent()
+    {
+        WhenNotifyingSosMissing();
+
+        ThenSosMissingEventWasSent();
+    }
+
+    [Fact]
+    public void NotifySosMissing_WhenFirstCall_SetsNotifiedFlag()
+    {
+        WhenNotifyingSosMissing();
+
+        Assert.True(_model.SosMissingNotified);
+    }
+
+    [Fact]
+    public void NotifySosMissing_WhenCalledTwice_SendsEventOnlyOnce()
+    {
+        WhenNotifyingSosMissing();
+        WhenNotifyingSosMissing();
+
+        ThenSosMissingEventWasSentExactlyOnce();
+    }
+
+    [Fact]
+    public void NotifySosMissing_WhenSendEventThrows_SwallowsAndLogs()
+    {
+        GivenSendEventThrows(new InvalidOperationException("transport closed"));
+
+        WhenNotifyingSosMissing();
+
+        ThenWarningWasLogged("Failed to send SOS-missing notification");
+    }
+
     #region Given
 
     private void GivenManagedNotInitialized() => _model.ManagedInitialized = false;
@@ -988,6 +1025,10 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
         List<(int ILOffset, int NativeOffset)> map) =>
         _model.JitMethodMappings[(token, assemblyName)] = new JitMethodMapping(codeStart, map);
 
+    private void GivenSendEventThrows(Exception ex)
+        => _server.When(s => s.SendEvent(Arg.Any<DapServerModel>(), "output", Arg.Any<OutputEventBody>()))
+                  .Do(_ => throw ex);
+
     #endregion
 
     #region When
@@ -1006,6 +1047,8 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
     private void WhenMergingManagedFrames(StackFrame[] frames) => _testee.MergeManagedFrames(_model, frames);
 
     private void WhenParsingClrStackLocals() => _parsedVars = ManagedDebuggerService.ParseClrStackLocals(_clrStackOutput!);
+
+    private void WhenNotifyingSosMissing() => _testee.NotifySosMissing(_model);
 
     #endregion
 
@@ -1105,6 +1148,14 @@ public sealed class ManagedDebuggerServiceTests : IDisposable
 
     private void ThenParsedVariableAtIndexHasValue(int index, string expected)
         => Assert.Equal(expected, _parsedVars![index].Value);
+
+    private void ThenSosMissingEventWasSent()
+        => _server.Received().SendEvent(_transport, "output",
+            Arg.Is<OutputEventBody>(b => b.Output.Contains("dotnet-sos") && b.Category == "important"));
+
+    private void ThenSosMissingEventWasSentExactlyOnce()
+        => _server.Received(1).SendEvent(_transport, "output",
+            Arg.Is<OutputEventBody>(b => b.Output.Contains("dotnet-sos")));
 
     #endregion
 

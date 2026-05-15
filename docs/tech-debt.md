@@ -67,6 +67,19 @@ The `OnDebuggeeOutput` producer/consumer split moved debuggee-text `SendEvent` o
 - Use a `Try`-style write that times out and drops the message rather than blocking the engine thread.
 - Accept the residual risk and document the assumption that the client must drain promptly.
 
+## GetRawManagedFrames + MergeManagedFrames may be silently dead
+
+**Identified:** 2026-05-15
+
+`CorDebugWrapperService.GetRawManagedFrames` (`src/MixDbg.EngineWrappers/Services/CorDebugWrapperService.cs:131`) walks `model.Process.Threads` → `clrThread.Chains` → `chain.Frames` — the same API surface that was just confirmed throws `E_NOTIMPL` on the piggybacked V4 process (see the historical-note comment in the same file and `docs/failed-approaches.md`). The outer `try/catch` swallows the exception and returns `[]`, which means `ManagedDebuggerService.MergeManagedFrames` (called from `EngineQueryService.GetStackTrace`) is effectively a no-op in production: managed frame overlays onto coreclr/clrjit native frames don't happen via this path.
+
+**Why it's low risk today:** Managed stack frames are still resolved end-to-end via `ResolveFrameFromProfilerData` (the JIT method map + PDB path), so the user-visible call stack is correct. `MergeManagedFrames` was a secondary overlay for native frames stuck in coreclr/clrjit dispatch — those frames now just show as native (which is at worst less informative, not wrong).
+
+**Fix options:**
+- Delete `GetRawManagedFrames` and `MergeManagedFrames` along with their callers/tests; collapse `GetManagedStackFrames` to use only the profiler-map path. Honest about the deletion.
+- Add explicit logging when `Chains` enumeration throws so we can verify the dead-ness empirically rather than assume it.
+- Re-test after any future ICorDebug bootstrap change (e.g., if mixdbg ever stops using `OpenVirtualProcessImpl` piggyback) — these APIs would start working under a different host setup.
+
 ## Silent slot overflow in profiler m_funcSlots
 
 **Identified:** 2026-05-01

@@ -66,12 +66,27 @@ Managed breakpoints are resolved via portable PDB (method token + IL offset) and
 - Thread enumeration
 - Diagnostic logging to `~/mixdbg.log`
 
-**Not yet implemented (M7):**
-- Attach to running process
+**Partial (M7):**
+- Attach to running process — native debugging is fully functional; managed breakpoints work via an eager hardware-BP install path but are capped at 4 concurrent (no ENTER/LEAVE activation counting in attach mode). See `docs/architecture.md` for details and the M9 IL-rewriting follow-up.
+
+**Not yet implemented:**
 - Conditional breakpoints
 - Exception breakpoints (beyond CLR notification exceptions)
 - Watch expressions
 - Multi-process debugging
+
+## Prerequisites
+
+- **Windows** — mixdbg wraps `dbgeng.dll`, which ships with Windows.
+- **.NET 10 SDK** — both for building mixdbg and so the target's `dbgshim.dll`/`coreclr.dll` are available at debug time.
+- **dotnet-sos** *(required for managed locals inspection)* — mixdbg loads `sos.dll` from `%USERPROFILE%\.dotnet\sos\` to read C# / C++/CLI local variables. Without it, native debugging and managed breakpoints still work, but the Variables pane stays empty for managed frames. Install with:
+
+  ```bash
+  dotnet tool install -g dotnet-sos
+  dotnet-sos install
+  ```
+
+  mixdbg detects when SOS is missing and surfaces a one-shot DAP message with the install command. The native C++ debugging path has no extra prerequisites beyond Windows + .NET.
 
 ## Build and Run
 

@@ -78,30 +78,18 @@ public interface ICorDebugWrapper
     /// </summary>
     void DeactivateLegacyBreakpoint(CorDebugWrapperModel model, int bpId);
 
-    /// <summary>Last diagnostic message from a failed operation, for caller logging.</summary>
-    string? LastDiagnostic { get; }
-
     // ── Managed Variable Inspection ──
-
-    /// <summary>
-    /// Initializes managed locals for the given frame by walking ICorDebug threads/chains/frames
-    /// to find the matching ICorDebugILFrame, then enumerating locals and arguments.
-    /// Returns a managed variablesReference handle, or 0 on failure.
-    /// </summary>
-    int InitializeManagedLocals(CorDebugWrapperModel model, uint osThreadId,
-        ulong ip, string? assemblyPath, int methodToken, int ilOffset);
-
-    /// <summary>
-    /// Resolves managed variables for a previously allocated variablesReference handle.
-    /// Handles locals scope, object field expansion, and array element expansion.
-    /// </summary>
-    VariableInfo[] GetManagedVariables(CorDebugWrapperModel model, int variablesReference);
 
     /// <summary>
     /// Stores pre-formatted locals (from SOS text output) in the managed variable store.
     /// Returns a managed variablesReference handle, or 0 if empty.
     /// </summary>
     int StoreSimpleLocals(CorDebugWrapperModel model, VariableInfo[] locals);
+
+    /// <summary>
+    /// Resolves managed variables for a previously allocated variablesReference handle.
+    /// </summary>
+    VariableInfo[] GetManagedVariables(CorDebugWrapperModel model, int variablesReference);
 
     /// <summary>
     /// Clears all managed variable references. Called on continue/step when variables become stale.

@@ -30,21 +30,21 @@ public sealed class ManagedVariableStoreTests
     // ── Get ──────────────────────────────────────────────
 
     [Fact]
-    public void Get_WhenRefExists_ReturnsEntry()
+    public void Get_WhenRefExists_ReturnsLocals()
     {
         WhenAllocating();
         WhenGettingAllocatedRef();
 
-        ThenEntryIsNotNull();
+        ThenLocalsAreNotNull();
     }
 
     [Fact]
-    public void Get_WhenRefExists_ReturnsSameEntry()
+    public void Get_WhenRefExists_ReturnsSameLocals()
     {
         WhenAllocating();
         WhenGettingAllocatedRef();
 
-        ThenEntryIsSameAsOriginal();
+        ThenLocalsAreSameAsOriginal();
     }
 
     [Fact]
@@ -52,7 +52,7 @@ public sealed class ManagedVariableStoreTests
     {
         WhenGettingNonExistentRef(999_999);
 
-        ThenEntryIsNull();
+        ThenLocalsAreNull();
     }
 
     // ── Clear ────────────────────────────────────────────
@@ -64,7 +64,7 @@ public sealed class ManagedVariableStoreTests
         WhenClearing();
         WhenGettingAllocatedRef();
 
-        ThenEntryIsNull();
+        ThenLocalsAreNull();
     }
 
     [Fact]
@@ -137,13 +137,13 @@ public sealed class ManagedVariableStoreTests
 
     #region When
 
-    private void WhenAllocating() => _allocatedRef = _testee.Allocate(_entry);
+    private void WhenAllocating() => _allocatedRef = _testee.Allocate(_locals);
 
-    private void WhenAllocatingAnother() => _secondRef = _testee.Allocate(_entry2);
+    private void WhenAllocatingAnother() => _secondRef = _testee.Allocate(_locals2);
 
-    private void WhenGettingAllocatedRef() => _retrievedEntry = _testee.Get(_allocatedRef);
+    private void WhenGettingAllocatedRef() => _retrievedLocals = _testee.Get(_allocatedRef);
 
-    private void WhenGettingNonExistentRef(int refId) => _retrievedEntry = _testee.Get(refId);
+    private void WhenGettingNonExistentRef(int refId) => _retrievedLocals = _testee.Get(refId);
 
     private void WhenClearing() => _testee.Clear();
 
@@ -157,11 +157,11 @@ public sealed class ManagedVariableStoreTests
 
     private void ThenAllocatedRefsAreDistinct() => Assert.NotEqual(_allocatedRef, _secondRef);
 
-    private void ThenEntryIsNotNull() => Assert.NotNull(_retrievedEntry);
+    private void ThenLocalsAreNotNull() => Assert.NotNull(_retrievedLocals);
 
-    private void ThenEntryIsNull() => Assert.Null(_retrievedEntry);
+    private void ThenLocalsAreNull() => Assert.Null(_retrievedLocals);
 
-    private void ThenEntryIsSameAsOriginal() => Assert.Same(_entry, _retrievedEntry);
+    private void ThenLocalsAreSameAsOriginal() => Assert.Same(_locals, _retrievedLocals);
 
     private void ThenSecondRefEqualsFirstRef() => Assert.Equal(_allocatedRef, _secondRef);
 
@@ -176,13 +176,13 @@ public sealed class ManagedVariableStoreTests
     #region Misc
 
     private readonly ManagedVariableStore _testee = new();
-    private readonly ManagedVariableEntry _entry = new() { ArrayCount = 3 };
-    private readonly ManagedVariableEntry _entry2 = new() { ArrayCount = 5 };
+    private readonly VariableInfo[] _locals = [new VariableInfo("a", "1", "int", 0)];
+    private readonly VariableInfo[] _locals2 = [new VariableInfo("b", "2", "int", 0)];
 
     private int _allocatedRef;
     private int _secondRef;
     private int _refToCheck;
-    private ManagedVariableEntry? _retrievedEntry;
+    private VariableInfo[]? _retrievedLocals;
     private bool _isManagedResult;
 
     #endregion

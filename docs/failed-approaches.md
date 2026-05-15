@@ -74,23 +74,19 @@ These were found during the successful CLR Profiler implementation:
 
 ### ICorDebug V4 Thread Enumeration Fails
 
-The planned approach (walk `Process.Threads` → chains → frames → `ICorDebugILFrame` → `EnumerateLocalVariables()`) was fully implemented but fails at runtime:
+The planned approach (walk `Process.Threads` → chains → frames → `ICorDebugILFrame` → `EnumerateLocalVariables()`) was fully implemented but fails at runtime. The piggybacked ICorDebug V4 process (created via `OpenVirtualProcessImpl` with `DbgEngDataTarget` bridge) **cannot enumerate threads or stack frames**. The data target bridge maps memory reads, but V4 piggybacked mode doesn't support the full `ICorDebugProcess` threading API.
 
-```
-DebugException: CORDBG_E_READVIRTUAL_FAILURE
-```
-
-The piggybacked ICorDebug V4 process (created via `OpenVirtualProcessImpl` with `DbgEngDataTarget` bridge) **cannot enumerate threads**. The data target bridge maps memory reads, but V4 piggybacked mode doesn't support the full `ICorDebugProcess` threading API. This is the same fundamental limitation that forced M4 to use the CLR profiler.
+The exact COM error has shifted over time as the surrounding code evolved: early implementations surfaced `CORDBG_E_READVIRTUAL_FAILURE` from `Process.Threads`, later iterations (after work-arounds for the data-target read path) hit `E_NOTIMPL` on `EnumerateChains`/`EnumerateFrames` instead. Same root cause, different call surface. This is the same fundamental limitation that forced M4 to use the CLR profiler. The entire ICorDebug locals path was removed in 2026-05; see `docs/architecture.md` for the current SOS-only path.
 
 ### Alternatives Considered
 
 - **DAC (`SOSDacInterface`):** The ClrDebug NuGet exposes module/method-level DAC APIs but not stack frame or local variable APIs. No `GetStackReferences`, no frame-level locals.
 - **CLR Profiler (`ICorProfilerInfo2::DoStackSnapshot`):** Could walk the managed stack from inside the target, but there's no profiler API for local variable stack offsets. The JIT's local layout is in GC info (undocumented, version-dependent).
-- **SOS via dbgeng (`!clrstack -l`):** Works because SOS reads memory directly via the data target, bypassing ICorDebug threading. Text output parsing is fragile but the infrastructure (`ExecuteCommand` + `OutputCapture`) already existed.
+- **SOS via dbgeng (`!clrstack -a`):** Works because SOS reads memory directly via the data target, bypassing ICorDebug threading. Text output parsing is fragile but the infrastructure (`ExecuteCommand` + `OutputCapture`) already existed.
 
 ### Chosen: SOS via dbgeng
 
-`!clrstack -l` with output capture. The DAC (already loaded) has all GC info parsing for local variable stack layout. Fragile but functional.
+`!clrstack -a` with output capture. The DAC (already loaded) has all GC info parsing for local variable stack layout. Fragile but functional.
 
 ## Assembly-Level Profiler Watches (MIXDBG_WATCH_ASSEMBLIES) (2026-05-01)
 

@@ -191,7 +191,7 @@ C# and C++/CLI breakpoints at exact source lines via CLR Profiler + hardware BPs
 
 ### M5: Managed Variable Inspection via SOS/dbgeng — DONE
 
-C# locals/args via SOS `!clrstack -l` output parsing. Managed variable refs start at 100,000. See `docs/architecture.md`.
+C# locals/args via SOS `!clrstack -a` output parsing. Managed variable refs start at 100,000. See `docs/architecture.md`.
 
 ### M6: Stepping Across Boundaries — DONE
 

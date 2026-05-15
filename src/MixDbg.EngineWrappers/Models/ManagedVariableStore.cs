@@ -1,5 +1,3 @@
-using ClrDebug;
-
 namespace MixDbg.Models;
 
 /// <summary>
@@ -17,23 +15,23 @@ internal sealed class ManagedVariableStore
     internal const int BaseOffset = 100_000;
 
     private int _nextRef = BaseOffset;
-    private readonly Dictionary<int, ManagedVariableEntry> _entries = [];
+    private readonly Dictionary<int, VariableInfo[]> _entries = [];
 
     /// <summary>
-    /// Allocates a new variablesReference handle for the given entry.
+    /// Allocates a new variablesReference handle for the given pre-formatted locals.
     /// </summary>
-    internal int Allocate(ManagedVariableEntry entry)
+    internal int Allocate(VariableInfo[] locals)
     {
         int id = _nextRef++;
-        _entries[id] = entry;
+        _entries[id] = locals;
         return id;
     }
 
-    /// <summary>Looks up an entry by its variablesReference handle.</summary>
-    internal ManagedVariableEntry? Get(int variablesReference)
+    /// <summary>Looks up locals by their variablesReference handle.</summary>
+    internal VariableInfo[]? Get(int variablesReference)
     {
-        _ = _entries.TryGetValue(variablesReference, out ManagedVariableEntry? entry);
-        return entry;
+        _ = _entries.TryGetValue(variablesReference, out VariableInfo[]? locals);
+        return locals;
     }
 
     /// <summary>Whether the given variablesReference belongs to the managed store.</summary>
@@ -48,28 +46,4 @@ internal sealed class ManagedVariableStore
         _entries.Clear();
         _nextRef = BaseOffset;
     }
-}
-
-/// <summary>
-/// A managed variable entry. Discriminated by which field is non-null:
-/// <see cref="Locals"/> for a top-level locals/args scope,
-/// <see cref="ObjectValue"/> for object field expansion,
-/// <see cref="ArrayValue"/> for array element expansion.
-/// </summary>
-internal sealed class ManagedVariableEntry
-{
-    /// <summary>Top-level locals + args (name/value pairs from ICorDebug).</summary>
-    internal (string Name, CorDebugValue Value)[]? Locals { get; init; }
-
-    /// <summary>Pre-formatted locals from SOS text output (no COM objects).</summary>
-    internal VariableInfo[]? SimpleLocals { get; init; }
-
-    /// <summary>Object value for field expansion.</summary>
-    internal CorDebugObjectValue? ObjectValue { get; init; }
-
-    /// <summary>Array value for element expansion.</summary>
-    internal CorDebugArrayValue? ArrayValue { get; init; }
-
-    /// <summary>Element count for array expansion.</summary>
-    internal int ArrayCount { get; init; }
 }

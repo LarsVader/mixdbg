@@ -100,6 +100,7 @@ public sealed class NativeDebuggerModel : IDisposable
 
     // SOS extension state.
     internal volatile bool SosLoaded;
+    internal volatile bool SosMissingNotified;
 
     // CLR detection state.
     internal volatile bool ClrLoaded;

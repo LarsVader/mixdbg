@@ -279,36 +279,25 @@ internal sealed class ManagedDebuggerService(
         if (method == null)
             return 0;
 
-        string? assemblyPath = FindAssemblyPath(model, method.AssemblyName);
         int ilOffset = ComputeILOffset(model, method, instructionPointer);
-
-        uint osThreadId = _dbgEng.GetCurrentThreadSystemId(model.Wrapper);
 
         _corDebug.FlushProcessState(model.CorWrapper);
 
-        int result = _corDebug.InitializeManagedLocals(
-            model.CorWrapper, osThreadId, instructionPointer,
-            assemblyPath, method.MethodToken, ilOffset);
-
-        // Fallback: ICorDebug thread enumeration fails on piggybacked V4 process.
-        // Use SOS !clrstack via dbgeng to read locals from the DAC instead.
-        if (result == 0)
-        {
-            if (_corDebug.LastDiagnostic != null)
-                _log.LogInfo(_logStore, $"ICorDebug locals failed: {_corDebug.LastDiagnostic}, trying SOS");
-            result = TryGetLocalsViaSos(model, assemblyPath, method.MethodToken, ilOffset);
-        }
+        // Managed locals are read via SOS !clrstack -a. The piggybacked ICorDebug V4
+        // process cannot enumerate threads/frames (E_NOTIMPL), so the ILFrame path
+        // doesn't work — see docs/failed-approaches.md.
+        int result = TryGetLocalsViaSos(model, method, ilOffset);
 
         _log.LogInfo(_logStore, $"TryGetManagedLocals: ip=0x{instructionPointer:X} token=0x{method.MethodToken:X8} ilOffset={ilOffset} -> ref={result}");
         return result;
     }
 
     /// <summary>
-    /// Fallback: reads managed locals via SOS <c>!clrstack -a</c> command through dbgeng.
+    /// Reads managed locals via SOS <c>!clrstack -a</c> command through dbgeng.
     /// Loads the SOS extension on first use, captures command output, and parses
     /// PARAMETERS/LOCALS sections for the top frame.
     /// </summary>
-    private int TryGetLocalsViaSos(NativeDebuggerModel model, string? assemblyPath, int methodToken, int ilOffset)
+    private int TryGetLocalsViaSos(NativeDebuggerModel model, JitMethodInfo method, int ilOffset)
     {
         try
         {
@@ -319,6 +308,7 @@ internal sealed class ManagedDebuggerService(
                 if (sosPath == null)
                 {
                     _log.LogWarning(_logStore, "SOS: sos.dll not found");
+                    NotifySosMissing(model);
                     return 0;
                 }
                 string loadOutput = _dbgEng.ExecuteCommandWithCapture(model.Wrapper, $".load {sosPath}");
@@ -334,12 +324,13 @@ internal sealed class ManagedDebuggerService(
             VariableInfo[] vars = ParseClrStackLocals(output);
 
             // Enrich with PDB names and PE types where possible.
+            string? assemblyPath = FindAssemblyPath(model, method.AssemblyName);
             if (assemblyPath != null)
             {
-                (string Name, int Index)[] pdbLocals = _pdbMapper.GetLocalVariableNames(assemblyPath, methodToken, ilOffset);
-                string[] paramNames = _pdbMapper.GetParameterNames(assemblyPath, methodToken);
-                string[] paramTypes = _pdbMapper.GetParameterTypes(assemblyPath, methodToken);
-                string[] localTypes = _pdbMapper.GetLocalVariableTypes(assemblyPath, methodToken);
+                (string Name, int Index)[] pdbLocals = _pdbMapper.GetLocalVariableNames(assemblyPath, method.MethodToken, ilOffset);
+                string[] paramNames = _pdbMapper.GetParameterNames(assemblyPath, method.MethodToken);
+                string[] paramTypes = _pdbMapper.GetParameterTypes(assemblyPath, method.MethodToken);
+                string[] localTypes = _pdbMapper.GetLocalVariableTypes(assemblyPath, method.MethodToken);
                 vars = EnrichWithPdbNames(vars, pdbLocals, paramNames, paramTypes, localTypes);
             }
 
@@ -355,6 +346,37 @@ internal sealed class ManagedDebuggerService(
         {
             _log.LogWarning(_logStore, $"SOS locals failed: {ex.GetType().Name}: {ex.Message}");
             return 0;
+        }
+    }
+
+    /// <summary>
+    /// Emits a one-shot DAP output event explaining how to install SOS.
+    /// Managed locals stay unavailable for the session; everything else still works.
+    /// </summary>
+    internal void NotifySosMissing(NativeDebuggerModel model)
+    {
+        if (model.SosMissingNotified)
+            return;
+        model.SosMissingNotified = true;
+
+        const string message =
+            "[mixdbg] Managed locals unavailable: sos.dll not found.\n" +
+            "Install the dotnet-sos tool to enable inspection of C# / C++/CLI locals:\n" +
+            "  dotnet tool install -g dotnet-sos\n" +
+            "  dotnet-sos install\n" +
+            "Native debugging and managed breakpoints continue to work without it.\n";
+
+        try
+        {
+            _server.SendEvent(_transport, "output", new OutputEventBody
+            {
+                Category = "important",
+                Output = message,
+            });
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(_logStore, $"Failed to send SOS-missing notification: {ex.Message}");
         }
     }
 
